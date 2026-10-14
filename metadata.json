@@ -1,0 +1,6 @@
+{
+  "name": "YouSnap",
+  "description": "An Instagram-like vertical short video and reels feed application with extensive settings management, profile customization, and simulation capabilities built with Jetpack Compose.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
