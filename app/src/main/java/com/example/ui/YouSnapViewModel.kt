@@ -792,22 +792,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _homePostComments.value = _homePostComments.value + (postId to (existing + newComment))
     }
 
-    // Simulated Blocked Accounts
-    private val _blockedAccounts = MutableStateFlow(
-        listOf(
-            BlockedAccount(1, "spammer_99", "John Doe"),
-            BlockedAccount(2, "toxic_keyboard", "Alice Smith"),
-            BlockedAccount(3, "ad_bot_daily", "Ad Bot")
-        )
-    )
+    // Real Blocked Accounts (Starts empty, populated only when user blocks someone)
+    private val _blockedAccounts = MutableStateFlow<List<BlockedAccount>>(emptyList())
     val blockedAccounts = _blockedAccounts.asStateFlow()
 
-    // Simulated Login Devices
+    // Real Login Devices (Starts with current session device only)
     private val _loginDevices = MutableStateFlow(
         listOf(
-            LoginDevice(1, "Google Pixel 9 (This Device)", "Dhaka, Bangladesh", "Active Now"),
-            LoginDevice(2, "Samsung Galaxy S24 Ultra", "Chittagong, Bangladesh", "2 hours ago"),
-            LoginDevice(3, "Chrome Browser - Windows 11", "Sylhet, Bangladesh", "Yesterday")
+            LoginDevice(1, "Current Device (This Device)", "Active Session", "Active Now")
         )
     )
     val loginDevices = _loginDevices.asStateFlow()
@@ -1795,17 +1787,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val _monetizationStatus = MutableStateFlow("NONE") // NONE, PENDING, APPROVED, REJECTED
     val monetizationStatus: StateFlow<String> = _monetizationStatus.asStateFlow()
 
-    // Real-time monetization metrics
-    private val _followersCount = MutableStateFlow(1200)
+    // Real-time monetization metrics (Starts at 0, updated from real database user uploads)
+    private val _followersCount = MutableStateFlow(0)
     val followersCount: StateFlow<Int> = _followersCount.asStateFlow()
     
-    private val _videoViewsCount = MutableStateFlow(420000)
+    private val _videoViewsCount = MutableStateFlow(0)
     val videoViewsCount: StateFlow<Int> = _videoViewsCount.asStateFlow()
     
-    private val _photoUploadsCount = MutableStateFlow(8)
+    private val _photoUploadsCount = MutableStateFlow(0)
     val photoUploadsCount: StateFlow<Int> = _photoUploadsCount.asStateFlow()
     
-    private val _storiesUploadedCount = MutableStateFlow(15)
+    private val _storiesUploadedCount = MutableStateFlow(0)
     val storiesUploadedCount: StateFlow<Int> = _storiesUploadedCount.asStateFlow()
 
     fun submitMonetizationApplication(

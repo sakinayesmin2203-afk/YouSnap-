@@ -117,7 +117,6 @@ fun LoginScreen(
                     idToken = idToken,
                     photoUrl = photoUrl,
                     onSuccess = {
-                        Toast.makeText(context, "Signed in as $displayName", Toast.LENGTH_SHORT).show()
                         onLoginSuccess()
                     },
                     onError = {
@@ -181,7 +180,6 @@ fun LoginScreen(
             Button(
                 onClick = {
                     viewModel.loginAsDemoUser {
-                        Toast.makeText(context, "Skipped Login as Demo User", Toast.LENGTH_SHORT).show()
                         onLoginSuccess()
                     }
                 },
@@ -429,7 +427,6 @@ fun LoginScreen(
                                     email = enteredEmail,
                                     pass = enteredPassword,
                                     onSuccess = {
-                                        Toast.makeText(context, "Login Successful!", Toast.LENGTH_SHORT).show()
                                         onLoginSuccess()
                                     },
                                     onError = { error ->
@@ -591,7 +588,6 @@ fun LoginScreen(
                     Button(
                         onClick = {
                             viewModel.loginAsDemoUser {
-                                Toast.makeText(context, "Logged in with Demo Account!", Toast.LENGTH_SHORT).show()
                                 onLoginSuccess()
                             }
                         },

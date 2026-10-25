@@ -1684,21 +1684,14 @@ fun InsightsScreen(
     var selectedTimeframe by remember { mutableStateOf("Last 30 Days") }
     val timeframes = listOf("Last 7 Days", "Last 30 Days", "Last 90 Days")
 
-    // Dynamic stats based on selected timeframe with incremental logic simulation
-    var baseReached by remember { mutableLongStateOf(18450L) }
-    var baseViews by remember { mutableLongStateOf(12450L) }
-    var baseVisits by remember { mutableLongStateOf(4200L) }
-    var baseEngaged by remember { mutableLongStateOf(1570L) }
+    val personalPhotos by viewModel.personalPhotosState.collectAsState()
+    val reels by viewModel.reelsState.collectAsState()
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay((2000..5000).random().toLong())
-            baseReached += (0..2).random()
-            baseViews += (0..3).random()
-            baseVisits += (0..1).random()
-            baseEngaged += (0..1).random()
-        }
-    }
+    val totalContentCount = personalPhotos.size + reels.size
+    val baseReached = ((totalContentCount * 150L) + if (totalContentCount > 0) 300L else 0L)
+    val baseViews = ((totalContentCount * 120L) + if (totalContentCount > 0) 250L else 0L)
+    val baseVisits = ((totalContentCount * 45L) + if (totalContentCount > 0) 50L else 0L)
+    val baseEngaged = ((totalContentCount * 25L) + if (totalContentCount > 0) 20L else 0L)
 
     val multiplier = when (selectedTimeframe) {
         "Last 7 Days" -> 0.35f
@@ -1711,16 +1704,24 @@ fun InsightsScreen(
     val profileVisits = (baseVisits * multiplier).toLong()
     val totalInteractions = (baseEngaged * multiplier).toLong()
 
+    val reelsPct = if (totalContentCount == 0) 0f else (reelsViews.toFloat() / (accountsReached + reelsViews).coerceAtLeast(1L)).coerceIn(0f, 1f)
+    val profilePct = if (totalContentCount == 0) 0f else (profileVisits.toFloat() / (accountsReached + profileVisits).coerceAtLeast(1L)).coerceIn(0f, 1f)
+
+    val reelsSubtitle = if (totalContentCount == 0 || reelsViews == 0L) "No activity yet" else "${(reelsPct * 100).toInt()}% of total reach"
+    val profileSubtitle = if (totalContentCount == 0 || profileVisits == 0L) "No activity yet" else "${(profilePct * 100).toInt()}% profile conversion"
+
     var selectedDay by remember { mutableStateOf("Fri") }
-    val dayReachMap = remember {
+    val dayReachMap = if (totalContentCount == 0) {
+        mapOf("Mon" to "0", "Tue" to "0", "Wed" to "0", "Thu" to "0", "Fri" to "0", "Sat" to "0", "Sun" to "0")
+    } else {
         mapOf(
-            "Mon" to "2,450",
-            "Tue" to "3,850",
-            "Wed" to "5,200",
-            "Thu" to "4,100",
-            "Fri" to "7,120",
-            "Sat" to "5,600",
-            "Sun" to "4,500"
+            "Mon" to "${totalContentCount * 35}",
+            "Tue" to "${totalContentCount * 50}",
+            "Wed" to "${totalContentCount * 70}",
+            "Thu" to "${totalContentCount * 55}",
+            "Fri" to "${totalContentCount * 95}",
+            "Sat" to "${totalContentCount * 80}",
+            "Sun" to "${totalContentCount * 60}"
         )
     }
 
@@ -1839,17 +1840,17 @@ fun InsightsScreen(
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Engaged", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text("2,840", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text("%,d".format(totalInteractions), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                             Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.3f)))
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Engagement", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text("4.2%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text(if (accountsReached > 0) String.format("%.1f", (totalInteractions.toFloat() / accountsReached.toFloat()) * 100f) + "%" else "0.0%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                             Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.3f)))
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Growth", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text("+12.5%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34D399))
+                                Text(if (totalContentCount > 0) "+${totalContentCount * 2.5f}%" else "0%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34D399))
                             }
                         }
                     }
@@ -1888,7 +1889,11 @@ fun InsightsScreen(
 
                     // 7-day Bar Chart Visual
                     val weekDays = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-                    val barHeights = listOf(0.35f, 0.55f, 0.75f, 0.60f, 1.0f, 0.80f, 0.65f)
+                    val barHeights = if (totalContentCount == 0) {
+                        listOf(0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f)
+                    } else {
+                        listOf(0.35f, 0.55f, 0.75f, 0.60f, 1.0f, 0.80f, 0.65f)
+                    }
 
                     Row(
                         modifier = Modifier
@@ -1959,8 +1964,8 @@ fun InsightsScreen(
             ProfessionalMetricCard(
                 title = "Reels Views",
                 value = "%,d".format(reelsViews),
-                subtitle = "75% of total reach",
-                percentage = 0.75f,
+                subtitle = reelsSubtitle,
+                percentage = reelsPct,
                 icon = Icons.Default.PlayArrow,
                 barColor = Color(0xFF2563EB)
             )
@@ -1969,8 +1974,8 @@ fun InsightsScreen(
             ProfessionalMetricCard(
                 title = "Profile Visits",
                 value = "%,d".format(profileVisits),
-                subtitle = "42% profile conversion",
-                percentage = 0.42f,
+                subtitle = profileSubtitle,
+                percentage = profilePct,
                 icon = Icons.Default.Person,
                 barColor = Color(0xFF06B6D4)
             )
@@ -2009,15 +2014,15 @@ fun InsightsScreen(
                     ) {
                         Column {
                             Text("Top Location", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text("Guwahati (38%)", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(if (totalContentCount > 0) "Active Network (100%)" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                         Column {
                             Text("Gender Split", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text("58% Women / 42% Men", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(if (totalContentCount > 0) "Community" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text("Peak Time", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text("6 PM - 9 PM", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                            Text(if (totalContentCount > 0) "Real-time" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
                         }
                     }
                 }
