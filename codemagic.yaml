@@ -3,6 +3,7 @@ workflows:
     name: Android Workflow
     environment:
       java: 17
+      gradle: 8.14.1
     scripts:
       - name: Build APK
         script: |
