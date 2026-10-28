@@ -4,12 +4,15 @@ workflows:
     environment:
       java: 17
     scripts:
-      - name: Set Gradle Version
+      - name: Install Gradle 9.3.1
         script: |
-          echo "org.gradle.jvmargs=-Xmx2048m" >> gradle.properties
+          wget https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+          unzip -q gradle-9.3.1-bin.zip
+          export PATH=$PWD/gradle-9.3.1/bin:$PATH
+          gradle -v
       - name: Build APK
         script: |
+          export PATH=$PWD/gradle-9.3.1/bin:$PATH
           gradle assembleRelease
     artifacts:
       - app/build/outputs/apk/release/*.apk
-
