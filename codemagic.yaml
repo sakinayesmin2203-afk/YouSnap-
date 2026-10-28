@@ -3,6 +3,10 @@ workflows:
     name: Android Workflow
     environment:
       java: 17
+      vars:
+        KEYSTORE_PASSWORD: "123456"
+        KEY_ALIAS: "my-key-alias"
+        KEY_PASSWORD: "123456"
     scripts:
       - name: Install Gradle 9.3.1
         script: |
@@ -10,7 +14,7 @@ workflows:
           unzip -q gradle-9.3.1-bin.zip
           export PATH=$PWD/gradle-9.3.1/bin:$PATH
           gradle -v
-      - name: Build APK
+      - name: Build Release APK/AAB
         script: |
           export PATH=$PWD/gradle-9.3.1/bin:$PATH
           gradle assembleRelease
