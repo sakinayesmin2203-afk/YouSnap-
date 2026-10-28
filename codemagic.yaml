@@ -3,10 +3,13 @@ workflows:
     name: Android Workflow
     environment:
       java: 17
-      gradle: 8.14.1
     scripts:
+      - name: Set Gradle Version
+        script: |
+          echo "org.gradle.jvmargs=-Xmx2048m" >> gradle.properties
       - name: Build APK
         script: |
           gradle assembleRelease
     artifacts:
       - app/build/outputs/apk/release/*.apk
+
