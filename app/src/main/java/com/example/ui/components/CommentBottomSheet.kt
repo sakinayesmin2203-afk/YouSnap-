@@ -50,8 +50,8 @@ fun CommentBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight()
-                .navigationBarsPadding()
                 .imePadding()
+                .navigationBarsPadding()
         ) {
             // Header
             Text(
@@ -63,13 +63,13 @@ fun CommentBottomSheet(
                     .padding(bottom = 16.dp)
             )
 
-            Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
             // Scrollable Comments List
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 350.dp)
+                    .heightIn(max = 280.dp)
             ) {
                 if (comments.isEmpty()) {
                     Box(

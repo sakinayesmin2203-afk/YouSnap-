@@ -412,17 +412,17 @@ fun YouSnapBottomNavigation(
     Card(
         shape = RoundedCornerShape(50.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .padding(horizontal = 18.dp, vertical = 2.dp)
             .navigationBarsPadding()
             .testTag("yousnap_bottom_nav_bar")
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp, horizontal = 10.dp),
+                .padding(vertical = 2.dp, horizontal = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -439,7 +439,7 @@ fun YouSnapBottomNavigation(
                         imageVector = if (isHomeSelected) Icons.Filled.Home else Icons.Outlined.Home,
                         contentDescription = "Home",
                         tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 onClick = { onSelectScreen(Screen.Home) },
@@ -458,7 +458,7 @@ fun YouSnapBottomNavigation(
                     InstagramReelsIcon(
                         isSelected = isReelsSelected,
                         tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 onClick = { onSelectScreen(Screen.Reels()) },
@@ -478,7 +478,7 @@ fun YouSnapBottomNavigation(
                         imageVector = if (isCreateSelected) Icons.Filled.AddBox else Icons.Outlined.AddBox,
                         contentDescription = "Post",
                         tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 onClick = { onSelectScreen(Screen.Create) },
@@ -498,7 +498,7 @@ fun YouSnapBottomNavigation(
                         imageVector = if (isNotifSelected) Icons.Filled.Notifications else Icons.Outlined.Notifications,
                         contentDescription = "Alerts",
                         tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 onClick = { onSelectScreen(Screen.Notifications) },
@@ -517,7 +517,7 @@ fun YouSnapBottomNavigation(
                     val profilePic = profile.profilePic
                     Box(
                         modifier = Modifier
-                            .size(24.dp)
+                            .size(20.dp)
                             .clip(CircleShape)
                             .background(if (isProfileSelected) activeColor else inactiveColor.copy(alpha = 0.25f)),
                         contentAlignment = Alignment.Center
@@ -534,7 +534,7 @@ fun YouSnapBottomNavigation(
                                 text = profile.name.take(1).uppercase(),
                                 color = if (isProfileSelected) Color.White else inactiveColor,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
+                                fontSize = 10.sp
                             )
                         }
                     }
@@ -562,19 +562,19 @@ fun RowScope.NavigationCapsuleItem(
     Column(
         modifier = modifier
             .weight(1f)
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(20.dp))
             .background(if (isSelected) highlightBg else Color.Transparent)
             .clickable { onClick() }
-            .padding(vertical = 8.dp, horizontal = 2.dp),
+            .padding(vertical = 4.dp, horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         icon(currentTint)
-        Spacer(modifier = Modifier.height(3.dp))
+        Spacer(modifier = Modifier.height(1.dp))
         Text(
             text = label,
             color = currentTint,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1
         )

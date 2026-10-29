@@ -69,6 +69,7 @@ import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.components.FullScreenPhotoViewer
+import com.example.ui.components.ReportPostBottomSheet
 
 private val WarmCreamBackground = Color(0xFFFAF6EE)
 private val WarmCreamTextPrimary = Color(0xFF2E2019)
@@ -215,7 +216,7 @@ fun UserProfileScreen(
                             },
                             onClick = {
                                 showOptionsMenu = false
-                                Toast.makeText(context, "Report submitted. Thank you!", Toast.LENGTH_SHORT).show()
+                                showReportDialog = true
                             }
                         )
                     }
@@ -458,7 +459,24 @@ fun UserProfileScreen(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .clickable {
-                                                selectedPhoto = photo
+                                                viewModel.openPhotoOnHomeScreen(
+                                                    HomePostItem(
+                                                        id = "user_photo_${photo.id}",
+                                                        username = username,
+                                                        userDisplayName = displayName,
+                                                        userAvatarUrl = "",
+                                                        userInitials = displayName.take(2).uppercase(),
+                                                        location = "Guwahati, Assam",
+                                                        imageUrl = photo.imageUrl,
+                                                        caption = photo.title,
+                                                        hashtags = "#YouSnap #Assam #Memories",
+                                                        likesCount = photo.initialLikes,
+                                                        commentsCount = photo.initialComments,
+                                                        isLiked = photo.initialIsLiked,
+                                                        timeAgo = photo.timeAgo,
+                                                        isFromUserProfile = true
+                                                    )
+                                                )
                                             }
                                     )
                                 }
@@ -619,28 +637,13 @@ fun UserProfileScreen(
 
     // Report Dialog
     if (showReportDialog) {
-        AlertDialog(
-            onDismissRequest = { showReportDialog = false },
-            title = { Text("Report Post") },
-            text = {
-                Column {
-                    TextButton(onClick = {
-                        showReportDialog = false
-                        Toast.makeText(context, "Post Reported Successfully", Toast.LENGTH_SHORT).show()
-                    }) { Text("Spam") }
-                    TextButton(onClick = {
-                        showReportDialog = false
-                        Toast.makeText(context, "Post Reported Successfully", Toast.LENGTH_SHORT).show()
-                    }) { Text("Inappropriate Content") }
-                    TextButton(onClick = {
-                        showReportDialog = false
-                        Toast.makeText(context, "Post Reported Successfully", Toast.LENGTH_SHORT).show()
-                    }) { Text("Violence") }
-                }
+        ReportPostBottomSheet(
+            postUsername = username,
+            onReportSubmit = { reason, details ->
+                viewModel.reportPost("user_$username", username, reason, details)
+                showReportDialog = false
             },
-            confirmButton = {
-                TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
-            }
+            onDismissRequest = { showReportDialog = false }
         )
     }
 }

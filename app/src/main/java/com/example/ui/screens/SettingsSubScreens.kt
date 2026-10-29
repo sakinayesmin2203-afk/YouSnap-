@@ -2278,7 +2278,7 @@ fun MonetizationScreen(
             // Metric Tracker 1: Followers
             EligibilityRequirementCard(
                 title = "Followers",
-                requirementText = "1,000 Followers in last 365 days (1 year)",
+                requirementText = "1,000 Followers",
                 currentValue = followers,
                 targetValue = targetFollowers,
                 valueDisplay = "$followers / $targetFollowers",
@@ -2290,7 +2290,7 @@ fun MonetizationScreen(
             val formattedCurrentViews = if (videoViews >= 1000) "${videoViews / 1000}K" else videoViews.toString()
             EligibilityRequirementCard(
                 title = "Short Video Views",
-                requirementText = "500K Views in last 180 days (6 months)",
+                requirementText = "500K Views",
                 currentValue = videoViews,
                 targetValue = targetViews,
                 valueDisplay = "$formattedCurrentViews / 500K",
@@ -3759,6 +3759,116 @@ fun BoostReelScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Proceed to Payment")
+            }
+        }
+    }
+}
+
+// 5. MONETIZATION RULES SCREEN
+@Composable
+fun MonetizationRulesScreen(onBack: () -> Unit) {
+    Scaffold(
+        topBar = { SubScreenTopBar("Monetization Rules", onBack) }
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                Text(
+                    text = "YouSnap Creator Monetization Rules & Guidelines",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Please read and understand the following monetization policies. Violating these rules will result in immediate demonetization or account termination.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+
+            // Eligibility
+            item {
+                MonetizationSection("★ Monetization Eligibility Rules", listOf(
+                    "1. Age Requirement: Users must be at least 18 years old to apply for monetization.",
+                    "2. Followers Requirement: Must have a minimum of 1,000 followers.",
+                    "3. Views Requirement: Must achieve at least 500,000 qualified video views.",
+                    "4. Community Guidelines: The account must not have any active community guidelines violations.",
+                    "5. Application Process: Users can apply for monetization only after meeting all the specified criteria."
+                ))
+            }
+
+            // Earning
+            item {
+                MonetizationSection("★ Monetization Earning Rules", listOf(
+                    "1. Revenue Source: Creators will not be paid directly for raw video views; earnings will be generated through advertisements (Ads).",
+                    "2. Fraud Prevention: Earnings generated from fake views, bots, and fake engagement will be canceled and forfeited.",
+                    "3. Revenue Share: Creator earnings will be determined in accordance with YouSnap's official Revenue Sharing Policy."
+                ))
+            }
+
+            // Suspension & Violation
+            item {
+                Text("★ 3. Account Suspension & Violation Rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Violating any of the following rules on YouSnap may result in video removal, account warnings, temporary suspension, or a permanent ban.", style = MaterialTheme.typography.bodyMedium)
+            }
+
+            item {
+                Text("🚫 Rule 1: Sexual Content & Nudity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                Text("1. Uploading obscene or pornographic photos and videos is strictly prohibited.\n2. Videos clearly depicting sexual acts are prohibited.\n3. Publishing nude photos or videos with sexual intent is banned.\n4. Sharing any individual's private or intimate photos/videos without their explicit consent is strictly forbidden.\n5. Uploading child sexual abuse material (CSAM) will lead to an immediate account ban and reporting to the appropriate legal authorities.\n6. Penalty: Serious violations will result in an immediate permanent ban along with legal action.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            item {
+                Text("🚫 Rule 2: Abusive Language & Harassment", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                Text("1. Using extremely obscene or sexually suggestive profanity in videos, comments, or captions is prohibited.\n2. Insulting, harassing, or threatening other users with abusive language is forbidden.\n3. Repeatedly targeting any individual with abuse or bullying is strictly banned.\n4. Hate speech based on race, religion, gender, or identity is prohibited.\n5. Penalty:\nFirst Offense: Warning or video removal.\nSecond Offense: Temporary suspension.\nRepeated/Severe Violations: Permanent ban.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            item {
+                Text("🚫 Rule 3: Fake Views & Spam", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                Text("1. Purchasing fake followers or fake views is prohibited.\n2. Using bots to artificially increase likes, views, or comments is banned.\n3. Creating spam by repeatedly uploading the exact same video is forbidden.\n4. Misusing the monetization system by creating fake accounts is strictly restricted.\n5. Penalty: Monetization suspension, earnings review, or full account suspension.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            item {
+                Text("🚫 Rule 4: Copyright Violation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                Text("1. Uploading someone else's video as your own is prohibited.\n2. Using copyrighted movies, music, or videos without proper permission or legal exemptions is banned.\n3. Stealing content from other creators to gain monetization is strictly forbidden.\n4. Penalty: Video removal, copyright strikes, or account suspension for severe/repeated violations.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            // Summary
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("📌 General Policy Summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "All YouSnap users must strictly adhere to the Community Guidelines. YouSnap takes strong action against sexual exploitation, pornography, harassment, hate speech, fraud, and other serious violations. Suspension decisions will depend on the severity of the violation, available evidence, and the user's prior infraction history.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MonetizationSection(title: String, items: List<String>) {
+    Column {
+        Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.height(8.dp))
+        items.forEach { item ->
+            Row(modifier = Modifier.padding(vertical = 4.dp)) {
+                Text("• ", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(text = item, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }

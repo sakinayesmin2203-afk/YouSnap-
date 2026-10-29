@@ -6,6 +6,7 @@ data class HomePostItem(
     val userDisplayName: String = "",
     val userAvatarUrl: String = "",
     val userInitials: String = "US",
+    val creatorUid: String = "",
     val location: String = "",
     val imageUrl: String = "",
     val imageRes: Int? = null,

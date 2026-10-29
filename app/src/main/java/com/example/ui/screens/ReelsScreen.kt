@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.ModeComment
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -119,94 +120,101 @@ fun ReelsScreen(
         }
     }
 
-    Box(
+    val isReelsRefreshing by viewModel.isReelsRefreshing.collectAsState()
+
+    PullToRefreshBox(
+        isRefreshing = isReelsRefreshing,
+        onRefresh = { viewModel.refreshReelsFeed() },
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black) // Dark immersive background for Reels viewing
+            .background(Color.Black)
     ) {
-        if (reels.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(32.dp)
+        Box(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (reels.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("🎬", fontSize = 56.sp)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "No Reels Yet",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Be the first creator to upload a real video on YouSnap!",
-                        color = Color.White.copy(alpha = 0.75f),
-                        fontSize = 14.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Button(
-                        onClick = { onNavigateTo?.invoke(Screen.Create) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0095F6)),
-                        shape = RoundedCornerShape(12.dp)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(32.dp)
                     ) {
+                        Text("🎬", fontSize = 56.sp)
+                        Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "+ Upload First Reel",
+                            text = "No Reels Yet",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontSize = 20.sp
                         )
-                    }
-                }
-            }
-        } else {
-            // Immersive scrollable Reels feed where each item fills the screen viewport
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("reels_vertical_feed")
-            ) {
-                itemsIndexed(
-                    feedItems,
-                    key = { _, item ->
-                        when (item) {
-                            is ReelsFeedItem.Video -> "reel_${item.reel.id}"
-                            is ReelsFeedItem.Ad -> "ad_${item.adSlotId}"
-                        }
-                    }
-                ) { index, item ->
-                    Box(
-                        modifier = Modifier
-                            .fillParentMaxSize()
-                            .background(Color.Black)
-                    ) {
-                        when (item) {
-                            is ReelsFeedItem.Video -> {
-                                ReelViewportItem(
-                                    reel = item.reel,
-                                    viewModel = viewModel,
-                                    onLikeToggle = { viewModel.toggleLikeReel(item.reel) },
-                                    onCommentClick = { selectedReelForComments = item.reel },
-                                    onFollowToggle = { viewModel.toggleFollowCreator(item.reel) },
-                                    onNavigateTo = onNavigateTo
-                                )
-                            }
-                            is ReelsFeedItem.Ad -> {
-                                FullScreenNativeVideoAd(
-                                    adUnitId = item.adUnitId,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Be the first creator to upload a real video on YouSnap!",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 14.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = { onNavigateTo?.invoke(Screen.Create) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0095F6)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "+ Upload First Reel",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
                         }
                     }
                 }
+            } else {
+                // Immersive scrollable Reels feed where each item fills the screen viewport
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("reels_vertical_feed")
+                ) {
+                    itemsIndexed(
+                        feedItems,
+                        key = { _, item ->
+                            when (item) {
+                                is ReelsFeedItem.Video -> "reel_${item.reel.id}"
+                                is ReelsFeedItem.Ad -> "ad_${item.adSlotId}"
+                            }
+                        }
+                    ) { index, item ->
+                        Box(
+                            modifier = Modifier
+                                .fillParentMaxSize()
+                                .background(Color.Black)
+                        ) {
+                            when (item) {
+                                is ReelsFeedItem.Video -> {
+                                    ReelViewportItem(
+                                        reel = item.reel,
+                                        viewModel = viewModel,
+                                        onLikeToggle = { viewModel.toggleLikeReel(item.reel) },
+                                        onCommentClick = { selectedReelForComments = item.reel },
+                                        onFollowToggle = { viewModel.toggleFollowCreator(item.reel) },
+                                        onNavigateTo = onNavigateTo
+                                    )
+                                }
+                                is ReelsFeedItem.Ad -> {
+                                    FullScreenNativeVideoAd(
+                                        adUnitId = item.adUnitId,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
 
         // Overlay Header (displays back button and "Reels" title)
         Row(
@@ -254,6 +262,7 @@ fun ReelsScreen(
             )
         }
     }
+}
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

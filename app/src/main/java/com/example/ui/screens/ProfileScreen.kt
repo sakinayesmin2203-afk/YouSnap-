@@ -332,10 +332,9 @@ fun ProfileScreen(
                                                 commentsCount = photo.initialComments,
                                                 isLiked = isLiked,
                                                 timeAgo = photo.timeAgo,
-                                                isFromUserProfile = true
+                                                 isFromUserProfile = true
                                             )
                                         )
-                                        Toast.makeText(context, "Opening photo on Home Screen... 📸", Toast.LENGTH_SHORT).show()
                                     }
                                     .testTag("my_profile_photo_${photo.id}")
                             ) {
@@ -424,25 +423,56 @@ fun ProfileScreen(
 
                                 Box(
                                     modifier = Modifier
-                                        .aspectRatio(1f)
-                                        .clip(RoundedCornerShape(0.dp))
+                                        .aspectRatio(9f / 16f)
+                                        .clip(RoundedCornerShape(2.dp))
                                         .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
                                         .clickable { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
                                         .testTag("profile_item_${reel.id}"),
                                     contentAlignment = Alignment.Center
                                 ) {
+                                    val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
+                                    if (thumbnailToLoad.isNotEmpty()) {
+                                        AsyncImage(
+                                            model = thumbnailToLoad,
+                                            contentDescription = reel.caption,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+
+                                    // Dark gradient overlay for view count readability
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
-                                            .background(Color.Black.copy(alpha = 0.2f))
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
+                                                    startY = 100f
+                                                )
+                                            )
                                     )
 
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Play",
-                                        tint = Color.White.copy(alpha = 0.8f),
-                                        modifier = Modifier.size(24.dp)
-                                    )
+                                    // View Count Overlay with Play icon
+                                    Row(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Views",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Text(
+                                            text = formatProfileViews(reel.viewsCount),
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -563,3 +593,12 @@ fun StatItem(count: String, label: String) {
         )
     }
 }
+
+private fun formatProfileViews(count: Int): String {
+    return when {
+        count >= 1_000_000 -> String.format("%.1fM", count / 1_000_000f)
+        count >= 1_000 -> String.format("%.1fK", count / 1_000f)
+        else -> count.toString()
+    }
+}
+

@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "posts": {
+      "fields": {
+        "userId": "string",
+        "creatorUid": "string",
+        "username": "string",
+        "name": "string",
+        "caption": "string",
+        "mediaUrl": "string",
+        "likesCount": "number",
+        "commentsCount": "number",
+        "createdAt": "timestamp"
+      }
+    },
+    "reels": {
+      "fields": {
+        "userId": "string",
+        "creatorUid": "string",
+        "username": "string",
+        "name": "string",
+        "caption": "string",
+        "audioTitle": "string",
+        "mediaUrl": "string",
+        "thumbnailUrl": "string",
+        "likesCount": "number",
+        "commentsCount": "number",
+        "viewsCount": "number",
+        "createdAt": "timestamp"
+      }
+    },
+    "stories": {
+      "fields": {
+        "userId": "string",
+        "creatorUid": "string",
+        "username": "string",
+        "mediaUrl": "string",
+        "createdAt": "timestamp"
+      }
+    }
+  }
+}

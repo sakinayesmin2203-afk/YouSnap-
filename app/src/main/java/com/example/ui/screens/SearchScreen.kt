@@ -4,6 +4,8 @@ import com.example.ui.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -26,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.model.ProfileEntity
 import com.example.data.model.ReelEntity
 import com.example.ui.YouSnapViewModel
 import com.example.ui.components.CommentBottomSheet
@@ -39,6 +42,8 @@ fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchResultUsers by viewModel.searchResultUsers.collectAsState()
+    val searchResultPosts by viewModel.searchResultPosts.collectAsState()
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
 
     // Filter reels based on user search query
@@ -109,93 +114,76 @@ fun SearchScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            if (filteredReels.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(24.dp)
+            if (searchQuery.trim().isEmpty()) {
+                if (filteredReels.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("🔍", fontSize = 48.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "No results for \"$searchQuery\"",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Try searching for travel, coding, setup, or food!",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                            textAlign = TextAlign.Center
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text("🔍", fontSize = 48.sp)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "No results",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("explore_grid"),
+                        contentPadding = PaddingValues(1.dp),
+                        horizontalArrangement = Arrangement.spacedBy(1.dp),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        items(filteredReels) { reel ->
+                            SearchGridItem(reel = reel, onPreview = { selectedReelForPreview = it })
+                        }
                     }
                 }
             } else {
-                // Responsive Grid: 3 columns for mobile/compact, adapting beautifully
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("explore_grid"),
-                    contentPadding = PaddingValues(1.dp),
-                    horizontalArrangement = Arrangement.spacedBy(1.dp),
-                    verticalArrangement = Arrangement.spacedBy(1.dp)
-                ) {
-                    items(filteredReels) { reel ->
-                        // Parse gradient colors safely for search grid
-                        val startColor = remember(reel.bgGradientStart) {
-                            try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) } 
-                            catch (e: Exception) { Color(0xFFE1306C) }
-                        }
-                        val endColor = remember(reel.bgGradientEnd) {
-                            try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) } 
-                            catch (e: Exception) { Color(0xFF833AB4) }
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .aspectRatio(1f)
-                                .clip(RoundedCornerShape(0.dp))
-                                .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
-                                .clickable { selectedReelForPreview = reel }
-                                .testTag("explore_item_${reel.id}"),
-                            contentAlignment = Alignment.Center
+                Column {
+                    if (searchResultUsers.isNotEmpty()) {
+                        Text("Users", modifier = Modifier.padding(16.dp), fontWeight = FontWeight.Bold)
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Dark tint
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.2f))
-                            )
-
-                            // Media indicator overlays (e.g., play icon)
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Play Reel",
-                                tint = Color.White.copy(alpha = 0.8f),
-                                modifier = Modifier.size(28.dp)
-                            )
-
-                            // Overlay caption info at bottom of grid item
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(6.dp),
-                                contentAlignment = Alignment.BottomStart
-                            ) {
-                                Text(
-                                    text = "@${reel.creatorUsername}",
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
+                            items(searchResultUsers) { user ->
+                                Card(
+                                    modifier = Modifier
+                                        .padding(4.dp)
+                                        .clickable { /* TODO: Navigate to user profile */ },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(user.username, fontWeight = FontWeight.Bold)
+                                        Text(user.name, fontSize = 12.sp)
+                                    }
+                                }
                             }
+                        }
+                    }
+                    
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("search_grid"),
+                        contentPadding = PaddingValues(1.dp),
+                        horizontalArrangement = Arrangement.spacedBy(1.dp),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        items(searchResultPosts) { reel ->
+                            SearchGridItem(reel = reel, onPreview = { selectedReelForPreview = it })
                         }
                     }
                 }
@@ -280,6 +268,53 @@ fun SearchScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun SearchGridItem(reel: ReelEntity, onPreview: (ReelEntity) -> Unit) {
+    val startColor = remember(reel.bgGradientStart) {
+        try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) } 
+        catch (e: Exception) { Color(0xFFE1306C) }
+    }
+    val endColor = remember(reel.bgGradientEnd) {
+        try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) } 
+        catch (e: Exception) { Color(0xFF833AB4) }
+    }
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(0.dp))
+            .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
+            .clickable { onPreview(reel) },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.2f))
+        )
+        Icon(
+            imageVector = Icons.Default.PlayArrow,
+            contentDescription = "Play Reel",
+            tint = Color.White.copy(alpha = 0.8f),
+            modifier = Modifier.size(28.dp)
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            contentAlignment = Alignment.BottomStart
+        ) {
+            Text(
+                text = "@${reel.creatorUsername}",
+                color = Color.White,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
         }
     }
 }

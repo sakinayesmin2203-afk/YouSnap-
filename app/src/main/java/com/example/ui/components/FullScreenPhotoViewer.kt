@@ -63,6 +63,7 @@ data class FullScreenPhotoData(
     val creatorName: String,
     val creatorUsername: String,
     val creatorAvatar: String,
+    val creatorUid: String = "",
     val initialLikes: Int,
     val initialComments: Int,
     val initialIsLiked: Boolean = false,

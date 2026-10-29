@@ -9,6 +9,7 @@ data class ReelEntity(
     val creatorName: String,
     val creatorUsername: String,
     val creatorProfilePic: String = "avatar_1",
+    val creatorUid: String = "",
     val caption: String,
     val audioTitle: String = "Original Audio",
     val likesCount: Int = 0,
@@ -19,5 +20,7 @@ data class ReelEntity(
     val bgGradientEnd: String = "#8A3AB9",
     val timestamp: Long = System.currentTimeMillis(),
     val isViralBoosted: Boolean = false,
-    val viewsCount: Int = 0
+    val viewsCount: Int = 0,
+    val mediaUrl: String = "",
+    val thumbnailUrl: String = ""
 )

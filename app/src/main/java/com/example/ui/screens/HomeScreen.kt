@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.filled.Add
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +67,7 @@ import com.example.data.model.ReelEntity
 import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.example.ui.components.CommentBottomSheet
+import com.example.ui.components.ReportPostBottomSheet
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.components.FullScreenPhotoViewer
 import com.example.ui.theme.WarmCreamBackground
@@ -100,10 +103,12 @@ fun HomeScreen(
     val homePostLikedState by viewModel.homePostLikedState.collectAsState()
     val homePostLikesCount by viewModel.homePostLikesCount.collectAsState()
     val homePostBookmarked by viewModel.homePostBookmarked.collectAsState()
+    val isHomeRefreshing by viewModel.isHomeRefreshing.collectAsState()
 
     var activePostForComments by remember { mutableStateOf<HomePostItem?>(null) }
     var activePostCommentInput by remember { mutableStateOf("") }
     var selectedPhotoForViewer by remember { mutableStateOf<FullScreenPhotoData?>(null) }
+    var postToReport by remember { mutableStateOf<HomePostItem?>(null) }
 
     // Scroll to top when a photo is opened from a user's profile
     LaunchedEffect(selectedHomePost) {
@@ -136,13 +141,43 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "YouSnap",
-                    color = WarmCreamTextPrimary,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.testTag("yousnap_header_title")
-                )
+                if (selectedHomePost != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                viewModel.clearOpenedHomePost()
+                                val popped = viewModel.navigateBack()
+                                if (!popped) {
+                                    viewModel.clearAndNavigateTo(Screen.Home)
+                                }
+                            }
+                            .padding(vertical = 4.dp, horizontal = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = WarmCreamTextPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Posts",
+                            color = WarmCreamTextPrimary,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "YouSnap",
+                        color = WarmCreamTextPrimary,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("yousnap_header_title")
+                    )
+                }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
@@ -177,114 +212,142 @@ fun HomeScreen(
                 }
             }
 
-            // 2. CORE FEED SCROLLY
-            LazyColumn(
-                state = listState,
+            // 2. CORE FEED SCROLLY (With Pull-To-Refresh)
+            PullToRefreshBox(
+                isRefreshing = isHomeRefreshing,
+                onRefresh = { viewModel.refreshHomeFeed() },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .testTag("home_feed_list")
             ) {
-                // Item A: Horizontal Stories Tray
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("home_feed_list")
+                ) {
+                    // Item A: Horizontal Stories Tray (Instagram Style Compact Circle)
                 item {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 10.dp)
+                            .padding(vertical = 4.dp)
                     ) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             if (hasUploadedStory) {
                                 item(key = "my_uploaded_story") {
-                                    Card(
-                                        shape = RoundedCornerShape(16.dp),
-                                        border = BorderStroke(
-                                            2.dp,
-                                            Brush.linearGradient(
-                                                colors = listOf(Color(0xFFE59424), Color(0xFFC48B5E))
-                                            )
-                                        ),
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
                                         modifier = Modifier
-                                            .size(width = 102.dp, height = 148.dp)
-                                            .clickable { activeStoryUser = currentProfile.username },
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                                            .clickable { activeStoryUser = currentProfile.username }
+                                            .testTag("my_uploaded_story_item")
                                     ) {
-                                        Box(modifier = Modifier.fillMaxSize()) {
-                                            AsyncImage(
-                                                model = storyState?.mediaUrl,
-                                                contentDescription = "My Story",
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
+                                        Box(
+                                            modifier = Modifier
+                                                .size(68.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        colors = listOf(Color(0xFFE59424), Color(0xFFF56040), Color(0xFFC48B5E))
+                                                    )
+                                                )
+                                                .padding(2.5.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(50.dp)
-                                                    .align(Alignment.BottomCenter)
-                                                    .background(
-                                                        Brush.verticalGradient(
-                                                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))
-                                                        )
-                                                    )
-                                            )
-                                            Text(
-                                                text = "My Story",
-                                                color = Color.White,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier
-                                                    .align(Alignment.BottomStart)
-                                                    .padding(start = 8.dp, bottom = 8.dp)
-                                            )
+                                                    .fillMaxSize()
+                                                    .clip(CircleShape)
+                                                    .background(Color.White)
+                                                    .padding(2.dp)
+                                            ) {
+                                                AsyncImage(
+                                                    model = storyState?.mediaUrl,
+                                                    contentDescription = "My Story",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .clip(CircleShape)
+                                                )
+                                            }
                                         }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Your story",
+                                            color = WarmCreamTextPrimary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                     }
                                 }
                             } else {
                                 item(key = "add_story_card") {
-                                    Card(
-                                        shape = RoundedCornerShape(16.dp),
-                                        border = BorderStroke(1.5.dp, Color(0xFFDCE3ED)),
-                                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
                                         modifier = Modifier
-                                            .size(width = 102.dp, height = 148.dp)
-                                            .clickable { onNavigateTo(Screen.Create) },
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                                            .clickable { onNavigateTo(Screen.Create) }
+                                            .testTag("add_story_button")
                                     ) {
                                         Box(
-                                            modifier = Modifier.fillMaxSize(),
+                                            modifier = Modifier.size(68.dp),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.Center
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(64.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFFE8DFC8))
+                                                    .border(1.5.dp, Color(0xFFC48B5E).copy(alpha = 0.4f), CircleShape),
+                                                contentAlignment = Alignment.Center
                                             ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(38.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Color(0xFF0F2C59)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Add,
-                                                        contentDescription = "Add Story",
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(22.dp)
+                                                if (currentProfile.profilePic.isNotEmpty() && (currentProfile.profilePic.startsWith("content://") || currentProfile.profilePic.startsWith("http"))) {
+                                                    AsyncImage(
+                                                        model = currentProfile.profilePic,
+                                                        contentDescription = "Profile Photo",
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                } else {
+                                                    Text(
+                                                        text = currentProfile.name.take(1).uppercase().ifEmpty { "U" },
+                                                        color = WarmCreamTextPrimary,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 20.sp
                                                     )
                                                 }
-                                                Spacer(modifier = Modifier.height(10.dp))
-                                                Text(
-                                                    text = "Add Story",
-                                                    color = WarmCreamTextPrimary,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold
+                                            }
+
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .align(Alignment.BottomEnd)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF0095F6))
+                                                    .border(2.dp, Color.White, CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Add,
+                                                    contentDescription = "Add Story",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
                                                 )
                                             }
                                         }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Your story",
+                                            color = WarmCreamTextPrimary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
                                     }
                                 }
                             }
@@ -356,6 +419,9 @@ fun HomeScreen(
                                 viewModel.deletePhotoPost(profilePost.id, profilePost.imageUrl) {
                                     viewModel.clearOpenedHomePost()
                                 }
+                            },
+                            onRequestReport = {
+                                postToReport = profilePost
                             }
                         )
                     }
@@ -367,12 +433,17 @@ fun HomeScreen(
                         val postId = "photo_${photo.id}"
                         val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
                         val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
+                        val currentAuthUid = viewModel.currentUser.collectAsState().value?.uid
+                        val isPhotoOwner = currentProfile.username.equals(photo.creatorUsername, ignoreCase = true) ||
+                                           (currentAuthUid != null && photo.creatorUid.isNotEmpty() && currentAuthUid == photo.creatorUid)
+
                         val postItem = HomePostItem(
                             id = postId,
                             username = photo.creatorUsername,
                             userDisplayName = photo.creatorName,
                             userAvatarUrl = photo.creatorAvatar,
                             userInitials = photo.creatorName.take(2).uppercase().ifEmpty { "ME" },
+                            creatorUid = photo.creatorUid,
                             location = "YouSnap",
                             imageUrl = photo.imageUrl,
                             caption = photo.title,
@@ -414,12 +485,25 @@ fun HomeScreen(
                                 Toast.makeText(context, "Post saved to bookmarks! 📌", Toast.LENGTH_SHORT).show()
                             },
                             onProfileClick = {
-                                onNavigateTo(Screen.Profile)
+                                if (isPhotoOwner) {
+                                    onNavigateTo(Screen.Profile)
+                                } else {
+                                    onNavigateTo(Screen.OtherProfile(photo.creatorUsername))
+                                }
                             },
                             onPhotoClick = {
                                 Toast.makeText(context, "Double tap photo to like! ❤️", Toast.LENGTH_SHORT).show()
                             },
-                            onDismissBanner = null
+                            onDismissBanner = null,
+                            isOwner = isPhotoOwner,
+                            onDeleteClick = if (isPhotoOwner) {
+                                {
+                                    viewModel.deletePhotoPost(photo.id.toString(), photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
+                                }
+                            } else null,
+                            onRequestReport = {
+                                postToReport = postItem
+                            }
                         )
                     }
                 }
@@ -513,6 +597,7 @@ fun HomeScreen(
                 }
             }
         }
+        }
 
         // 3. COMMENTS BOTTOM SHEET (Home Feed Posts)
         activePostForComments?.let { post ->
@@ -537,6 +622,18 @@ fun HomeScreen(
             FullScreenPhotoViewer(
                 photoData = photo,
                 onDismiss = { selectedPhotoForViewer = null }
+            )
+        }
+
+        // REPORT POST BOTTOM SHEET
+        postToReport?.let { post ->
+            ReportPostBottomSheet(
+                postUsername = post.username,
+                onReportSubmit = { reason, details ->
+                    viewModel.reportPost(post.id, post.username, reason, details)
+                    postToReport = null
+                },
+                onDismissRequest = { postToReport = null }
             )
         }
 
@@ -580,7 +677,8 @@ fun FeedPhotoPostCard(
     onPhotoClick: () -> Unit,
     onDismissBanner: (() -> Unit)? = null,
     isOwner: Boolean = false,
-    onDeleteClick: (() -> Unit)? = null
+    onDeleteClick: (() -> Unit)? = null,
+    onRequestReport: (() -> Unit)? = null
 ) {
     var showHeartOverlay by remember { mutableStateOf(false) }
     var showPostMenu by remember { mutableStateOf(false) }
@@ -592,64 +690,6 @@ fun FeedPhotoPostCard(
             .padding(bottom = 16.dp)
             .background(WarmCreamBackground)
     ) {
-        // Optional banner if opened from profile
-        if (post.isFromUserProfile) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFE59424).copy(alpha = 0.12f))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onProfileClick() }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoLibrary,
-                        contentDescription = null,
-                        tint = Color(0xFFE59424),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Viewing @${post.username}'s photo",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = WarmCreamTextPrimary
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Profile →",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFE59424),
-                        modifier = Modifier
-                            .clickable { onProfileClick() }
-                            .padding(end = 8.dp)
-                    )
-                    if (onDismissBanner != null) {
-                        IconButton(
-                            onClick = onDismissBanner,
-                            modifier = Modifier.size(20.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close",
-                                tint = WarmCreamTextSecondary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
         // Post Header with User Profile Navigation
         Row(
             modifier = Modifier
@@ -810,7 +850,11 @@ fun FeedPhotoPostCard(
                             },
                             onClick = {
                                 showPostMenu = false
-                                Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
+                                if (onRequestReport != null) {
+                                    onRequestReport()
+                                } else {
+                                    Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
 
@@ -1121,7 +1165,7 @@ fun InstagramFeedPost(
     var localIsLiked by remember(reel.id, reel.isLiked) { mutableStateOf(reel.isLiked) }
     var localLikesCount by remember(reel.id, reel.likesCount) { mutableStateOf(reel.likesCount) }
     var localCommentsCount by remember(reel.id, reel.commentsCount) { mutableStateOf(reel.commentsCount) }
-    var localShareCount by remember(reel.id) { mutableStateOf((reel.id * 3 + 12) % 35 + 8) }
+    var localShareCount by remember(reel.id) { mutableStateOf(0) }
 
     Column(
         modifier = Modifier
@@ -1310,6 +1354,16 @@ fun InstagramFeedPost(
                 },
             contentAlignment = Alignment.Center
         ) {
+            val mediaToDisplay = reel.mediaUrl.ifEmpty { reel.thumbnailUrl }
+            if (mediaToDisplay.isNotEmpty()) {
+                AsyncImage(
+                    model = mediaToDisplay,
+                    contentDescription = reel.caption,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
             androidx.compose.animation.AnimatedVisibility(
                 visible = showBigHeartOverlay,
                 enter = fadeIn(animationSpec = tween(150)) + scaleIn(initialScale = 0.4f),
@@ -1500,14 +1554,8 @@ fun StoryPlaybackDialog(
 
     val currentProfile by viewModel.profileState.collectAsState()
     val loggedInUsername = currentProfile.username.orEmpty()
-    val usernames = remember(loggedInUsername) {
-        listOf(
-            loggedInUsername.ifEmpty { "me" },
-            "Alex",
-            "Maria",
-            "Emma",
-            "Sam"
-        )
+    val usernames = remember(activeUsername) {
+        listOf(activeUsername)
     }
     val currentIndex = remember(activeUsername, usernames) {
         val idx = usernames.indexOfFirst { it.lowercase() == activeUsername.lowercase() }
@@ -1607,6 +1655,7 @@ fun StoryPlaybackDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .systemBarsPadding()
         ) {
             // Media Loading Safety states
             var imageLoading by remember { mutableStateOf(true) }

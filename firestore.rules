@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Posts collection rules (Strict ownership required for delete)
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.creatorUid ||
+        request.auth.uid == resource.data.username ||
+        resource.data.username == request.auth.token.name
+      );
+    }
+
+    // Reels collection rules (Strict ownership required for delete)
+    match /reels/{reelId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.creatorUid ||
+        request.auth.uid == resource.data.username ||
+        resource.data.username == request.auth.token.name
+      );
+    }
+
+    // Stories collection rules (Strict ownership required for delete)
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.creatorUid ||
+        request.auth.uid == resource.data.username ||
+        request.auth.uid == storyId ||
+        resource.data.username == request.auth.token.name
+      );
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if isAuthenticated() && (request.auth.uid == userId || resource == null);
+    }
+  }
+}

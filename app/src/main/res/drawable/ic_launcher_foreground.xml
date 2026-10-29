@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/yousnap_logo"
+        android:drawable="@drawable/app_logo_custom"
         android:gravity="center" />
 </layer-list>

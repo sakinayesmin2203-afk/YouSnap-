@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import com.example.data.model.ReelEntity
 import kotlinx.coroutines.delay
 
@@ -103,6 +105,16 @@ fun ReelItem(
             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                 // Subtle static/dynamic design accent
             }
+        }
+
+        val mediaToDisplay = reel.mediaUrl.ifEmpty { reel.thumbnailUrl }
+        if (mediaToDisplay.isNotEmpty()) {
+            AsyncImage(
+                model = mediaToDisplay,
+                contentDescription = reel.caption,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         // Overlay Shadow (for subtitle readability)
