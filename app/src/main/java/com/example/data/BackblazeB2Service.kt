@@ -23,7 +23,7 @@ interface BackblazeB2Service {
     ): Response<ResponseBody>
 
     companion object {
-        private const val BASE_URL = "https://backblaze-b-2-express-integration--sakinayesmin220.replit.app/"
+        private const val BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/"
 
         fun create(): BackblazeB2Service {
             return Retrofit.Builder()

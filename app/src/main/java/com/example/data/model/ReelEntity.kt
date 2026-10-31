@@ -21,6 +21,8 @@ data class ReelEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val isViralBoosted: Boolean = false,
     val viewsCount: Int = 0,
+    val sharesCount: Int = 0,
+    val watchTimeSeconds: Long = 0,
     val mediaUrl: String = "",
     val thumbnailUrl: String = ""
 )

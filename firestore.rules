@@ -6,44 +6,21 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    // Posts collection rules (Strict ownership required for delete)
+    // Posts collection rules
     match /posts/{postId} {
       allow read: if true;
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
-      allow delete: if isAuthenticated() && (
-        request.auth.uid == resource.data.userId ||
-        request.auth.uid == resource.data.creatorUid ||
-        request.auth.uid == resource.data.username ||
-        resource.data.username == request.auth.token.name
-      );
+      allow write: if isAuthenticated();
     }
 
-    // Reels collection rules (Strict ownership required for delete)
+    // Reels collection rules
     match /reels/{reelId} {
       allow read: if true;
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
-      allow delete: if isAuthenticated() && (
-        request.auth.uid == resource.data.userId ||
-        request.auth.uid == resource.data.creatorUid ||
-        request.auth.uid == resource.data.username ||
-        resource.data.username == request.auth.token.name
-      );
+      allow write: if isAuthenticated();
     }
 
-    // Stories collection rules (Strict ownership required for delete)
+    // Stories collection rules
     match /stories/{storyId} {
-      allow read: if true;
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
-      allow delete: if isAuthenticated() && (
-        request.auth.uid == resource.data.userId ||
-        request.auth.uid == resource.data.creatorUid ||
-        request.auth.uid == resource.data.username ||
-        request.auth.uid == storyId ||
-        resource.data.username == request.auth.token.name
-      );
+      allow read, write: if true;
     }
 
     // Users collection
@@ -51,5 +28,27 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isAuthenticated() && (request.auth.uid == userId || resource == null);
     }
+
+    // Follows collection
+    match /follows/{followId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Notifications collection (with subcollections)
+    match /notifications/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      match /user_notifications/{notifId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow write: if isAuthenticated();
+      }
+    }
+
+    // Reports and Applications
+    match /reports/{reportId} { allow write: if isAuthenticated(); }
+    match /post_reports/{reportId} { allow write: if isAuthenticated(); }
+    match /story_reports/{reportId} { allow write: if isAuthenticated(); }
+    match /support_tickets/{ticketId} { allow write: if isAuthenticated(); }
+    match /monetization_applications/{appId} { allow write: if isAuthenticated(); }
   }
 }

@@ -315,25 +315,17 @@ fun ProfileScreen(
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(Color.DarkGray)
                                     .clickable {
-                                        val currentLikes = photoLikesMap[photo.id] ?: photo.initialLikes
-                                        val isLiked = photoLikedStatusMap[photo.id] ?: photo.initialIsLiked
-                                        viewModel.openPhotoOnHomeScreen(
-                                            HomePostItem(
-                                                id = "my_photo_${photo.id}",
-                                                username = profile.username,
-                                                userDisplayName = profile.name.ifEmpty { profile.username },
-                                                userAvatarUrl = profile.profilePic,
-                                                userInitials = if (profile.name.isNotEmpty()) profile.name.take(2).uppercase() else "ME",
-                                                location = "Guwahati, Assam",
-                                                imageUrl = photo.imageUrl,
-                                                caption = photo.title,
-                                                hashtags = "#MyUpload #YouSnap #Assam #Memories",
-                                                likesCount = currentLikes,
-                                                commentsCount = photo.initialComments,
-                                                isLiked = isLiked,
-                                                timeAgo = photo.timeAgo,
-                                                 isFromUserProfile = true
-                                            )
+                                        selectedPhotoForViewer = FullScreenPhotoData(
+                                            id = photo.id,
+                                            title = photo.title,
+                                            imageUrl = photo.imageUrl,
+                                            creatorName = profile.name.ifEmpty { profile.username },
+                                            creatorUsername = profile.username,
+                                            creatorAvatar = profile.profilePic,
+                                            initialLikes = photo.initialLikes,
+                                            initialComments = photo.initialComments,
+                                            initialIsLiked = photo.initialIsLiked,
+                                            timeAgo = photo.timeAgo
                                         )
                                     }
                                     .testTag("my_profile_photo_${photo.id}")

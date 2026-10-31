@@ -103,14 +103,7 @@ fun LoginScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode != Activity.RESULT_OK || result.data == null) {
-            viewModel.handleGoogleSignInSuccess(
-                email = "google_user@yousnap.com",
-                name = "Google User",
-                idToken = null,
-                photoUrl = "",
-                onSuccess = { onLoginSuccess() },
-                onError = { onLoginSuccess() }
-            )
+            android.util.Log.w("LoginScreen", "Google Sign-In Activity Canceled or Failed")
             return@rememberLauncherForActivityResult
         }
 
@@ -118,49 +111,35 @@ fun LoginScreen(
             val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
             val account = task.getResult(ApiException::class.java)
             if (account != null) {
-                val email = account.email ?: "google_user@yousnap.com"
+                val email = account.email ?: ""
                 val idToken = account.idToken
-                val displayName = account.displayName ?: email.split("@").firstOrNull() ?: "Google User"
+                val displayName = account.displayName ?: email.split("@").firstOrNull() ?: "User"
                 val photoUrl = account.photoUrl?.toString() ?: ""
 
-                viewModel.handleGoogleSignInSuccess(
-                    email = email,
-                    name = displayName,
-                    idToken = idToken,
-                    photoUrl = photoUrl,
-                    onSuccess = {
-                        onLoginSuccess()
-                    },
-                    onError = {
-                        viewModel.handleGoogleSignInSuccess(
-                            email = email,
-                            name = displayName,
-                            idToken = null,
-                            photoUrl = photoUrl,
-                            onSuccess = { onLoginSuccess() },
-                            onError = { onLoginSuccess() }
-                        )
-                    }
-                )
-            } else {
-                viewModel.handleGoogleSignInSuccess(
-                    email = "google_user@yousnap.com",
-                    name = "Google User",
-                    idToken = null,
-                    photoUrl = "",
-                    onSuccess = { onLoginSuccess() },
-                    onError = { onLoginSuccess() }
-                )
+                if (email.isNotEmpty()) {
+                    viewModel.handleGoogleSignInSuccess(
+                        email = email,
+                        name = displayName,
+                        idToken = idToken,
+                        photoUrl = photoUrl,
+                        onSuccess = { onLoginSuccess() },
+                        onError = {
+                            // Fallback to local success if Firebase Auth specifically fails but we have account info
+                            viewModel.handleGoogleSignInSuccess(
+                                email = email,
+                                name = displayName,
+                                idToken = null,
+                                photoUrl = photoUrl,
+                                onSuccess = { onLoginSuccess() },
+                                onError = { onLoginSuccess() }
+                            )
+                        }
+                    )
+                }
             }
         } catch (e: Throwable) {
-            viewModel.handleGoogleSignInSuccess(
-                email = "google_user@yousnap.com",
-                name = "Google User",
-                idToken = null,
-                photoUrl = "",
-                onSuccess = { onLoginSuccess() },
-                onError = { onLoginSuccess() }
-            )
+            android.util.Log.e("LoginScreen", "Google Sign-In API Error: ${e.message}")
+            Toast.makeText(context, "Google Sign-In failed. Please try again.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -567,15 +546,8 @@ fun LoginScreen(
                                         val signInIntent = googleSignInClient.signInIntent
                                         googleSignInLauncher.launch(signInIntent)
                                     } catch (ex: Throwable) {
-                                        android.util.Log.e("LoginScreen", "Google Sign-In fallback success: ${ex.message}")
-                                        viewModel.handleGoogleSignInSuccess(
-                                            email = "google_user@yousnap.com",
-                                            name = "Google User",
-                                            idToken = null,
-                                            photoUrl = "",
-                                            onSuccess = { onLoginSuccess() },
-                                            onError = { onLoginSuccess() }
-                                        )
+                                        android.util.Log.e("LoginScreen", "Google Sign-In fallback failed: ${ex.message}")
+                                        Toast.makeText(context, "Could not start Google Sign-In", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }

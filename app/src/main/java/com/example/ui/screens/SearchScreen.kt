@@ -30,6 +30,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.ProfileEntity
 import com.example.data.model.ReelEntity
+import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.example.ui.components.CommentBottomSheet
 import com.example.ui.components.ReelItem
@@ -161,7 +162,7 @@ fun SearchScreen(
                                 Card(
                                     modifier = Modifier
                                         .padding(4.dp)
-                                        .clickable { /* TODO: Navigate to user profile */ },
+                                        .clickable { viewModel.navigateTo(Screen.OtherProfile(user.username)) },
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {

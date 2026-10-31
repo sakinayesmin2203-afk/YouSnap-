@@ -459,23 +459,17 @@ fun UserProfileScreen(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .clickable {
-                                                viewModel.openPhotoOnHomeScreen(
-                                                    HomePostItem(
-                                                        id = "user_photo_${photo.id}",
-                                                        username = username,
-                                                        userDisplayName = displayName,
-                                                        userAvatarUrl = "",
-                                                        userInitials = displayName.take(2).uppercase(),
-                                                        location = "Guwahati, Assam",
-                                                        imageUrl = photo.imageUrl,
-                                                        caption = photo.title,
-                                                        hashtags = "#YouSnap #Assam #Memories",
-                                                        likesCount = photo.initialLikes,
-                                                        commentsCount = photo.initialComments,
-                                                        isLiked = photo.initialIsLiked,
-                                                        timeAgo = photo.timeAgo,
-                                                        isFromUserProfile = true
-                                                    )
+                                                selectedPhoto = FullScreenPhotoData(
+                                                    id = photo.id,
+                                                    title = photo.title,
+                                                    imageUrl = photo.imageUrl,
+                                                    creatorName = displayName,
+                                                    creatorUsername = username,
+                                                    creatorAvatar = "", // Initials will be used
+                                                    initialLikes = photo.initialLikes,
+                                                    initialComments = photo.initialComments,
+                                                    initialIsLiked = photo.initialIsLiked,
+                                                    timeAgo = photo.timeAgo
                                                 )
                                             }
                                     )

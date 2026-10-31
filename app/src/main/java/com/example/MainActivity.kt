@@ -298,8 +298,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { viewModel.navigateBack() }
                             )
 
-                            is Screen.MonetizationRules -> com.example.ui.screens.MonetizationRulesScreen(
-                                viewModel = viewModel,
+                            is Screen.MonetizationRules -> MonetizationRulesScreen(
                                 onNavigateTo = { viewModel.navigateTo(it) },
                                 onBack = { viewModel.navigateBack() }
                             )

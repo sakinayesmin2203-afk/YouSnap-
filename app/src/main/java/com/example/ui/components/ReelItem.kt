@@ -94,23 +94,17 @@ fun ReelItem(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Fullbleed Visual Background Layer
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(dynamicBrush)
-                .graphicsLayer { alpha = 0.85f }
-        ) {
-            // Visual accent representing bokeh particles rising inside the video stream
-            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                // Subtle static/dynamic design accent
-            }
-        }
-
-        val mediaToDisplay = reel.mediaUrl.ifEmpty { reel.thumbnailUrl }
-        if (mediaToDisplay.isNotEmpty()) {
+        // ACTUAL VIDEO PLAYER
+        if (reel.mediaUrl.isNotEmpty()) {
+            CdnVideoPlayer(
+                videoUrl = reel.mediaUrl,
+                modifier = Modifier.fillMaxSize(),
+                autoPlay = true,
+                isLooping = true
+            )
+        } else if (reel.thumbnailUrl.isNotEmpty()) {
             AsyncImage(
-                model = mediaToDisplay,
+                model = reel.thumbnailUrl,
                 contentDescription = reel.caption,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -192,22 +186,6 @@ fun ReelItem(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
-                            if (reel.isViralBoosted) {
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(Color(0xFFFF9900))
-                                        .padding(horizontal = 5.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "VIRAL 🔥",
-                                        color = Color.White,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                }
-                            }
                         }
                         Text(
                             text = reel.creatorName,

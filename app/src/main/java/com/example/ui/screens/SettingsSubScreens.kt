@@ -162,6 +162,20 @@ fun EditProfileScreen(
             )
 
             OutlinedTextField(
+                value = profile.email,
+                onValueChange = { },
+                label = { Text("Email Address") },
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().testTag("edit_email_input"),
+                singleLine = true,
+                enabled = false, // Email is usually managed by account provider
+                colors = OutlinedTextFieldDefaults.colors(
+                    disabledBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                    disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            )
+
+            OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
                 label = { Text("Username") },
@@ -198,9 +212,9 @@ fun EditProfileScreen(
                     if (username.trim().isEmpty() || name.trim().isEmpty()) {
                         android.widget.Toast.makeText(viewModel.app, "Fields cannot be empty!", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        viewModel.updateProfile(name, username, bio, category, profilePic)
-                        android.widget.Toast.makeText(viewModel.app, "Profile Updated Successfully! ✅", android.widget.Toast.LENGTH_SHORT).show()
-                        onBack()
+                        viewModel.updateProfile(name, username, bio, category, profilePic) {
+                            onBack()
+                        }
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
@@ -447,27 +461,28 @@ fun StoryLivePrivacyScreen(
     onBack: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    val allUsers by viewModel.allUsers.collectAsState()
+    val currentProfile by viewModel.profileState.collectAsState()
     
-    val followers = remember {
-        mutableStateListOf(
-            FollowerUserItem("priya_sharma", "Priya Sharma", false),
-            FollowerUserItem("rahul_verma", "Rahul Verma", false),
-            FollowerUserItem("deepak_das", "Deepak Das", false),
-            FollowerUserItem("anita_roy", "Anita Roy", true),
-            FollowerUserItem("assam_vibes", "Assam Vibes", false),
-            FollowerUserItem("neha_gogoi", "Neha Gogoi", false),
-            FollowerUserItem("rohit_bora", "Rohit Bora", true),
-            FollowerUserItem("dimpy_kalita", "Dimpy Kalita", false),
-            FollowerUserItem("mousumi_b", "Mousumi Baruah", false)
-        )
+    // Local state to manage selections before saving
+    val hiddenUsernames = remember(currentProfile.hiddenStoryFrom) {
+        mutableStateListOf<String>().apply {
+            addAll(currentProfile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() })
+        }
     }
 
-    val filteredList = followers.filter {
-        it.username.contains(searchQuery, ignoreCase = true) ||
-        it.displayName.contains(searchQuery, ignoreCase = true)
+    LaunchedEffect(Unit) {
+        viewModel.fetchAllUsers()
     }
 
-    val hiddenCount = followers.count { it.isHidden }
+    val filteredList = allUsers.filter { user ->
+        // Don't show myself in the list
+        user.username.lowercase() != currentProfile.username.lowercase() &&
+        (user.username.contains(searchQuery, ignoreCase = true) ||
+         user.name.contains(searchQuery, ignoreCase = true))
+    }
+
+    val hiddenCount = hiddenUsernames.size
 
     Scaffold(
         topBar = { SubScreenTopBar("Story & Live Privacy", onBack) }
@@ -504,7 +519,7 @@ fun StoryLivePrivacyScreen(
                     if (hiddenCount > 0) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Currently hiding from $hiddenCount follower(s)",
+                            text = "Currently hiding from $hiddenCount user(s)",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF2563EB)
@@ -537,15 +552,17 @@ fun StoryLivePrivacyScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredList, key = { it.username }) { user ->
-                    val index = followers.indexOfFirst { it.username == user.username }
+                    val isChecked = hiddenUsernames.contains(user.username)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
                             .clickable {
-                                if (index != -1) {
-                                    followers[index] = followers[index].copy(isHidden = !followers[index].isHidden)
+                                if (isChecked) {
+                                    hiddenUsernames.remove(user.username)
+                                } else {
+                                    hiddenUsernames.add(user.username)
                                 }
                             }
                             .padding(12.dp),
@@ -563,15 +580,24 @@ fun StoryLivePrivacyScreen(
                                     .background(Color(0xFF2563EB).copy(alpha = 0.2f)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = user.displayName.take(1).uppercase(),
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2563EB)
-                                )
+                                if (user.profilePic.startsWith("http")) {
+                                    AsyncImage(
+                                        model = user.profilePic,
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Text(
+                                        text = user.name.take(1).uppercase(),
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
                             }
                             Column {
                                 Text(
-                                    text = user.displayName,
+                                    text = user.name,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp
                                 )
@@ -584,17 +610,21 @@ fun StoryLivePrivacyScreen(
                         }
 
                         Checkbox(
-                            checked = user.isHidden,
-                            onCheckedChange = { isChecked ->
-                                if (index != -1) {
-                                    followers[index] = followers[index].copy(isHidden = isChecked)
+                            checked = isChecked,
+                            onCheckedChange = { checked ->
+                                if (checked) {
+                                    if (!hiddenUsernames.contains(user.username)) {
+                                        hiddenUsernames.add(user.username)
+                                    }
+                                } else {
+                                    hiddenUsernames.remove(user.username)
                                 }
                             }
                         )
                     }
                 }
             }
-
+            
             // Bottom Save Button
             Box(
                 modifier = Modifier
@@ -603,11 +633,7 @@ fun StoryLivePrivacyScreen(
             ) {
                 Button(
                     onClick = {
-                        android.widget.Toast.makeText(
-                            viewModel.app,
-                            "Story privacy settings saved! Hiding from $hiddenCount account(s).",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        viewModel.updateStoryPrivacy(hiddenUsernames.toList())
                         onBack()
                     },
                     modifier = Modifier
@@ -1475,127 +1501,157 @@ fun CreatorToolsScreen(
 
 @Composable
 fun MonetizationRulesScreen(
-    viewModel: YouSnapViewModel,
     onNavigateTo: (Screen) -> Unit,
     onBack: () -> Unit
 ) {
     Scaffold(
         topBar = { SubScreenTopBar("Monetization Policy & Rules", onBack) }
     ) { innerPadding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
-                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            Text(
-                text = "YouSnap Creator Monetization Rules",
-                fontWeight = FontWeight.Black,
-                fontSize = 20.sp,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Please read and understand the following monetization policies. Violating these rules will result in immediate demonetization or account termination.",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                lineHeight = 18.sp
-            )
-
-            // Special 6-Month Eligibility & Evaluation Card
-            MonetizationRuleCard(
-                title = "6-Month Target & Eligibility Criteria",
-                description = "Account status is evaluated based on rolling metric milestones computed continuously over a six-month duration.",
-                icon = Icons.Default.CheckCircle,
-                bulletPoints = listOf(
-                    "Evaluation Period: Regardless of account creation date, eligibility is calculated based on the rolling last 6 months from the application date.",
-                    "Views Requirement: Must achieve at least 500,000 (5 Lakhs) total views in the last 6 months.",
-                    "Followers Requirement: Must have a minimum of 1,000 total followers within the last 6 months.",
-                    "Approval Status: If both views and followers conditions are met, monetization will be APPROVED and Ads will be enabled.",
-                    "Rejection Status: If the account fails to reach 500,000 views or 1,000 followers in the last 6 months, monetization will be REJECTED."
-                )
-            )
-
-            // Rule 1: Age & Requirements
-            MonetizationRuleCard(
-                title = "1. Age & Requirements",
-                description = "Creator must be at least 18 years old and meet minimum followers and views threshold.",
-                icon = Icons.Default.Person,
-                bulletPoints = listOf(
-                    "Must be 18+ to be eligible for monetization program",
-                    "Must meet the minimum required follower base",
-                    "Must sustain minimum standard organic view thresholds"
-                )
-            )
-
-            // Rule 2: Original Content & Copyright
-            MonetizationRuleCard(
-                title = "2. Original Content & Copyright",
-                description = "Earning is allowed only on 100% original videos. Copyrighted content or material inappropriate for minors will be demonetized.",
-                icon = Icons.Default.Videocam,
-                bulletPoints = listOf(
-                    "Earning is only permitted on 100% original, unique video footage",
-                    "Unauthorized licensed music, stock clips, or third-party re-uploads are banned",
-                    "Any material judged inappropriate for minors will be instantly demonetized"
-                )
-            )
-
-            // Rule 3: Community Guidelines & Ban Policy
-            MonetizationRuleCard(
-                title = "3. Prohibited Content & Community Guidelines",
-                description = "Uploading explicit, adult, or abusive content/photos/stories will result in immediate demonetization and permanent YouSnap account suspension.",
-                icon = Icons.Default.Warning,
-                bulletPoints = listOf(
-                    "Zero tolerance policy for pornography, explicit content, or abusive uploads",
-                    "Instant demonetization upon system or manual verification",
-                    "Permanent YouSnap account suspension and profile deletion"
-                ),
-                isWarning = true
-            )
-
-            // Rule 4: Monetization Methods
-            MonetizationRuleCard(
-                title = "4. Revenue Methods & Earning Channels",
-                description = "Revenue can be earned through In-Feed Ads, Virtual Gifts (Coins/Tips), and Sponsored Posts.",
-                icon = Icons.Default.Stars,
-                bulletPoints = listOf(
-                    "Generate programmatic ad revenue via In-Feed video ads",
-                    "Accept dynamic Virtual Gifts, Tips, and Coins from supportive viewers",
-                    "Partner with brand campaigns and promote Sponsored Content"
-                )
-            )
-
-            // Rule 5: Fraud Warning & Invalid Activity
-            MonetizationRuleCard(
-                title = "5. Fraud Warning & Invalid Activity",
-                description = "Self-viewing videos, using bots/scripts, or fake clicks will lead to permanent account termination.",
-                icon = Icons.Default.Lock,
-                bulletPoints = listOf(
-                    "Artificially inflating view counts or video statistics is illegal",
-                    "The use of traffic bots, automation scripts, or fake coordinates is banned",
-                    "Engagement fraud triggers automated permanent account termination"
-                )
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = { onNavigateTo(Screen.MonetizationScreen) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE1306C)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-            ) {
+            item {
                 Text(
-                    text = "Check Eligibility Tracker 📊",
+                    text = "YouSnap Creator Monetization Rules & Guidelines",
+                    style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Please read and understand the following monetization policies. Violating these rules will result in immediate demonetization or account termination.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
             }
+
+            // 1. Eligibility
+            item {
+                MonetizationSection("★ 1. Monetization Eligibility Rules", listOf(
+                    "1. Age Requirement: Users must be at least 18 years old to apply for monetization.",
+                    "2. Followers Requirement: Must have a minimum of 1,000 followers.",
+                    "3. Views Requirement: Must achieve at least 500,000 qualified video views.",
+                    "4. Community Guidelines: The account must not have any active community guidelines violations.",
+                    "5. Application Process: Users can apply for monetization only after meeting all the specified criteria."
+                ))
+            }
+
+            // 2. Earning
+            item {
+                MonetizationSection("★ 2. Monetization Earning Rules", listOf(
+                    "1. Revenue Source: Creators will not be paid directly for raw video views; earnings will be generated through advertisements (Ads).",
+                    "2. Fraud Prevention: Earnings generated from fake views, bots, and fake engagement will be canceled and forfeited.",
+                    "3. Revenue Share: Creator earnings will be determined in accordance with YouSnap's official Revenue Sharing Policy."
+                ))
+            }
+
+            // 3. Suspension & Violation
+            item {
+                Column {
+                    Text("★ 3. Account Suspension & Violation Rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Violating any of the following rules on YouSnap may result in video removal, account warnings, temporary suspension, or a permanent ban.", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🚫 Rule 1: Sexual Content & Nudity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+                    val rule1 = listOf(
+                        "1. Uploading obscene or pornographic photos and videos is strictly prohibited.",
+                        "2. Videos clearly depicting sexual acts are prohibited.",
+                        "3. Publishing nude photos or videos with sexual intent is banned.",
+                        "4. Sharing any individual's private or intimate photos/videos without their explicit consent is strictly forbidden.",
+                        "5. Uploading child sexual abuse material (CSAM) will lead to an immediate account ban and reporting to the appropriate legal authorities.",
+                        "6. Penalty: Serious violations will result in an immediate permanent ban along with legal action."
+                    )
+                    rule1.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🚫 Rule 2: Abusive Language & Harassment", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+                    val rule2 = listOf(
+                        "1. Using extremely obscene or sexually suggestive profanity in videos, comments, or captions is prohibited.",
+                        "2. Insulting, harassing, or threatening other users with abusive language is forbidden.",
+                        "3. Repeatedly targeting any individual with abuse or bullying is strictly banned.",
+                        "4. Hate speech based on race, religion, gender, or identity is prohibited.",
+                        "5. Penalty:\n   - First Offense: Warning or video removal.\n   - Second Offense: Temporary suspension.\n   - Repeated/Severe Violations: Permanent ban."
+                    )
+                    rule2.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🚫 Rule 3: Fake Views & Spam", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+                    val rule3 = listOf(
+                        "1. Purchasing fake followers or fake views is prohibited.",
+                        "2. Using bots to artificially increase likes, views, or comments is banned.",
+                        "3. Creating spam by repeatedly uploading the exact same video is forbidden.",
+                        "4. Misusing the monetization system by creating fake accounts is strictly restricted.",
+                        "5. Penalty: Monetization suspension, earnings review, or full account suspension."
+                    )
+                    rule3.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🚫 Rule 4: Copyright Violation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+                    val rule4 = listOf(
+                        "1. Uploading someone else's video as your own is prohibited.",
+                        "2. Using copyrighted movies, music, or videos without proper permission or legal exemptions is banned.",
+                        "3. Stealing content from other creators to gain monetization is strictly forbidden.",
+                        "4. Penalty: Video removal, copyright strikes, or account suspension for severe/repeated violations."
+                    )
+                    rule4.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+
+            // Summary
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("📌 General Policy Summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "All YouSnap users must strictly adhere to the Community Guidelines. YouSnap takes strong action against sexual exploitation, pornography, harassment, hate speech, fraud, and other serious violations. Suspension decisions will depend on the severity of the violation, available evidence, and the user's prior infraction history.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+
+            item {
+                Button(
+                    onClick = { onNavigateTo(Screen.MonetizationScreen) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE1306C)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Text(
+                        text = "Check Eligibility Tracker 📊",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = Color.White
+                    )
+                }
+            }
+            
+            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 }
@@ -2301,7 +2357,7 @@ fun MonetizationScreen(
             // Metric Tracker 3: Photo Uploads
             EligibilityRequirementCard(
                 title = "Photo Uploads",
-                requirementText = "Minimum 10 Photos in last 30 days (1 month)",
+                requirementText = "Minimum 10 Photos",
                 currentValue = photoUploads,
                 targetValue = targetPhotos,
                 valueDisplay = "$photoUploads / $targetPhotos",
@@ -2312,7 +2368,7 @@ fun MonetizationScreen(
             // Metric Tracker 4: Stories Uploaded
             EligibilityRequirementCard(
                 title = "Stories Uploaded",
-                requirementText = "Minimum 20 Stories in last 30 days (1 month)",
+                requirementText = "Minimum 20 Stories",
                 currentValue = storiesUploaded,
                 targetValue = targetStories,
                 valueDisplay = "$storiesUploaded / $targetStories",
@@ -3764,101 +3820,6 @@ fun BoostReelScreen(
     }
 }
 
-// 5. MONETIZATION RULES SCREEN
-@Composable
-fun MonetizationRulesScreen(onBack: () -> Unit) {
-    Scaffold(
-        topBar = { SubScreenTopBar("Monetization Rules", onBack) }
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            item {
-                Text(
-                    text = "YouSnap Creator Monetization Rules & Guidelines",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Please read and understand the following monetization policies. Violating these rules will result in immediate demonetization or account termination.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-            }
-
-            // Eligibility
-            item {
-                MonetizationSection("★ Monetization Eligibility Rules", listOf(
-                    "1. Age Requirement: Users must be at least 18 years old to apply for monetization.",
-                    "2. Followers Requirement: Must have a minimum of 1,000 followers.",
-                    "3. Views Requirement: Must achieve at least 500,000 qualified video views.",
-                    "4. Community Guidelines: The account must not have any active community guidelines violations.",
-                    "5. Application Process: Users can apply for monetization only after meeting all the specified criteria."
-                ))
-            }
-
-            // Earning
-            item {
-                MonetizationSection("★ Monetization Earning Rules", listOf(
-                    "1. Revenue Source: Creators will not be paid directly for raw video views; earnings will be generated through advertisements (Ads).",
-                    "2. Fraud Prevention: Earnings generated from fake views, bots, and fake engagement will be canceled and forfeited.",
-                    "3. Revenue Share: Creator earnings will be determined in accordance with YouSnap's official Revenue Sharing Policy."
-                ))
-            }
-
-            // Suspension & Violation
-            item {
-                Text("★ 3. Account Suspension & Violation Rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Violating any of the following rules on YouSnap may result in video removal, account warnings, temporary suspension, or a permanent ban.", style = MaterialTheme.typography.bodyMedium)
-            }
-
-            item {
-                Text("🚫 Rule 1: Sexual Content & Nudity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
-                Text("1. Uploading obscene or pornographic photos and videos is strictly prohibited.\n2. Videos clearly depicting sexual acts are prohibited.\n3. Publishing nude photos or videos with sexual intent is banned.\n4. Sharing any individual's private or intimate photos/videos without their explicit consent is strictly forbidden.\n5. Uploading child sexual abuse material (CSAM) will lead to an immediate account ban and reporting to the appropriate legal authorities.\n6. Penalty: Serious violations will result in an immediate permanent ban along with legal action.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-            }
-
-            item {
-                Text("🚫 Rule 2: Abusive Language & Harassment", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
-                Text("1. Using extremely obscene or sexually suggestive profanity in videos, comments, or captions is prohibited.\n2. Insulting, harassing, or threatening other users with abusive language is forbidden.\n3. Repeatedly targeting any individual with abuse or bullying is strictly banned.\n4. Hate speech based on race, religion, gender, or identity is prohibited.\n5. Penalty:\nFirst Offense: Warning or video removal.\nSecond Offense: Temporary suspension.\nRepeated/Severe Violations: Permanent ban.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-            }
-
-            item {
-                Text("🚫 Rule 3: Fake Views & Spam", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
-                Text("1. Purchasing fake followers or fake views is prohibited.\n2. Using bots to artificially increase likes, views, or comments is banned.\n3. Creating spam by repeatedly uploading the exact same video is forbidden.\n4. Misusing the monetization system by creating fake accounts is strictly restricted.\n5. Penalty: Monetization suspension, earnings review, or full account suspension.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-            }
-
-            item {
-                Text("🚫 Rule 4: Copyright Violation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
-                Text("1. Uploading someone else's video as your own is prohibited.\n2. Using copyrighted movies, music, or videos without proper permission or legal exemptions is banned.\n3. Stealing content from other creators to gain monetization is strictly forbidden.\n4. Penalty: Video removal, copyright strikes, or account suspension for severe/repeated violations.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-            }
-
-            // Summary
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("📌 General Policy Summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "All YouSnap users must strictly adhere to the Community Guidelines. YouSnap takes strong action against sexual exploitation, pornography, harassment, hate speech, fraud, and other serious violations. Suspension decisions will depend on the severity of the violation, available evidence, and the user's prior infraction history.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 fun MonetizationSection(title: String, items: List<String>) {
@@ -3866,10 +3827,11 @@ fun MonetizationSection(title: String, items: List<String>) {
         Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(8.dp))
         items.forEach { item ->
-            Row(modifier = Modifier.padding(vertical = 4.dp)) {
-                Text("• ", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                Text(text = item, style = MaterialTheme.typography.bodyMedium)
-            }
+            Text(
+                text = item,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
         }
     }
 }

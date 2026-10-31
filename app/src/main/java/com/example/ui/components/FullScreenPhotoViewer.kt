@@ -179,7 +179,7 @@ fun FullScreenPhotoViewer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF050505))
+                .background(Color.Black)
         ) {
             // Main Content: Column with Top Bar, Center Photo, and Bottom Facebook Action Bar
             Column(
@@ -218,14 +218,29 @@ fun FullScreenPhotoViewer(
                             .size(40.dp)
                             .clip(CircleShape)
                             .border(1.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-                            .background(Color.DarkGray)
+                            .background(Color.DarkGray),
+                        contentAlignment = Alignment.Center
                     ) {
-                        AsyncImage(
-                            model = photoData.creatorAvatar,
-                            contentDescription = photoData.creatorName,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        if (photoData.creatorAvatar.isNotEmpty() && (photoData.creatorAvatar.startsWith("http") || photoData.creatorAvatar.startsWith("content://"))) {
+                            AsyncImage(
+                                model = photoData.creatorAvatar,
+                                contentDescription = photoData.creatorName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            val initials = remember(photoData.creatorName) {
+                                if (photoData.creatorName.length >= 2) photoData.creatorName.take(2).uppercase()
+                                else if (photoData.creatorName.isNotEmpty()) photoData.creatorName.take(1).uppercase()
+                                else "U"
+                            }
+                            Text(
+                                text = initials,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(10.dp))

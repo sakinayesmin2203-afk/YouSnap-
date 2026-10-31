@@ -538,30 +538,3 @@ fun CreateScreen(
     }
 }
 
-@Composable
-fun CdnVideoPlayer(videoUrl: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val exoPlayer = remember(videoUrl) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(videoUrl))
-            prepare()
-            playWhenReady = true
-        }
-    }
-
-    DisposableEffect(exoPlayer) {
-        onDispose {
-            exoPlayer.release()
-        }
-    }
-
-    AndroidView(
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = true
-            }
-        },
-        modifier = modifier.fillMaxSize()
-    )
-}

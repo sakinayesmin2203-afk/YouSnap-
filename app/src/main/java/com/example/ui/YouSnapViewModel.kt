@@ -18,6 +18,7 @@ import com.example.data.repository.BackblazeRepository
 import com.example.data.CdnConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FieldValue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -285,7 +286,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val current = profileState.value
                     repository.saveProfile(current.copy(
                         name = name,
-                        username = email.split("@")[0]
+                        username = email.split("@")[0].lowercase(),
+                        email = email
                     ))
                     onSuccess()
                     return@launch
@@ -298,7 +300,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             "uid" to uid,
                             "name" to name,
                             "email" to email,
-                            "username" to email.split("@")[0],
+                            "username" to email.split("@")[0].lowercase(),
                             "bio" to "Hey there! I am using YouSnap.",
                             "category" to "Creator",
                             "profilePic" to "",
@@ -312,7 +314,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                         val current = profileState.value
                                         repository.saveProfile(current.copy(
                                             name = name,
-                                            username = email.split("@")[0]
+                                            username = email.split("@")[0].lowercase(),
+                                            email = email
                                         ))
                                     }
                                     registerUser(name, email, pass)
@@ -338,7 +341,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         viewModelScope.launch {
                             repository.saveProfile(current.copy(
                                 name = name,
-                                username = email.split("@")[0]
+                                username = email.split("@")[0].lowercase(),
+                                email = email
                             ))
                         }
                         onSuccess()
@@ -349,7 +353,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 viewModelScope.launch {
                     repository.saveProfile(current.copy(
                         name = name,
-                        username = email.split("@")[0]
+                        username = email.split("@")[0].lowercase(),
+                        email = email
                     ))
                 }
                 onSuccess()
@@ -384,24 +389,26 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         try {
                             db?.collection("users")?.document(uid)?.get()
                                 ?.addOnSuccessListener { document ->
-                                    if (document != null && document.exists()) {
-                                        val name = document.getString("name") ?: ""
-                                        val username = document.getString("username") ?: ""
-                                        val bio = document.getString("bio") ?: ""
-                                        val category = document.getString("category") ?: ""
-                                        val profilePic = document.getString("profilePic") ?: ""
-                                        
-                                        viewModelScope.launch {
-                                            val current = profileState.value
-                                            repository.saveProfile(current.copy(
-                                                name = name,
-                                                username = username,
-                                                bio = bio,
-                                                category = category,
-                                                profilePic = profilePic
-                                            ))
+                                        if (document != null && document.exists()) {
+                                            val name = document.getString("name") ?: ""
+                                            val username = document.getString("username") ?: ""
+                                            val profilePic = document.getString("profilePic") ?: ""
+                                            val emailFromDb = document.getString("email") ?: email
+                                            val bio = document.getString("bio") ?: ""
+                                            val category = document.getString("category") ?: ""
+                                            
+                                            viewModelScope.launch {
+                                                val current = profileState.value
+                                                repository.saveProfile(current.copy(
+                                                    name = name,
+                                                    username = username,
+                                                    email = emailFromDb,
+                                                    bio = bio,
+                                                    category = category,
+                                                    profilePic = profilePic
+                                                ))
+                                            }
                                         }
-                                    }
                                     onSuccess()
                                 }
                                 ?.addOnFailureListener {
@@ -465,14 +472,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                     "uid" to uid,
                                     "name" to name,
                                     "email" to email,
-                                    "username" to email.split("@")[0],
+                                    "username" to email.split("@")[0].lowercase(),
                                     "bio" to "Hey there! I am using YouSnap.",
                                     "category" to "Creator",
                                     "profilePic" to photoUrl,
-                                    "createdAt" to com.google.firebase.Timestamp.now()
+                                    "lastLogin" to com.google.firebase.Timestamp.now()
                                 )
                                 try {
                                     db?.collection("users")?.document(uid)?.set(userProfile, com.google.firebase.firestore.SetOptions.merge())
+                                        ?.addOnSuccessListener {
+                                            android.util.Log.d("YouSnapViewModel", "Firestore google sync success for UID: $uid")
+                                        }
                                 } catch (e: Throwable) {
                                     android.util.Log.w("YouSnapViewModel", "Firestore google sync failed: ${e.message}")
                                 }
@@ -480,7 +490,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                     val current = profileState.value
                                     repository.saveProfile(current.copy(
                                         name = name,
-                                        username = email.split("@")[0],
+                                        username = email.split("@")[0].lowercase(),
+                                        email = email,
                                         profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
                                     ))
                                     registerUser(name, email, "google_oauth")
@@ -488,12 +499,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                 }
                             }
                             .addOnFailureListener { e ->
-                                android.util.Log.w("YouSnapViewModel", "Firebase signInWithCredential failed: ${e.message}, falling back locally")
+                                android.util.Log.w("YouSnapViewModel", "Firebase signInWithCredential failed: ${e.message}, updating locally")
                                 viewModelScope.launch {
                                     val current = profileState.value
                                     repository.saveProfile(current.copy(
                                         name = name,
-                                        username = email.split("@")[0],
+                                        username = email.split("@")[0].lowercase(),
+                                        email = email,
                                         profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
                                     ))
                                     registerUser(name, email, "google_oauth")
@@ -510,7 +522,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val current = profileState.value
                 repository.saveProfile(current.copy(
                     name = name,
-                    username = email.split("@")[0],
+                    username = email.split("@")[0].lowercase(),
+                    email = email,
                     profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
                 ))
                 registerUser(name, email, "google_oauth")
@@ -526,6 +539,19 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val profileState: StateFlow<ProfileEntity>
     val settingsState: StateFlow<SettingsEntity>
     val reelsState: StateFlow<List<ReelEntity>>
+    
+    // Stories States
+    private val _allStories = MutableStateFlow<List<StoryModel>>(emptyList())
+    val allStories = _allStories.asStateFlow()
+    private var allStoriesListener: com.google.firebase.firestore.ListenerRegistration? = null
+    
+    private val _currentStoryState = MutableStateFlow<StoryModel?>(null)
+    val currentStoryState = _currentStoryState.asStateFlow()
+    private var storyListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+
+    // All Users State (for privacy search)
+    private val _allUsers = MutableStateFlow<List<ProfileEntity>>(emptyList())
+    val allUsers = _allUsers.asStateFlow()
 
     // Personal Photos List Flow for Profile Photos tab
     private val _personalPhotosState = MutableStateFlow<List<FullScreenPhotoData>>(emptyList())
@@ -919,22 +945,25 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         // Ensure starter database population is ready
         viewModelScope.launch {
             repository.ensureInitialData()
+            startListeningToAllStories()
         }
 
         // Map flows with defaults if database rows are null
         profileState = repository.profileFlow
+            .map { it ?: ProfileEntity() }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = ProfileEntity()
-            ) as StateFlow<ProfileEntity>
+            )
 
         settingsState = repository.settingsFlow
+            .map { it ?: SettingsEntity() }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = SettingsEntity()
-            ) as StateFlow<SettingsEntity>
+            )
 
         reelsState = repository.reelsFlow
             .map { reels ->
@@ -1182,8 +1211,44 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // User Operations - Profile
-    fun updateProfile(name: String, username: String, bio: String, category: String, profilePic: String) {
+    fun updateProfile(name: String, username: String, bio: String, category: String, profilePic: String, onComplete: () -> Unit = {}) {
         viewModelScope.launch {
+            val current = profileState.value
+            val currentUsername = current.username
+            val uid = auth?.currentUser?.uid ?: ""
+            val targetUsernameLower = username.trim().lowercase()
+
+            if (targetUsernameLower.isEmpty()) {
+                Toast.makeText(app, "Username cannot be empty!", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            // 1. UNIQUE USERNAME VALIDATION (Only if username changed)
+            if (targetUsernameLower != currentUsername.lowercase() && uid.isNotEmpty()) {
+                val isTaken = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+                    try {
+                        db?.collection("users")
+                            ?.whereEqualTo("username", targetUsernameLower)
+                            ?.get()
+                            ?.addOnSuccessListener { snapshot ->
+                                // If snapshot has documents, check if any belong to another user
+                                val exists = snapshot.documents.any { it.id != uid }
+                                continuation.resume(exists) { _, _, _ -> }
+                            }
+                            ?.addOnFailureListener {
+                                continuation.resume(false) { _, _, _ -> }
+                            } ?: continuation.resume(false) { _, _, _ -> }
+                    } catch (e: Exception) {
+                        continuation.resume(false) { _, _, _ -> }
+                    }
+                }
+
+                if (isTaken) {
+                    Toast.makeText(app, "Username already taken! ❌", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+            }
+
             var finalPicUrl = profilePic
             if (profilePic.isNotEmpty() && profilePic.startsWith("content://")) {
                 try {
@@ -1217,37 +1282,39 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
             // Sync to Firestore
             try {
-                val uid = auth?.currentUser?.uid ?: username
-                val userMap = mapOf(
-                    "name" to name,
-                    "username" to username,
-                    "bio" to bio,
-                    "category" to category,
-                    "profilePic" to finalPicUrl,
-                    "lastUpdated" to com.google.firebase.Timestamp.now()
-                )
-                db?.collection("users")?.document(uid)
-                    ?.set(userMap, com.google.firebase.firestore.SetOptions.merge())
-                    ?.addOnSuccessListener {
-                        android.util.Log.d("YouSnapViewModel", "Firebase Firestore updated successfully")
-                    }
-                    ?.addOnFailureListener { e ->
-                        android.util.Log.e("YouSnapViewModel", "Firebase Firestore update failed: ${e.message}")
-                    }
+                if (uid.isNotEmpty()) {
+                    val userMap = mapOf(
+                        "name" to name,
+                        "username" to targetUsernameLower,
+                        "bio" to bio,
+                        "category" to category,
+                        "profilePic" to finalPicUrl,
+                        "lastUpdated" to com.google.firebase.Timestamp.now()
+                    )
+                    db?.collection("users")?.document(uid)
+                        ?.set(userMap, com.google.firebase.firestore.SetOptions.merge())
+                        ?.addOnSuccessListener {
+                            android.util.Log.d("YouSnapViewModel", "Firebase Firestore updated successfully")
+                        }
+                        ?.addOnFailureListener { e ->
+                            android.util.Log.e("YouSnapViewModel", "Firebase Firestore update failed: ${e.message}")
+                        }
+                }
             } catch (e: Throwable) {
                 android.util.Log.e("YouSnapViewModel", "Firebase Firestore skipped or failed: ${e.message}")
             }
 
-            val current = profileState.value
+            // Update local state
             val updated = current.copy(
                 name = name,
-                username = username,
+                username = targetUsernameLower,
                 bio = bio,
                 category = category,
                 profilePic = finalPicUrl
             )
             repository.saveProfile(updated)
-            Toast.makeText(app, "Profile Updated Successfully!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(app, "Profile Updated Successfully! ✅", Toast.LENGTH_SHORT).show()
+            onComplete()
         }
     }
 
@@ -1550,7 +1617,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     "storageProvider" to storageProvider,
                     "mediaType" to if (mediaType == "reel") "video" else "image",
                     "createdAt" to com.google.firebase.Timestamp.now(),
-                    "timestamp" to timestampNow
+                    "timestamp" to timestampNow,
+                    "hiddenFrom" to profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
                 )
                 try {
                     firestore?.collection("stories")?.document(ownerUsername)?.set(storyDoc)
@@ -1570,7 +1638,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     viewsCount = 0,
                     likes = emptyList(),
                     mediaUrl = finalMediaUrl,
-                    mediaType = if (mediaType == "reel") "video" else "image"
+                    mediaType = if (mediaType == "reel") "video" else "image",
+                    hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
                 )
                 _storiesUploadedCount.value += 1
                 Toast.makeText(app, "Story uploaded to Backblaze B2! 🌟", Toast.LENGTH_LONG).show()
@@ -1764,23 +1833,30 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         Toast.makeText(app, msg, Toast.LENGTH_SHORT).show()
     }
 
-    // Toggle Viral Boost for a Reel (Admin Option)
-    fun toggleViralBoostReel(reel: ReelEntity) {
+    fun incrementReelShares(reel: ReelEntity) {
         viewModelScope.launch {
-            val isCurrentlyBoosted = reel.isViralBoosted
-            val updated = reel.copy(
-                isViralBoosted = !isCurrentlyBoosted,
-                viewsCount = if (!isCurrentlyBoosted) (reel.viewsCount + 10000).coerceAtLeast(10000) else reel.viewsCount
-            )
+            val updated = reel.copy(sharesCount = reel.sharesCount + 1)
             repository.updateReel(updated)
-            val msg = if (!isCurrentlyBoosted) {
-                "🚀 Video successfully boosted to go VIRAL! Views increased by +10k! 📈"
-            } else {
-                "❄️ Viral boost deactivated. Returning to natural reach."
-            }
-            Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+            
+            // Optional: Update Firestore if cloud sync is active
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+            firestore?.collection("reels")?.document(reel.id.toString())
+                ?.update("sharesCount", FieldValue.increment(1))
         }
     }
+
+    fun updateReelWatchTime(reel: ReelEntity, seconds: Long) {
+        viewModelScope.launch {
+            val updated = reel.copy(watchTimeSeconds = reel.watchTimeSeconds + seconds)
+            repository.updateReel(updated)
+            
+            // Optional: Update Firestore
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+            firestore?.collection("reels")?.document(reel.id.toString())
+                ?.update("watchTimeSeconds", FieldValue.increment(seconds))
+        }
+    }
+
 
     // Delete a Photo Post (Clean DB + Prefs + Storage with Strict Authorization Check)
     fun deletePhotoPost(postId: String, imageUrl: String, creatorUsername: String = "", creatorUid: String = "", onSuccess: () -> Unit) {
@@ -2127,21 +2203,117 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // --- STORY VIEWER & LIKE REAL-TIME ENGINE ---
-    private val _currentStoryState = MutableStateFlow<StoryModel?>(null)
-    val currentStoryState: StateFlow<StoryModel?> = _currentStoryState.asStateFlow()
-
-    private var storyListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
     val knownUserProfiles = emptyList<StoryViewerInfo>()
 
+    fun startListeningToAllStories() {
+        allStoriesListener?.remove()
+        try {
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+            if (firestore == null) return
+            
+            allStoriesListener = firestore.collection("stories")
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50)
+                .addSnapshotListener { snapshots, error ->
+                    if (error != null) {
+                        android.util.Log.e("YouSnapViewModel", "Listen to all stories failed: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    
+                    val list = mutableListOf<StoryModel>()
+                    val myUsername = profileState.value.username.lowercase()
+                    
+                    snapshots?.forEach { doc ->
+                        val hiddenFromRaw = doc.get("hiddenFrom") as? List<*>
+                        val hiddenFrom = hiddenFromRaw?.mapNotNull { it?.toString()?.lowercase() } ?: emptyList()
+                        
+                        // HIDE LOGIC: If I am in the hiddenFrom list, don't show this story to me
+                        if (hiddenFrom.contains(myUsername)) return@forEach
+
+                        val story = StoryModel(
+                            storyId = doc.getString("storyId") ?: doc.id,
+                            ownerUsername = doc.getString("ownerUsername") ?: doc.id,
+                            viewerIds = (doc.get("viewerIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+                            viewsCount = doc.getLong("viewsCount")?.toInt() ?: 0,
+                            likes = (doc.get("likes") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+                            mediaUrl = doc.getString("mediaUrl"),
+                            mediaType = doc.getString("mediaType") ?: "image",
+                            timestamp = doc.getLong("timestamp") ?: 0L,
+                            hiddenFrom = hiddenFrom
+                        )
+                        list.add(story)
+                    }
+                    // Filter out any that are strictly older than 24h
+                    val filtered = list.filter { System.currentTimeMillis() - it.timestamp < 24 * 60 * 60 * 1000L }
+                    _allStories.value = filtered.sortedByDescending { it.timestamp }
+                }
+        } catch (e: Exception) {
+            android.util.Log.e("YouSnapViewModel", "Error in startListeningToAllStories: ${e.message}")
+        }
+    }
+
+    fun fetchAllUsers() {
+        viewModelScope.launch {
+            try {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                firestore?.collection("users")?.get()?.addOnSuccessListener { snapshots ->
+                    val users = snapshots.mapNotNull { doc ->
+                        try {
+                            ProfileEntity(
+                                id = doc.id.hashCode(),
+                                name = doc.getString("name") ?: doc.id,
+                                username = doc.getString("username") ?: doc.id,
+                                bio = doc.getString("bio") ?: "",
+                                profilePic = doc.getString("profilePic") ?: "avatar_default",
+                                category = doc.getString("category") ?: "User",
+                                hiddenStoryFrom = (doc.get("hiddenStoryFrom") as? List<*>)?.joinToString(",") ?: "",
+                                email = doc.getString("email") ?: ""
+                            )
+                        } catch (e: Exception) { null }
+                    }
+                    _allUsers.value = users
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "Failed to fetch users: ${e.message}")
+            }
+        }
+    }
+    fun updateStoryPrivacy(hiddenUsernames: List<String>) {
+        viewModelScope.launch {
+            val current = profileState.value
+            val updated = current.copy(hiddenStoryFrom = hiddenUsernames.joinToString(","))
+            repository.saveProfile(updated)
+            
+            // Sync to Firestore
+            val myUsername = current.username
+            val uid = auth?.currentUser?.uid ?: myUsername
+            if (uid.isNotEmpty()) {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                firestore?.collection("users")?.document(uid)
+                    ?.update("hiddenStoryFrom", hiddenUsernames)
+                    
+                // Also update any active story document (keyed by username)
+                if (myUsername.isNotEmpty()) {
+                    firestore?.collection("stories")?.document(myUsername)
+                        ?.update("hiddenFrom", hiddenUsernames)
+                        ?.addOnFailureListener {
+                            // If document doesn't exist, ignore
+                        }
+                }
+            }
+            Toast.makeText(app, "Privacy settings saved!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+
     fun startListeningToStory(ownerUsername: String) {
-        val ownerUsernameSafe = ownerUsername.ifEmpty { "alex_travels" }
+        val ownerUsernameSafe = ownerUsername.ifEmpty { "sakinay_esmin" }
         storyListenerRegistration?.remove()
         
         try {
             val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
             if (firestore == null) {
-                seedStoryDocument(ownerUsernameSafe)
                 return
             }
             val docRef = firestore.collection("stories").document(ownerUsernameSafe)
@@ -2157,7 +2329,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val timestamp = snapshot.getLong("timestamp") ?: snapshot.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis()
                         val twentyFourHours = 24 * 60 * 60 * 1000L
                         if (System.currentTimeMillis() - timestamp > twentyFourHours) {
-                            deleteStory(ownerUsernameSafe) {}
+                            // Expired
                             _currentStoryState.value = null
                             return@addSnapshotListener
                         }
@@ -2591,43 +2763,71 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun rankAndSortReels(reels: List<ReelEntity>): List<ReelEntity> {
-        val currentUser = profileState.value.username.lowercase()
-        return reels.map { reel ->
-            var score = 0.0
+        val currentUserProfile = profileState.value ?: ProfileEntity()
+        val currentUsername = currentUserProfile.username.lowercase()
+        val userCategory = currentUserProfile.category.lowercase()
+        
+        val scoredReels = reels.map { reel ->
+            var score = 1.0 // Base score to avoid 0
             
-            // 1. Engagement Base Score
-            score += reel.likesCount * 1.5
-            score += reel.commentsCount * 4.0
-            score += reel.viewsCount * 0.05
+            // 1. Scoring & Ranking
+            score += reel.likesCount * 1.0
+            score += reel.commentsCount * 3.0
+            score += reel.sharesCount * 5.0
+            score += reel.watchTimeSeconds * 0.2
             
-            // 2. Following Creator Boost (+1500 points)
-            if (reel.isFollowingCreator) {
-                score += 1500.0
+            // 2. Personalization
+            if (reel.isFollowingCreator) score += 2000.0
+            if (reel.caption.lowercase().contains(userCategory) && userCategory.isNotEmpty()) score += 1500.0
+            if (reel.caption.lowercase().contains("#viral") || reel.caption.lowercase().contains("#trending")) score += 1000.0
+
+            // 3. Testing & Boosting
+            val views = reel.viewsCount
+            if (views < 100) {
+                score += 15000.0 
+            } else {
+                val engagementCount = reel.likesCount + reel.commentsCount + reel.sharesCount
+                val engagementRate = if (views > 0) (engagementCount.toDouble() / views) else 0.0
+                if (engagementRate > 0.10) score += 25000.0 
             }
             
-            // 3. User Relationship Boost: If the creator is the owner/admin or has #viral hashtags
-            val isOwnerContent = reel.creatorUsername.lowercase() == currentUser || reel.creatorUsername.lowercase() == "sakinay_esmin"
-            if (isOwnerContent) {
-                score += 5000.0 // Push admin content to the top!
-            }
-            if (reel.caption.lowercase().contains("#viral") || reel.caption.lowercase().contains("#boost")) {
-                score += 2500.0 // Boost viral hashtags
-            }
+            if (reel.creatorUsername.lowercase() == "sakinay_esmin") score += 5000.0
+
+            // 4. Time-Decay
+            val ageInHours = (System.currentTimeMillis() - reel.timestamp).toDouble() / (1000 * 60 * 60)
+            val decayFactor = Math.pow(ageInHours + 2.0, 1.5)
+            val finalScore = score / decayFactor
             
-            // 4. Admin Viral Booster (Heating feature)
-            if (reel.isViralBoosted) {
-                score += 50000.0 // Overwhelming viral force to keep it pinned at the top!
-            }
-            
-            // 5. Time Decay Penalty: Newer content ranks higher
-            val timeDiffHours = (System.currentTimeMillis() - reel.timestamp).toDouble() / (1000 * 60 * 60)
-            val decay = 1.0 / (1.0 + 0.02 * timeDiffHours) // gentle time decay
-            
-            val finalScore = score * decay
             reel to finalScore
         }
-        .sortedByDescending { it.second }
-        .map { it.first }
+
+        // Separate into Followed and Unfollowed lists
+        val followed = scoredReels.filter { it.first.isFollowingCreator }
+            .sortedByDescending { it.second }
+            .map { it.first }
+            .toMutableList()
+            
+        val unfollowed = scoredReels.filter { !it.first.isFollowingCreator }
+            .sortedByDescending { it.second }
+            .map { it.first }
+            .toMutableList()
+            
+        val result = mutableListOf<ReelEntity>()
+        
+        // INTERLEAVING RULE: 40% Followed (2) vs 60% Unfollowed (3)
+        // This ensures the feed is balanced as requested (2:3 ratio)
+        while (followed.isNotEmpty() || unfollowed.isNotEmpty()) {
+            // Add 2 from Followed list
+            repeat(2) {
+                if (followed.isNotEmpty()) result.add(followed.removeAt(0))
+            }
+            // Add 3 from Unfollowed list
+            repeat(3) {
+                if (unfollowed.isNotEmpty()) result.add(unfollowed.removeAt(0))
+            }
+        }
+        
+        return result
     }
 
     private fun extractVideoThumbnail(context: android.content.Context, uri: Uri): String? {
@@ -2659,7 +2859,8 @@ data class StoryModel(
     val likes: List<String> = emptyList(),
     val mediaUrl: String? = null,
     val mediaType: String = "image",
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val hiddenFrom: List<String> = emptyList()
 )
 
 data class StoryViewerInfo(

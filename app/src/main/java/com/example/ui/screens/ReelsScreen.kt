@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.ReelEntity
 import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
+import com.example.ui.components.CdnVideoPlayer
 import com.example.ui.components.CommentBottomSheet
 import com.example.ui.components.FullScreenNativeVideoAd
 import com.example.ui.components.ReelsFeedItem
@@ -298,11 +299,7 @@ fun ReelViewportItem(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(startColor, endColor)
-                )
-            )
+            .background(Color.Black)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -314,6 +311,30 @@ fun ReelViewportItem(
                 )
             }
     ) {
+        // Track Watch Time: Increment every 3 seconds while this Composable is active
+        LaunchedEffect(reel.id) {
+            while (true) {
+                delay(3000)
+                viewModel.updateReelWatchTime(reel, 3)
+            }
+        }
+
+        // ACTUAL VIDEO PLAYER
+        if (reel.mediaUrl.isNotEmpty()) {
+            CdnVideoPlayer(
+                videoUrl = reel.mediaUrl,
+                modifier = Modifier.fillMaxSize(),
+                autoPlay = true,
+                isLooping = true
+            )
+        } else if (reel.thumbnailUrl.isNotEmpty()) {
+            AsyncImage(
+                model = reel.thumbnailUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         // Heart Overlay Animation for double tap
         androidx.compose.animation.AnimatedVisibility(
             visible = showHeartOverlay,
@@ -400,22 +421,6 @@ fun ReelViewportItem(
                     fontSize = 14.sp
                 )
 
-                if (reel.isViralBoosted) {
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xFFFF9900))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "VIRAL 🔥",
-                            color = Color.White,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Black
-                        )
-                    }
-                }
 
                 if (!isCurrentUser) {
                     Spacer(modifier = Modifier.width(10.dp))
@@ -581,6 +586,7 @@ fun ReelViewportItem(
                             context.startActivity(
                                 android.content.Intent.createChooser(shareIntent, "Share Reel via")
                             )
+                            viewModel.incrementReelShares(reel)
                         } catch (e: Exception) {
                             Toast.makeText(
                                 context,
@@ -650,19 +656,6 @@ fun ReelViewportItem(
                                       (currentUserProfile.username.lowercase() == "sakinay_esmin" && reel.creatorUsername.lowercase() == "sakinay_esmin")
 
                     if (isReelOwner) {
-                        DropdownMenuItem(
-                            text = { 
-                                Text(
-                                    if (reel.isViralBoosted) "Remove Viral Boost" else "🚀 Viral Boost (Admin)", 
-                                    color = if (reel.isViralBoosted) Color.Red else Color(0xFF0099FF),
-                                    fontWeight = FontWeight.Bold
-                                ) 
-                            },
-                            onClick = {
-                                viewModel.toggleViralBoostReel(reel)
-                                showMoreMenu = false
-                            }
-                        )
                         DropdownMenuItem(
                             text = { 
                                 Text(

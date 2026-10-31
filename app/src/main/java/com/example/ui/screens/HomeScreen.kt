@@ -70,6 +70,7 @@ import com.example.ui.components.CommentBottomSheet
 import com.example.ui.components.ReportPostBottomSheet
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.components.FullScreenPhotoViewer
+import com.example.ui.components.CdnVideoPlayer
 import com.example.ui.theme.WarmCreamBackground
 import com.example.ui.theme.WarmCreamTextPrimary
 import com.example.ui.theme.WarmCreamTextSecondary
@@ -91,11 +92,10 @@ fun HomeScreen(
     // State to manage story playback dialog
     var activeStoryUser by remember { mutableStateOf<String?>(null) }
 
-    // User Story Cards - Only the real logged-in user's story
+    // User Story Cards - All active stories from Firestore
     val currentProfile by viewModel.profileState.collectAsState()
     val personalPhotos by viewModel.personalPhotosState.collectAsState()
-    val storyState by viewModel.currentStoryState.collectAsState()
-    val hasUploadedStory = storyState != null && !storyState?.mediaUrl.isNullOrEmpty()
+    val allStories by viewModel.allStories.collectAsState()
 
     // Observe active post opened on Home Screen (e.g. from user profiles)
     val selectedHomePost by viewModel.selectedHomePost.collectAsState()
@@ -227,35 +227,149 @@ fun HomeScreen(
                         .testTag("home_feed_list")
                 ) {
                     // Item A: Horizontal Stories Tray (Instagram Style Compact Circle)
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
+                    val myStory = allStories.find { it.ownerUsername.lowercase() == currentProfile.username.lowercase() }
+                    val otherStories = allStories.filter { it.ownerUsername.lowercase() != currentProfile.username.lowercase() }
+
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
                         ) {
-                            if (hasUploadedStory) {
-                                item(key = "my_uploaded_story") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                // 1. MY STORY / ADD STORY
+                                item(key = "my_story_slot") {
+                                    if (myStory != null) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center,
+                                            modifier = Modifier
+                                                .clickable { activeStoryUser = currentProfile.username }
+                                                .testTag("my_uploaded_story_item")
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(68.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        Brush.linearGradient(
+                                                            colors = listOf(Color(0xFFE59424), Color(0xFFF56040), Color(0xFFC48B5E))
+                                                        )
+                                                    )
+                                                    .padding(2.5.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .clip(CircleShape)
+                                                        .background(Color.White)
+                                                        .padding(2.dp)
+                                                ) {
+                                                    AsyncImage(
+                                                        model = myStory.mediaUrl,
+                                                        contentDescription = "My Story",
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "Your story",
+                                                color = WarmCreamTextPrimary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    } else {
+                                        // Add Story Button
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center,
+                                            modifier = Modifier
+                                                .clickable { onNavigateTo(Screen.Create) }
+                                                .testTag("add_story_button")
+                                        ) {
+                                            Box(
+                                                modifier = Modifier.size(68.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(64.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0xFFE8DFC8))
+                                                        .border(1.5.dp, Color(0xFFC48B5E).copy(alpha = 0.4f), CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (currentProfile.profilePic.isNotEmpty() && (currentProfile.profilePic.startsWith("content://") || currentProfile.profilePic.startsWith("http"))) {
+                                                        AsyncImage(
+                                                            model = currentProfile.profilePic,
+                                                            contentDescription = "Profile Photo",
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize()
+                                                        )
+                                                    } else {
+                                                        Text(
+                                                            text = currentProfile.name.take(1).uppercase().ifEmpty { "U" },
+                                                            color = WarmCreamTextPrimary,
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 20.sp
+                                                        )
+                                                    }
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(22.dp)
+                                                        .align(Alignment.BottomEnd)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0xFF0095F6))
+                                                        .border(2.dp, Color.White, CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Add,
+                                                        contentDescription = "Add Story",
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "Your story",
+                                                color = WarmCreamTextPrimary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // 2. OTHER STORIES
+                                items(otherStories, key = { it.storyId }) { story ->
+                                    val hasViewed = story.viewerIds.contains(currentProfile.username)
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.Center,
-                                        modifier = Modifier
-                                            .clickable { activeStoryUser = currentProfile.username }
-                                            .testTag("my_uploaded_story_item")
+                                        modifier = Modifier.clickable { activeStoryUser = story.ownerUsername }
                                     ) {
                                         Box(
                                             modifier = Modifier
                                                 .size(68.dp)
                                                 .clip(CircleShape)
                                                 .background(
-                                                    Brush.linearGradient(
-                                                        colors = listOf(Color(0xFFE59424), Color(0xFFF56040), Color(0xFFC48B5E))
-                                                    )
+                                                    if (hasViewed) {
+                                                        Brush.linearGradient(listOf(Color.LightGray, Color.Gray))
+                                                    } else {
+                                                        Brush.linearGradient(listOf(Color(0xFFE59424), Color(0xFFF56040), Color(0xFFC48B5E)))
+                                                    }
                                                 )
                                                 .padding(2.5.dp),
                                             contentAlignment = Alignment.Center
@@ -268,92 +382,28 @@ fun HomeScreen(
                                                     .padding(2.dp)
                                             ) {
                                                 AsyncImage(
-                                                    model = storyState?.mediaUrl,
-                                                    contentDescription = "My Story",
+                                                    model = story.mediaUrl,
+                                                    contentDescription = "Story from ${story.ownerUsername}",
                                                     contentScale = ContentScale.Crop,
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .clip(CircleShape)
+                                                    modifier = Modifier.fillMaxSize().clip(CircleShape)
                                                 )
                                             }
                                         }
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = "Your story",
+                                            text = story.ownerUsername,
                                             color = WarmCreamTextPrimary,
                                             fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            } else {
-                                item(key = "add_story_card") {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center,
-                                        modifier = Modifier
-                                            .clickable { onNavigateTo(Screen.Create) }
-                                            .testTag("add_story_button")
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.size(68.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(64.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0xFFE8DFC8))
-                                                    .border(1.5.dp, Color(0xFFC48B5E).copy(alpha = 0.4f), CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                if (currentProfile.profilePic.isNotEmpty() && (currentProfile.profilePic.startsWith("content://") || currentProfile.profilePic.startsWith("http"))) {
-                                                    AsyncImage(
-                                                        model = currentProfile.profilePic,
-                                                        contentDescription = "Profile Photo",
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                } else {
-                                                    Text(
-                                                        text = currentProfile.name.take(1).uppercase().ifEmpty { "U" },
-                                                        color = WarmCreamTextPrimary,
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 20.sp
-                                                    )
-                                                }
-                                            }
-
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(22.dp)
-                                                    .align(Alignment.BottomEnd)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0xFF0095F6))
-                                                    .border(2.dp, Color.White, CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Add,
-                                                    contentDescription = "Add Story",
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Your story",
-                                            color = WarmCreamTextPrimary,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Medium
+                                            fontWeight = if (hasViewed) FontWeight.Normal else FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 64.dp)
                                         )
                                     }
                                 }
                             }
                         }
                     }
-                }
 
                 // Item B1: Dynamic Profile-Opened Post (if user clicked a photo from any user's profile)
                 selectedHomePost?.let { profilePost ->
@@ -409,7 +459,18 @@ fun HomeScreen(
                                 }
                             },
                             onPhotoClick = {
-                                // Disabled when opened from profile as requested
+                                selectedPhotoForViewer = FullScreenPhotoData(
+                                    id = profilePost.id.hashCode(),
+                                    title = profilePost.caption,
+                                    imageUrl = profilePost.imageUrl,
+                                    creatorName = profilePost.userDisplayName,
+                                    creatorUsername = profilePost.username,
+                                    creatorAvatar = profilePost.userAvatarUrl,
+                                    initialLikes = profilePost.likesCount,
+                                    initialComments = profilePost.commentsCount,
+                                    initialIsLiked = profilePost.isLiked,
+                                    timeAgo = profilePost.timeAgo
+                                )
                             },
                             onDismissBanner = {
                                 viewModel.clearOpenedHomePost()
@@ -492,7 +553,18 @@ fun HomeScreen(
                                 }
                             },
                             onPhotoClick = {
-                                Toast.makeText(context, "Double tap photo to like! ❤️", Toast.LENGTH_SHORT).show()
+                                selectedPhotoForViewer = FullScreenPhotoData(
+                                    id = photo.id,
+                                    title = photo.title,
+                                    imageUrl = photo.imageUrl,
+                                    creatorName = photo.creatorName,
+                                    creatorUsername = photo.creatorUsername,
+                                    creatorAvatar = photo.creatorAvatar,
+                                    initialLikes = photo.initialLikes,
+                                    initialComments = photo.initialComments,
+                                    initialIsLiked = isLiked,
+                                    timeAgo = photo.timeAgo
+                                )
                             },
                             onDismissBanner = null,
                             isOwner = isPhotoOwner,
@@ -583,6 +655,7 @@ fun HomeScreen(
                                         addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                                     }
                                     viewModel.app.startActivity(shareIntent)
+                                    viewModel.incrementReelShares(reel)
                                 } catch (e: Exception) {
                                     Toast.makeText(
                                         viewModel.app,
@@ -591,7 +664,8 @@ fun HomeScreen(
                                     ).show()
                                 }
                             },
-                            onProfileClick = { onNavigateTo(Screen.OtherProfile(reel.creatorUsername)) }
+                            onProfileClick = { onNavigateTo(Screen.OtherProfile(reel.creatorUsername)) },
+                            onReelClick = { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
                         )
                     }
                 }
@@ -1146,7 +1220,8 @@ fun InstagramFeedPost(
     onCommentClick: () -> Unit,
     onFollowToggle: () -> Unit,
     onShareClick: () -> Unit,
-    onProfileClick: () -> Unit
+    onProfileClick: () -> Unit,
+    onReelClick: () -> Unit
 ) {
     val presetStart = remember(reel.bgGradientStart) {
         try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) }
@@ -1349,6 +1424,9 @@ fun InstagramFeedPost(
                                 onLikeToggle()
                             }
                             showBigHeartOverlay = true
+                        },
+                        onTap = {
+                            onReelClick()
                         }
                     )
                 },
@@ -1667,7 +1745,7 @@ fun StoryPlaybackDialog(
                 null
             }
 
-            // Real Media Display / Background Image Container
+            // Real Media Display
             var layoutWidth by remember { mutableStateOf(0) }
             Box(
                 modifier = Modifier
@@ -1696,28 +1774,38 @@ fun StoryPlaybackDialog(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Background image loading via Coil AsyncImage
-                coil.compose.AsyncImage(
-                    model = mediaModel,
-                    contentDescription = "Story Media",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    onLoading = { 
-                        imageLoading = true
-                        imageError = false 
-                    },
-                    onSuccess = { 
-                        imageLoading = false
-                        imageError = false 
-                    },
-                    onError = { 
-                        imageLoading = false
-                        imageError = true 
-                    }
-                )
+                if (storyState?.mediaType == "video" && !mediaModel.isNullOrEmpty()) {
+                    // VIDEO PLAYER FOR STORIES
+                    com.example.ui.components.CdnVideoPlayer(
+                        videoUrl = mediaModel,
+                        modifier = Modifier.fillMaxSize(),
+                        autoPlay = !shouldPauseTimer,
+                        isLooping = false // Story should move to next after finishing usually, or just stay
+                    )
+                } else {
+                    // PHOTO DISPLAY
+                    coil.compose.AsyncImage(
+                        model = mediaModel,
+                        contentDescription = "Story Media",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit, // Fit ensures whole photo is visible
+                        onLoading = { 
+                            imageLoading = true
+                            imageError = false 
+                        },
+                        onSuccess = { 
+                            imageLoading = false
+                            imageError = false 
+                        },
+                        onError = { 
+                            imageLoading = false
+                            imageError = true 
+                        }
+                    )
+                }
 
-                // Error Fallback UI: Beautiful Dynamic Gradient overlay so user never experiences crash or empty screen
-                if (imageError) {
+                // Error Fallback UI
+                if (imageError && storyState?.mediaType != "video") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -1744,18 +1832,12 @@ fun StoryPlaybackDialog(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "YouSnap Story Viewer",
-                                color = Color.White.copy(alpha = 0.6f),
-                                fontSize = 12.sp
-                            )
                         }
                     }
                 }
 
                 // Loading State Indicator
-                if (imageLoading) {
+                if (imageLoading && storyState?.mediaType != "video") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
