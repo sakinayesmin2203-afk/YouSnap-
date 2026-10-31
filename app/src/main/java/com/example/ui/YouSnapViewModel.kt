@@ -2213,7 +2213,6 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             if (firestore == null) return
             
             allStoriesListener = firestore.collection("stories")
-                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
                 .limit(50)
                 .addSnapshotListener { snapshots, error ->
                     if (error != null) {

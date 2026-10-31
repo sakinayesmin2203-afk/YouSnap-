@@ -22,6 +22,9 @@ service cloud.firestore {
     match /stories/{storyId} {
       allow read, write: if true;
     }
+    match /stories/{storyId=**} {
+      allow read, write: if true;
+    }
 
     // Users collection
     match /users/{userId} {
