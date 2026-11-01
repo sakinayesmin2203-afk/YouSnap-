@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +10,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.testTag
+import com.example.R
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -84,54 +90,27 @@ fun SignUpScreen(
             // 1. HEADER LOGO & BRANDING (Replicated perfectly for consistency)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Professional clean camera icon logo
+                // YouSnap official logo in a round circular frame
                 Box(
-                    modifier = Modifier.size(72.dp),
+                    modifier = Modifier
+                        .size(54.dp)
+                        .shadow(elevation = 4.dp, shape = CircleShape)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .border(1.5.dp, Color(0xFF0095F6), CircleShape)
+                        .testTag("signup_app_logo"),
                     contentAlignment = Alignment.Center
                 ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val navyColor = Color(0xFF0F2C59)
-                        val accentColor = Color(0xFFFF9F1C)
-                        
-                        // Main Camera Body
-                        drawRoundRect(
-                            color = navyColor,
-                            topLeft = Offset(size.width * 0.15f, size.height * 0.3f),
-                            size = Size(size.width * 0.7f, size.height * 0.5f),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(10.dp.toPx())
-                        )
-                        
-                        // Top part of the camera
-                        drawRoundRect(
-                            color = navyColor,
-                            topLeft = Offset(size.width * 0.35f, size.height * 0.22f),
-                            size = Size(size.width * 0.3f, size.height * 0.1f),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx())
-                        )
-                        
-                        // Lens outer ring
-                        drawCircle(
-                            color = accentColor,
-                            radius = 14.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                        
-                        // Lens inner
-                        drawCircle(
-                            color = Color.White,
-                            radius = 9.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                        
-                        // Pupil
-                        drawCircle(
-                            color = navyColor,
-                            radius = 5.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                    }
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_yousnap_logo),
+                        contentDescription = "YouSnap Logo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                    )
                 }
 
                 Row(

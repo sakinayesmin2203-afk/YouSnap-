@@ -88,9 +88,22 @@ fun ReelsScreen(
     var selectedReelForComments by remember { mutableStateOf<ReelEntity?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
+    val userPrivacyMap by viewModel.userPrivacyMap.collectAsState()
+    val isFollowingMap by viewModel.otherUserIsFollowing.collectAsState()
+
+    val visibleReels = remember(reels, userPrivacyMap, isFollowingMap, currentUserProfile) {
+        reels.filter { reel ->
+            val creator = reel.creatorUsername.lowercase()
+            val isOwner = currentUserProfile.username.equals(creator, ignoreCase = true)
+            val isPrivate = userPrivacyMap[creator] ?: false
+            val isFollowing = isFollowingMap[creator] ?: false
+            !isPrivate || isOwner || isFollowing
+        }
+    }
+
     // Build feed with a full-screen Native Ad after every 6 video reels
-    val feedItems = remember(reels) {
-        buildReelsFeedWithAds(reels, adInterval = 6)
+    val feedItems = remember(visibleReels) {
+        buildReelsFeedWithAds(visibleReels, adInterval = 6)
     }
 
     // Auto-scroll to startReelId if specified
@@ -133,7 +146,7 @@ fun ReelsScreen(
         Box(
             modifier = Modifier.fillMaxSize()
         ) {
-            if (reels.isEmpty()) {
+            if (visibleReels.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center

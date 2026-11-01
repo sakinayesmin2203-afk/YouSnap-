@@ -44,6 +44,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import com.example.R
 import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -218,55 +221,27 @@ fun LoginScreen(
             // 1. HEADER: Logo, Camera Icon, and Tagline
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Professional clean camera icon logo
+                // YouSnap official logo in a round circular frame
                 Box(
                     modifier = Modifier
-                        .size(80.dp),
+                        .size(54.dp)
+                        .shadow(elevation = 4.dp, shape = CircleShape)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .border(1.5.dp, Color(0xFF0095F6), CircleShape)
+                        .testTag("login_app_logo"),
                     contentAlignment = Alignment.Center
                 ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val navyColor = Color(0xFF0F2C59)
-                        val accentColor = Color(0xFFFF9F1C)
-                        
-                        // Main Camera Body
-                        drawRoundRect(
-                            color = navyColor,
-                            topLeft = Offset(size.width * 0.15f, size.height * 0.3f),
-                            size = Size(size.width * 0.7f, size.height * 0.5f),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx())
-                        )
-                        
-                        // Top part of the camera
-                        drawRoundRect(
-                            color = navyColor,
-                            topLeft = Offset(size.width * 0.35f, size.height * 0.22f),
-                            size = Size(size.width * 0.3f, size.height * 0.1f),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx())
-                        )
-                        
-                        // Lens outer ring
-                        drawCircle(
-                            color = accentColor,
-                            radius = 16.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                        
-                        // Lens inner
-                        drawCircle(
-                            color = Color.White,
-                            radius = 10.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                        
-                        // Pupil
-                        drawCircle(
-                            color = navyColor,
-                            radius = 6.dp.toPx(),
-                            center = Offset(size.width * 0.5f, size.height * 0.55f)
-                        )
-                    }
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_yousnap_logo),
+                        contentDescription = "YouSnap Logo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                    )
                 }
 
                 // Brand text

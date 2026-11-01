@@ -119,6 +119,8 @@ class MainActivity : ComponentActivity() {
                         if (!popped) {
                             // Stay on home
                         }
+                    } else if (currentScreen is Screen.PinLock) {
+                        viewModel.logout()
                     } else {
                         val popped = viewModel.navigateBack()
                         if (!popped) {
@@ -329,6 +331,11 @@ class MainActivity : ComponentActivity() {
                             is Screen.SupportHelp -> SupportHelpScreen(
                                 viewModel = viewModel,
                                 onBack = { viewModel.navigateBack() }
+                            )
+
+                            is Screen.PinLock -> PinLockScreen(
+                                viewModel = viewModel,
+                                onUnlockSuccess = { viewModel.clearAndNavigateTo(Screen.Home) }
                             )
                         }
                     }

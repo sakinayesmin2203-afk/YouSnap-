@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -69,16 +70,45 @@ fun ProfileScreen(
 
     val followersCount by viewModel.myFollowersCount.collectAsState()
     val followingCount by viewModel.myFollowingCount.collectAsState()
+    val settings by viewModel.settingsState.collectAsState()
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Text(
-                        text = "@${profile.username}",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 18.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        if (settings.isPrivateAccount) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Private Account",
+                                modifier = Modifier.size(16.dp).padding(end = 4.dp),
+                                tint = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        Text(
+                            text = "@${profile.username}",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 18.sp
+                        )
+                        if (settings.isPrivateAccount) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                            ) {
+                                Text(
+                                    text = "Private",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
@@ -162,20 +192,51 @@ fun ProfileScreen(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                // Category tag
-                Box(
-                    modifier = Modifier
-                        .padding(vertical = 4.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                // Category tag & Private tag
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 4.dp)
                 ) {
-                    Text(
-                        text = profile.category,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = profile.category,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    if (settings.isPrivateAccount) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Color(0xFF2E2019).copy(alpha = 0.08f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Private Account",
+                                    modifier = Modifier.size(11.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "Private",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
                 }
 
                 Text(

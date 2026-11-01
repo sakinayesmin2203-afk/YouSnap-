@@ -100,7 +100,15 @@ fun UserProfileScreen(
         allReels.filter { it.creatorUsername.equals(username, ignoreCase = true) }
     }
 
+    LaunchedEffect(username) {
+        viewModel.fetchUserPrivacy(username)
+    }
+
+    val userPrivacyMap by viewModel.userPrivacyMap.collectAsState()
+    val isAccountPrivate = userPrivacyMap[username.lowercase()] ?: false
+    val isOwner = username.equals(currentProfile.username, ignoreCase = true)
     val isFollowing = isFollowingMap[username.lowercase()] ?: false
+    val canViewContent = !isAccountPrivate || isFollowing || isOwner
     val followerCount = followersMap[username.lowercase()] ?: 0
 
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -135,12 +143,37 @@ fun UserProfileScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "@$username",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
-                        color = WarmCreamTextPrimary
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isAccountPrivate) {
+                            Icon(
+                                imageVector = Icons.Outlined.Lock,
+                                contentDescription = "Private Account",
+                                tint = WarmCreamTextPrimary,
+                                modifier = Modifier.size(16.dp).padding(end = 4.dp)
+                            )
+                        }
+                        Text(
+                            text = "@$username",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = WarmCreamTextPrimary
+                        )
+                        if (isAccountPrivate) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFE59424).copy(alpha = 0.2f)
+                            ) {
+                                Text(
+                                    text = "Private",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = WarmCreamTextPrimary,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                 },
                 navigationIcon = {
                     IconButton(
@@ -301,6 +334,33 @@ fun UserProfileScreen(
                     lineHeight = 18.sp
                 )
 
+                if (isAccountPrivate) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFF2E2019).copy(alpha = 0.08f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Lock,
+                                contentDescription = "Private",
+                                tint = WarmCreamTextPrimary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Private Account",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = WarmCreamTextPrimary
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -401,8 +461,9 @@ fun UserProfileScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Content Grid Tab Switcher Bar
-            TabRow(
+            if (canViewContent) {
+                // Content Grid Tab Switcher Bar
+                TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = WarmCreamBackground,
                 contentColor = WarmCreamTextPrimary,
@@ -602,6 +663,45 @@ fun UserProfileScreen(
                             }
                         }
                     }
+                }
+            }
+        } else {
+                // Private Account Lock Placeholder
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 32.dp, vertical = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .border(2.dp, WarmCreamTextPrimary, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = "Private Account",
+                            modifier = Modifier.size(36.dp),
+                            tint = WarmCreamTextPrimary
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "This Account is Private",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        color = WarmCreamTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Follow this account to see their photos and video reels.",
+                        fontSize = 13.sp,
+                        color = WarmCreamTextSecondary,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }

@@ -195,7 +195,7 @@ fun SettingsScreen(
                                 "Logged Out Successfully!",
                                 Toast.LENGTH_SHORT
                             ).show()
-                            viewModel.clearAndNavigateTo(Screen.Login)
+                            viewModel.logout()
                         },
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) {

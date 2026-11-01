@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -353,27 +354,73 @@ fun PrivacySecurityScreen(
 
             Text("Security Options", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
 
-            // 2FA Row
+            // Security PIN Lock Row
+            val profile by viewModel.profileState.collectAsState()
+            var showPinDialog by remember { mutableStateOf(false) }
+            var newPin by remember { mutableStateOf("") }
+
+            if (showPinDialog) {
+                AlertDialog(
+                    onDismissRequest = { showPinDialog = false },
+                    title = { Text(if (profile.isPinEnabled) "Update Security PIN" else "Set Security PIN") },
+                    text = {
+                        Column {
+                            Text("Enter a 6-digit PIN to secure your app access.")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = newPin,
+                                onValueChange = { if (it.length <= 6 && it.all { c -> c.isDigit() }) newPin = it },
+                                label = { Text("Enter 6-digit PIN") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                visualTransformation = PasswordVisualTransformation()
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                if (newPin.length == 6) {
+                                    viewModel.setAppPin(newPin, true)
+                                    showPinDialog = false
+                                    newPin = ""
+                                    android.widget.Toast.makeText(viewModel.app, "PIN Updated Successfully!", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(viewModel.app, "PIN must be 6 digits", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        ) { Text("Save") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showPinDialog = false }) { Text("Cancel") }
+                    }
+                )
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                    .padding(14.dp),
+                    .padding(14.dp)
+                    .clickable { showPinDialog = true },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Two-Factor Authentication (2FA)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text("Secure your account with multi-factor passcodes.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("Security PIN Lock", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Secure your app with a 6-digit PIN.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
                 Switch(
-                    checked = settings.is2FaEnabled,
+                    checked = profile.isPinEnabled,
                     onCheckedChange = {
-                        viewModel.toggle2Fa()
-                        android.widget.Toast.makeText(viewModel.app, if (!settings.is2FaEnabled) "2FA Enabled" else "2FA Disabled", android.widget.Toast.LENGTH_SHORT).show()
+                        if (it) {
+                            showPinDialog = true
+                        } else {
+                            viewModel.setAppPin("", false)
+                            android.widget.Toast.makeText(viewModel.app, "PIN Lock Disabled", android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     },
-                    modifier = Modifier.testTag("2fa_switch")
+                    modifier = Modifier.testTag("app_pin_switch")
                 )
             }
 

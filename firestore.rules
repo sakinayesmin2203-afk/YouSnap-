@@ -28,8 +28,7 @@ service cloud.firestore {
 
     // Users collection
     match /users/{userId} {
-      allow read: if true;
-      allow write: if isAuthenticated() && (request.auth.uid == userId || resource == null);
+      allow read, write: if true;
     }
 
     // Follows collection

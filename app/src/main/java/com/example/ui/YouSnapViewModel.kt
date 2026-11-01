@@ -70,6 +70,7 @@ sealed class Screen {
     object SupportHelp : Screen()
     object StoryLivePrivacy : Screen()
     object ClearSearchData : Screen()
+    object PinLock : Screen()
 }
 
 class YouSnapViewModel(application: Application) : AndroidViewModel(application) {
@@ -268,11 +269,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun logout() {
+        cachedAppPin = ""
         try {
+            prefs.edit().putBoolean("is_logged_in", false).apply()
             auth?.signOut()
         } catch (e: Throwable) {
             android.util.Log.e("YouSnapViewModel", "SignOut error: ${e.message}")
         }
+        _currentUser.value = null
+        _isAppLocked.value = false
         clearAndNavigateTo(Screen.Login)
     }
 
@@ -283,6 +288,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val currentAuth = auth
                 if (currentAuth == null) {
                     registerUser(name, email, pass)
+                    prefs.edit().putBoolean("is_logged_in", true).apply()
                     val current = profileState.value
                     repository.saveProfile(current.copy(
                         name = name,
@@ -294,6 +300,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
                 currentAuth.createUserWithEmailAndPassword(email, pass)
                     .addOnSuccessListener { authResult ->
+                        prefs.edit().putBoolean("is_logged_in", true).apply()
                         val uid = authResult.user?.uid ?: ""
                         // Save user profile to Firestore
                         val userProfile = mapOf(
@@ -310,22 +317,44 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             db?.collection("users")?.document(uid)
                                 ?.set(userProfile)
                                 ?.addOnSuccessListener {
-                                    viewModelScope.launch {
-                                        val current = profileState.value
-                                        repository.saveProfile(current.copy(
-                                            name = name,
-                                            username = email.split("@")[0].lowercase(),
-                                            email = email
-                                        ))
-                                    }
                                     registerUser(name, email, pass)
+                                    val current = profileState.value
+                                    val newProfile = current.copy(
+                                        name = name,
+                                        username = email.split("@")[0].lowercase(),
+                                        email = email
+                                    )
+                                    viewModelScope.launch {
+                                        repository.saveProfile(newProfile)
+                                        checkPinAndNavigate(newProfile)
+                                    }
                                     onSuccess()
                                 }
                                 ?.addOnFailureListener {
                                     registerUser(name, email, pass)
+                                    val current = profileState.value
+                                    val newProfile = current.copy(
+                                        name = name,
+                                        username = email.split("@")[0].lowercase(),
+                                        email = email
+                                    )
+                                    viewModelScope.launch {
+                                        repository.saveProfile(newProfile)
+                                        checkPinAndNavigate(newProfile)
+                                    }
                                     onSuccess()
                                 } ?: run {
                                     registerUser(name, email, pass)
+                                    val current = profileState.value
+                                    val newProfile = current.copy(
+                                        name = name,
+                                        username = email.split("@")[0].lowercase(),
+                                        email = email
+                                    )
+                                    viewModelScope.launch {
+                                        repository.saveProfile(newProfile)
+                                        checkPinAndNavigate(newProfile)
+                                    }
                                     onSuccess()
                                 }
                         } catch (e: Throwable) {
@@ -337,6 +366,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         // Fallback to local registration so app works smoothly even without network/Firebase setup
                         android.util.Log.w("YouSnapViewModel", "Firebase signup failed, falling back locally: ${e.message}")
                         registerUser(name, email, pass)
+                        prefs.edit().putBoolean("is_logged_in", true).apply()
                         val current = profileState.value
                         viewModelScope.launch {
                             repository.saveProfile(current.copy(
@@ -349,6 +379,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
             } catch (e: Throwable) {
                 registerUser(name, email, pass)
+                prefs.edit().putBoolean("is_logged_in", true).apply()
                 val current = profileState.value
                 viewModelScope.launch {
                     repository.saveProfile(current.copy(
@@ -368,10 +399,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             try {
                 // Check local registered credentials or default admin first
                 if (email == "admin@yousnap.com" && pass == _adminPassword.value) {
+                    checkPinAndNavigate(profileState.value)
                     onSuccess()
                     return@launch
                 }
                 if (_registeredEmailOrPhone.value != null && email == _registeredEmailOrPhone.value && pass == _registeredPassword.value) {
+                    checkPinAndNavigate(profileState.value)
                     onSuccess()
                     return@launch
                 }
@@ -396,31 +429,51 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                             val emailFromDb = document.getString("email") ?: email
                                             val bio = document.getString("bio") ?: ""
                                             val category = document.getString("category") ?: ""
+                                            val isPinEnabled = document.getBoolean("isPinEnabled") ?: false
+                                            val appPin = document.getString("appPin") ?: ""
+                                            val isPrivateFromDb = document.getBoolean("isPrivateAccount") ?: document.getBoolean("isPrivate") ?: false
                                             
                                             viewModelScope.launch {
                                                 val current = profileState.value
-                                                repository.saveProfile(current.copy(
+                                                val updatedProfile = current.copy(
                                                     name = name,
                                                     username = username,
                                                     email = emailFromDb,
                                                     bio = bio,
                                                     category = category,
-                                                    profilePic = profilePic
-                                                ))
+                                                    profilePic = profilePic,
+                                                    isPinEnabled = isPinEnabled,
+                                                    appPin = appPin
+                                                )
+                                                repository.saveProfile(updatedProfile)
+                                                if (isPrivateFromDb) {
+                                                    val curSettings = settingsState.value
+                                                    repository.saveSettings(curSettings.copy(isPrivateAccount = isPrivateFromDb))
+                                                    _userPrivacyMap.value = _userPrivacyMap.value + (username.lowercase() to isPrivateFromDb)
+                                                }
+                                                checkPinAndNavigate(updatedProfile)
                                             }
+                                        } else {
+                                            checkPinAndNavigate(profileState.value)
                                         }
                                     onSuccess()
                                 }
                                 ?.addOnFailureListener {
+                                    checkPinAndNavigate(profileState.value)
                                     onSuccess()
-                                } ?: onSuccess()
+                                } ?: run {
+                                    checkPinAndNavigate(profileState.value)
+                                    onSuccess()
+                                }
                         } catch (e: Throwable) {
+                            checkPinAndNavigate(profileState.value)
                             onSuccess()
                         }
                     }
                     .addOnFailureListener { e ->
                         // If Firebase fails, check if local fallback credentials match
                         if (_registeredEmailOrPhone.value != null && email == _registeredEmailOrPhone.value && pass == _registeredPassword.value) {
+                            checkPinAndNavigate(profileState.value)
                             onSuccess()
                         } else {
                             onError(e.message ?: "Login Failed. Please check your credentials.")
@@ -428,6 +481,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
             } catch (e: Throwable) {
                 if (_registeredEmailOrPhone.value != null && email == _registeredEmailOrPhone.value && pass == _registeredPassword.value) {
+                    checkPinAndNavigate(profileState.value)
                     onSuccess()
                 } else {
                     onError(e.message ?: "An unexpected error occurred during login")
@@ -440,12 +494,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun loginAsDemoUser(onSuccess: () -> Unit) {
         viewModelScope.launch {
             val current = profileState.value
-            repository.saveProfile(current.copy(
+            val demoProfile = current.copy(
                 name = "Demo User",
                 username = "demo_user",
                 bio = "Exploring YouSnap as Demo",
                 category = "Creator"
-            ))
+            )
+            repository.saveProfile(demoProfile)
+            checkPinAndNavigate(demoProfile)
             onSuccess()
         }
     }
@@ -488,27 +544,61 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                 }
                                 viewModelScope.launch {
                                     val current = profileState.value
-                                    repository.saveProfile(current.copy(
-                                        name = name,
-                                        username = email.split("@")[0].lowercase(),
-                                        email = email,
-                                        profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
-                                    ))
-                                    registerUser(name, email, "google_oauth")
-                                    onSuccess()
+                                    
+                                    // Fetch actual profile from Firestore to get PIN status
+                                    db?.collection("users")?.document(uid)?.get()?.addOnSuccessListener { doc ->
+                                        val pinEnabledFromDb = doc.getBoolean("isPinEnabled") ?: false
+                                        val pinFromDb = doc.getString("appPin") ?: ""
+                                        val isPrivateFromDb = doc.getBoolean("isPrivateAccount") ?: doc.getBoolean("isPrivate") ?: false
+                                        
+                                        viewModelScope.launch {
+                                            val updatedProfile = current.copy(
+                                                name = name,
+                                                username = email.split("@")[0].lowercase(),
+                                                email = email,
+                                                profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic,
+                                                isPinEnabled = pinEnabledFromDb,
+                                                appPin = pinFromDb
+                                            )
+                                            repository.saveProfile(updatedProfile)
+                                            if (isPrivateFromDb) {
+                                                val curSettings = settingsState.value
+                                                repository.saveSettings(curSettings.copy(isPrivateAccount = isPrivateFromDb))
+                                                _userPrivacyMap.value = _userPrivacyMap.value + (updatedProfile.username.lowercase() to isPrivateFromDb)
+                                            }
+                                            registerUser(name, email, "google_oauth")
+                                            checkPinAndNavigate(updatedProfile)
+                                            onSuccess()
+                                        }
+                                    } ?: run {
+                                        viewModelScope.launch {
+                                            val updatedProfile = current.copy(
+                                                name = name,
+                                                username = email.split("@")[0].lowercase(),
+                                                email = email,
+                                                profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
+                                            )
+                                            repository.saveProfile(updatedProfile)
+                                            registerUser(name, email, "google_oauth")
+                                            checkPinAndNavigate(updatedProfile)
+                                            onSuccess()
+                                        }
+                                    }
                                 }
                             }
                             .addOnFailureListener { e ->
                                 android.util.Log.w("YouSnapViewModel", "Firebase signInWithCredential failed: ${e.message}, updating locally")
                                 viewModelScope.launch {
                                     val current = profileState.value
-                                    repository.saveProfile(current.copy(
+                                    val updatedProfile = current.copy(
                                         name = name,
                                         username = email.split("@")[0].lowercase(),
                                         email = email,
                                         profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
-                                    ))
+                                    )
+                                    repository.saveProfile(updatedProfile)
                                     registerUser(name, email, "google_oauth")
+                                    checkPinAndNavigate(updatedProfile)
                                     onSuccess()
                                 }
                             }
@@ -520,13 +610,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 // If no idToken or Firebase auth is unconfigured, update local repository & room profile
                 val current = profileState.value
-                repository.saveProfile(current.copy(
+                val updatedProfile = current.copy(
                     name = name,
                     username = email.split("@")[0].lowercase(),
                     email = email,
                     profilePic = if (photoUrl.isNotEmpty()) photoUrl else current.profilePic
-                ))
+                )
+                repository.saveProfile(updatedProfile)
                 registerUser(name, email, "google_oauth")
+                checkPinAndNavigate(updatedProfile)
                 onSuccess()
             } catch (e: Throwable) {
                 android.util.Log.e("YouSnapViewModel", "Google sign-in handling error: ${e.message}")
@@ -704,6 +796,67 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val _otherUserIsFollowing = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val otherUserIsFollowing: StateFlow<Map<String, Boolean>> = _otherUserIsFollowing.asStateFlow()
 
+    // Real-time tracking of each user's privacy status (true = private, false = public)
+    private val _userPrivacyMap = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val userPrivacyMap: StateFlow<Map<String, Boolean>> = _userPrivacyMap.asStateFlow()
+
+    fun isUserPrivate(username: String): Boolean {
+        val normalized = username.lowercase()
+        if (normalized.equals(profileState.value.username, ignoreCase = true)) {
+            return settingsState.value.isPrivateAccount
+        }
+        return _userPrivacyMap.value[normalized] ?: false
+    }
+
+    fun canViewUserContent(username: String): Boolean {
+        val normalized = username.lowercase()
+        if (normalized.equals(profileState.value.username, ignoreCase = true)) {
+            return true // Owner always has full access
+        }
+        val isPrivate = isUserPrivate(normalized)
+        if (!isPrivate) return true
+        val isFollowing = _otherUserIsFollowing.value[normalized] ?: false
+        return isFollowing
+    }
+
+    fun fetchUserPrivacy(username: String) {
+        val normalized = username.lowercase()
+        if (normalized.isEmpty()) return
+        if (normalized.equals(profileState.value.username, ignoreCase = true)) {
+            _userPrivacyMap.value = _userPrivacyMap.value + (normalized to settingsState.value.isPrivateAccount)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                if (firestore == null) return@launch
+                
+                // First check document with ID = normalized username
+                firestore.collection("users").document(normalized).get()
+                    .addOnSuccessListener { doc ->
+                        if (doc != null && doc.exists()) {
+                            val isPriv = doc.getBoolean("isPrivateAccount") ?: doc.getBoolean("isPrivate") ?: false
+                            _userPrivacyMap.value = _userPrivacyMap.value + (normalized to isPriv)
+                        } else {
+                            // Query by username field
+                            firestore.collection("users")
+                                .whereEqualTo("username", normalized)
+                                .limit(1)
+                                .get()
+                                .addOnSuccessListener { snapshot ->
+                                    val isPriv = snapshot.documents.firstOrNull()?.let {
+                                        it.getBoolean("isPrivateAccount") ?: it.getBoolean("isPrivate") ?: false
+                                    } ?: false
+                                    _userPrivacyMap.value = _userPrivacyMap.value + (normalized to isPriv)
+                                }
+                        }
+                    }
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "Failed to fetch user privacy: ${e.message}")
+            }
+        }
+    }
+
     // Global tracking of saved/bookmarked reel IDs
     private val _bookmarkedReelIds = MutableStateFlow<Set<Int>>(emptySet())
     val bookmarkedReelIds: StateFlow<Set<Int>> = _bookmarkedReelIds.asStateFlow()
@@ -755,12 +908,88 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // Current active screen
-    private val _currentScreen = MutableStateFlow<Screen>(Screen.Login)
+    // --- PIN LOCK SYSTEM ---
+    private val _isAppLocked = MutableStateFlow(false)
+    val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
+
+    private var cachedAppPin: String = ""
+
+    fun unlockApp(pin: String): Boolean {
+        val currentProfile = profileState.value
+        val validPin = if (cachedAppPin.isNotEmpty()) cachedAppPin else currentProfile.appPin
+        val isEnabled = currentProfile.isPinEnabled || cachedAppPin.isNotEmpty()
+        if (isEnabled && validPin == pin) {
+            _isAppLocked.value = false
+            prefs.edit().putBoolean("is_logged_in", true).apply()
+            return true
+        }
+        return false
+    }
+
+    fun setAppPin(pin: String, enabled: Boolean) {
+        cachedAppPin = if (enabled) pin else ""
+        viewModelScope.launch {
+            val myUid = auth?.currentUser?.uid
+            val myUsername = profileState.value.username
+            
+            // 1. Update Room Database
+            val updatedProfile = profileState.value.copy(
+                isPinEnabled = enabled,
+                appPin = pin
+            )
+            repository.saveProfile(updatedProfile)
+            
+            // 2. Update Firestore
+            try {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                if (firestore != null) {
+                    val updateData = mapOf(
+                        "isPinEnabled" to enabled,
+                        "appPin" to pin
+                    )
+                    
+                    // Use UID if available, else username as fallback
+                    val docId = myUid ?: myUsername
+                    if (docId.isNotEmpty()) {
+                        firestore.collection("users").document(docId)
+                            .set(updateData, com.google.firebase.firestore.SetOptions.merge())
+                            .addOnSuccessListener {
+                                android.util.Log.d("YouSnapViewModel", "Firestore PIN updated successfully")
+                            }
+                            .addOnFailureListener { e ->
+                                android.util.Log.e("YouSnapViewModel", "Firestore PIN update failed: ${e.message}")
+                            }
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("YouSnapViewModel", "Firebase PIN sync skipped: ${e.message}")
+            }
+        }
+    }
+
+    private fun checkPinAndNavigate(profile: ProfileEntity) {
+        if (profile.isPinEnabled && profile.appPin.isNotEmpty()) {
+            cachedAppPin = profile.appPin
+            _isAppLocked.value = true
+            clearAndNavigateTo(Screen.PinLock)
+        } else {
+            cachedAppPin = ""
+            prefs.edit().putBoolean("is_logged_in", true).apply()
+            _isAppLocked.value = false
+            clearAndNavigateTo(Screen.Home)
+        }
+    }
+
+    // Current active screen - directly initialize to Home if user is already logged in
+    private val _currentScreen = MutableStateFlow<Screen>(
+        if (prefs.getBoolean("is_logged_in", false)) Screen.Home else Screen.Login
+    )
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
     // Screen Backstack to support back button clicks properly!
-    private val navigationBackstack = mutableListOf<Screen>(Screen.Login)
+    private val navigationBackstack = mutableListOf<Screen>(
+        if (prefs.getBoolean("is_logged_in", false)) Screen.Home else Screen.Login
+    )
 
     // In-Memory Search query and filtered items
     private val _searchQuery = MutableStateFlow("")
@@ -986,7 +1215,52 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        // --- Firebase Auth & Auto-Login Logic ---
+        // --- Persistent Login on App Start ---
+        val isAlreadyLoggedIn = prefs.getBoolean("is_logged_in", false)
+        if (isAlreadyLoggedIn) {
+            // User did NOT log out, they just reopened the app: NEVER lock, directly go to Home
+            _isAppLocked.value = false
+            _currentScreen.value = Screen.Home
+            viewModelScope.launch {
+                val profile = repository.profileFlow.first() ?: ProfileEntity()
+                val currentUid = auth?.currentUser?.uid ?: ""
+                if (currentUid.isNotEmpty() && db != null) {
+                    try {
+                        db?.collection("users")?.document(currentUid)?.get()
+                            ?.addOnSuccessListener { doc ->
+                                if (doc != null && doc.exists()) {
+                                    val isPin = doc.getBoolean("isPinEnabled") ?: profile.isPinEnabled
+                                    val appPin = doc.getString("appPin") ?: profile.appPin
+                                    val isPrivate = doc.getBoolean("isPrivateAccount") ?: doc.getBoolean("isPrivate") ?: false
+                                    val updated = profile.copy(isPinEnabled = isPin, appPin = appPin)
+                                    viewModelScope.launch {
+                                        repository.saveProfile(updated)
+                                        if (isPrivate) {
+                                            val curSettings = settingsState.value
+                                            repository.saveSettings(curSettings.copy(isPrivateAccount = isPrivate))
+                                        }
+                                        // Still logged in without logout, keep unlocked and stay on Home
+                                        _isAppLocked.value = false
+                                        if (_currentScreen.value == Screen.Login) {
+                                            clearAndNavigateTo(Screen.Home)
+                                        }
+                                    }
+                                }
+                            }
+                    } catch (e: Throwable) {
+                        // ignore
+                    }
+                }
+            }
+        } else {
+            // User is not logged in: ensure on Login screen
+            _isAppLocked.value = false
+            if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
+                _currentScreen.value = Screen.Login
+            }
+        }
+
+        // --- Firebase Auth & State Listener ---
         try {
             val currentAuth = auth
             if (currentAuth != null) {
@@ -1001,6 +1275,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val user = firebaseAuth.currentUser
                         _currentUser.value = user
                         if (user != null) {
+                            val isPersistedLogin = prefs.getBoolean("is_logged_in", false)
                             try {
                                 db?.collection("users")?.document(user.uid)?.get()
                                     ?.addOnSuccessListener { document ->
@@ -1010,16 +1285,27 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                             val bio = document.getString("bio") ?: ""
                                             val category = document.getString("category") ?: ""
                                             val profilePic = document.getString("profilePic") ?: ""
+                                            val isPin = document.getBoolean("isPinEnabled") ?: false
+                                            val appPin = document.getString("appPin") ?: ""
                                             
                                             viewModelScope.launch {
                                                 val current = profileState.value
-                                                repository.saveProfile(current.copy(
+                                                val updatedProfile = current.copy(
                                                     name = name,
                                                     username = username,
                                                     bio = bio,
                                                     category = category,
-                                                    profilePic = profilePic
-                                                ))
+                                                    profilePic = profilePic,
+                                                    isPinEnabled = isPin,
+                                                    appPin = appPin
+                                                )
+                                                repository.saveProfile(updatedProfile)
+                                                if (isPersistedLogin) {
+                                                    _isAppLocked.value = false
+                                                    if (_currentScreen.value == Screen.Login) {
+                                                        clearAndNavigateTo(Screen.Home)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1027,31 +1313,26 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                 android.util.Log.e("YouSnapViewModel", "Firestore user fetch error: ${e.message}")
                             }
 
-                            // If logged in, navigate smoothly to Home
-                            if (_currentScreen.value == Screen.Login || _currentScreen.value == Screen.SignUp || _currentScreen.value == Screen.ForgotPassword) {
+                            // If already logged in and on Login screen, navigate smoothly to Home
+                            if (isPersistedLogin && _currentScreen.value == Screen.Login) {
                                 clearAndNavigateTo(Screen.Home)
                             }
                         } else {
-                            // If logged out, go to Login screen
-                            if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
-                                clearAndNavigateTo(Screen.Login)
+                            // User is signed out of Firebase:
+                            // ONLY navigate to Login screen if the user has actually logged out (is_logged_in is false)
+                            if (!prefs.getBoolean("is_logged_in", false)) {
+                                if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
+                                    clearAndNavigateTo(Screen.Login)
+                                }
                             }
                         }
                     } catch (e: Throwable) {
                         android.util.Log.e("YouSnapViewModel", "AuthStateListener callback error: ${e.message}")
                     }
                 }
-            } else {
-                // If Firebase auth is not available, ensure app remains on Login screen smoothly
-                if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
-                    _currentScreen.value = Screen.Login
-                }
             }
         } catch (e: Throwable) {
             android.util.Log.e("YouSnapViewModel", "Firebase setup in init failed safely: ${e.message}")
-            if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
-                _currentScreen.value = Screen.Login
-            }
         }
 
         // Live Real-Time Firestore Synchronization for Real Posts & Reels
@@ -1324,7 +1605,41 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val current = settingsState.value
             val updated = current.copy(isPrivateAccount = !current.isPrivateAccount)
             repository.saveSettings(updated)
-            val msg = if (updated.isPrivateAccount) "Account is now Private" else "Account is now Public"
+            
+            val myUsername = profileState.value.username.lowercase()
+            _userPrivacyMap.value = _userPrivacyMap.value + (myUsername to updated.isPrivateAccount)
+            
+            // Sync to Firebase Firestore users collection
+            try {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                if (firestore != null) {
+                    val myUid = auth?.currentUser?.uid ?: ""
+                    val updateMap = mapOf(
+                        "isPrivateAccount" to updated.isPrivateAccount,
+                        "isPrivate" to updated.isPrivateAccount,
+                        "lastUpdated" to com.google.firebase.Timestamp.now()
+                    )
+                    
+                    if (myUid.isNotEmpty()) {
+                        firestore.collection("users").document(myUid)
+                            .set(updateMap, com.google.firebase.firestore.SetOptions.merge())
+                            .addOnSuccessListener {
+                                android.util.Log.d("YouSnapViewModel", "Firestore privacy synced for UID: $myUid")
+                            }
+                    }
+                    if (myUsername.isNotEmpty()) {
+                        firestore.collection("users").document(myUsername)
+                            .set(updateMap, com.google.firebase.firestore.SetOptions.merge())
+                            .addOnSuccessListener {
+                                android.util.Log.d("YouSnapViewModel", "Firestore privacy synced for username: $myUsername")
+                            }
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("YouSnapViewModel", "Firebase privacy sync failed: ${e.message}")
+            }
+
+            val msg = if (updated.isPrivateAccount) "Account is now Private 🔒" else "Account is now Public 🌐"
             Toast.makeText(app, msg, Toast.LENGTH_SHORT).show()
         }
     }
@@ -2257,12 +2572,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
                 firestore?.collection("users")?.get()?.addOnSuccessListener { snapshots ->
+                    val updatedPrivacyMap = _userPrivacyMap.value.toMutableMap()
                     val users = snapshots.mapNotNull { doc ->
                         try {
+                            val u = doc.getString("username") ?: doc.id
+                            val isPriv = doc.getBoolean("isPrivateAccount") ?: doc.getBoolean("isPrivate") ?: false
+                            updatedPrivacyMap[u.lowercase()] = isPriv
                             ProfileEntity(
                                 id = doc.id.hashCode(),
                                 name = doc.getString("name") ?: doc.id,
-                                username = doc.getString("username") ?: doc.id,
+                                username = u,
                                 bio = doc.getString("bio") ?: "",
                                 profilePic = doc.getString("profilePic") ?: "avatar_default",
                                 category = doc.getString("category") ?: "User",
@@ -2272,6 +2591,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         } catch (e: Exception) { null }
                     }
                     _allUsers.value = users
+                    _userPrivacyMap.value = updatedPrivacyMap
                 }
             } catch (e: Exception) {
                 android.util.Log.e("YouSnapViewModel", "Failed to fetch users: ${e.message}")

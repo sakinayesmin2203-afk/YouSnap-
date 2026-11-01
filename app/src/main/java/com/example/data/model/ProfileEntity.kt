@@ -12,5 +12,7 @@ data class ProfileEntity(
     val profilePic: String = "avatar_default",
     val category: String = "Digital Creator",
     val hiddenStoryFrom: String = "", // Comma-separated usernames
-    val email: String = ""
+    val email: String = "",
+    val isPinEnabled: Boolean = false,
+    val appPin: String = ""
 )

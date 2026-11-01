@@ -104,6 +104,28 @@ fun HomeScreen(
     val homePostLikesCount by viewModel.homePostLikesCount.collectAsState()
     val homePostBookmarked by viewModel.homePostBookmarked.collectAsState()
     val isHomeRefreshing by viewModel.isHomeRefreshing.collectAsState()
+    val userPrivacyMap by viewModel.userPrivacyMap.collectAsState()
+    val otherUserIsFollowing by viewModel.otherUserIsFollowing.collectAsState()
+
+    val visiblePersonalPhotos = remember(personalPhotos, userPrivacyMap, otherUserIsFollowing, currentProfile) {
+        personalPhotos.filter { photo ->
+            val creator = photo.creatorUsername.lowercase()
+            val isOwner = currentProfile.username.equals(creator, ignoreCase = true)
+            val isPrivate = userPrivacyMap[creator] ?: false
+            val isFollowing = otherUserIsFollowing[creator] ?: false
+            !isPrivate || isOwner || isFollowing
+        }
+    }
+
+    val visibleReels = remember(reels, userPrivacyMap, otherUserIsFollowing, currentProfile) {
+        reels.filter { reel ->
+            val creator = reel.creatorUsername.lowercase()
+            val isOwner = currentProfile.username.equals(creator, ignoreCase = true)
+            val isPrivate = userPrivacyMap[creator] ?: false
+            val isFollowing = otherUserIsFollowing[creator] ?: false
+            !isPrivate || isOwner || isFollowing
+        }
+    }
 
     var activePostForComments by remember { mutableStateOf<HomePostItem?>(null) }
     var activePostCommentInput by remember { mutableStateOf("") }
@@ -489,8 +511,8 @@ fun HomeScreen(
                 }
 
                 // Real uploaded photo posts from users
-                if (personalPhotos.isNotEmpty()) {
-                    items(personalPhotos, key = { "personal_photo_${it.id}" }) { photo ->
+                if (visiblePersonalPhotos.isNotEmpty()) {
+                    items(visiblePersonalPhotos, key = { "personal_photo_${it.id}" }) { photo ->
                         val postId = "photo_${photo.id}"
                         val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
                         val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
@@ -581,7 +603,7 @@ fun HomeScreen(
                 }
 
                 // Empty State when no real posts or reels exist yet
-                if (reels.isEmpty() && selectedHomePost == null && personalPhotos.isEmpty()) {
+                if (visibleReels.isEmpty() && selectedHomePost == null && visiblePersonalPhotos.isEmpty()) {
                     item(key = "home_empty_state") {
                         Box(
                             modifier = Modifier
@@ -634,8 +656,8 @@ fun HomeScreen(
                 }
 
                 // Item C: Other Dynamic SQLite database Reels
-                if (reels.isNotEmpty()) {
-                    itemsIndexed(reels, key = { _, reel -> reel.id }) { _, reel ->
+                if (visibleReels.isNotEmpty()) {
+                    itemsIndexed(visibleReels, key = { _, reel -> reel.id }) { _, reel ->
                         InstagramFeedPost(
                             reel = reel,
                             onLikeToggle = { viewModel.toggleLikeReel(reel) },
