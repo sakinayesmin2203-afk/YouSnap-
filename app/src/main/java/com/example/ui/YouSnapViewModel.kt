@@ -1984,11 +1984,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val (b2CdnUrl, b2FileName) = performDirectB2Upload(
                 context = app,
                 uri = mediaUri,
-                fileName = filename,
+                fileName = filename
                 contentType = contentType
             )
             val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
-            val storedFileName = b2FileName ?: filename
+            val storedFileName = b2FileName ?: fileName
             val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
 
             if (isStory) {
