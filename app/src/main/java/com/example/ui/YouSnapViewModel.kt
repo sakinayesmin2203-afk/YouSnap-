@@ -1984,7 +1984,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val (b2CdnUrl, b2FileName) = performDirectB2Upload(
                 context = app,
                 uri = mediaUri,
-                filename = filename,
+                fileName = filename,
                 contentType = contentType
             )
             val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
