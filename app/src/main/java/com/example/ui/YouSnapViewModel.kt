@@ -1977,16 +1977,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
             val timestampNow = System.currentTimeMillis()
 
-            val extension = if (mediaType == "photo") "jpg" else "mp4"
-            val filename = "yousnap_${timestampNow}.$extension"
-            val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
+        val extension = if (mediaType == "photo") "jpg" else "mp4"
+        val filename = "yousnap_${timestampNow}.$extension"
+        val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
 
-            val (b2CdnUrl, b2fileName) = performDirectB2Upload(
-                context = app,
-                uri = mediaUri,
-                fileName = filename
-                contentType = contentType
-            )
+        val (b2CdnUrl, b2FileName) = performDirectB2Upload(
+            context = app,
+            uri = mediaUri,
+            fileName = filename,
+            contentType = contentType
+        )
             val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
             val storedFileName = b2FileName ?: fileName
             val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
