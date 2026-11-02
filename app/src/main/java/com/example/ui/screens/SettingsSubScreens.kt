@@ -1035,6 +1035,27 @@ fun WatchHistoryScreen(
                                     .fillMaxSize()
                                     .background(Brush.verticalGradient(listOf(startColor, endColor)))
                             ) {
+                                val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
+                                if (thumbnailToLoad.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = thumbnailToLoad,
+                                        contentDescription = reel.caption,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+
+                                // Dark gradient overlay for text readability
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.verticalGradient(
+                                                colors = listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.75f))
+                                            )
+                                        )
+                                )
+
                                 // Creator watermark
                                 Column(
                                     modifier = Modifier

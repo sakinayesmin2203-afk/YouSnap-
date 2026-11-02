@@ -85,6 +85,71 @@ fun FullScreenPhotoViewer(
     onDismiss: () -> Unit,
     onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
 ) {
+    FullScreenPhotoViewer(
+        photos = listOf(photoData),
+        initialIndex = 0,
+        onDismiss = onDismiss,
+        onLikeChanged = onLikeChanged
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FullScreenPhotoViewer(
+    photos: List<FullScreenPhotoData>,
+    initialIndex: Int = 0,
+    onDismiss: () -> Unit,
+    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
+) {
+    if (photos.isEmpty()) return
+
+    val validIndex = initialIndex.coerceIn(0, photos.size - 1)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = validIndex)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                userScrollEnabled = true
+            ) {
+                items(photos, key = { it.id }) { photo ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillParentMaxHeight()
+                    ) {
+                        FullScreenPostCard(
+                            photoData = photo,
+                            onDismiss = onDismiss,
+                            onLikeChanged = onLikeChanged
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FullScreenPostCard(
+    photoData: FullScreenPhotoData,
+    onDismiss: () -> Unit,
+    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
+) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -161,26 +226,11 @@ fun FullScreenPhotoViewer(
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
-    Dialog(
-        onDismissRequest = {
-            if (showCommentSheet) {
-                showCommentSheet = false
-            } else {
-                onDismiss()
-            }
-        },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true,
-            decorFitsSystemWindows = false
-        )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-        ) {
             // Main Content: Column with Top Bar, Center Photo, and Bottom Facebook Action Bar
             Column(
                 modifier = Modifier
@@ -847,4 +897,3 @@ fun FullScreenPhotoViewer(
             }
         }
     }
-}

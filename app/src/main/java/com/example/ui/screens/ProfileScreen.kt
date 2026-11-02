@@ -64,7 +64,7 @@ fun ProfileScreen(
     
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
     var selectedProfileTab by remember { mutableIntStateOf(0) } // 0: Photos, 1: Reels
-    var selectedPhotoForViewer by remember { mutableStateOf<FullScreenPhotoData?>(null) }
+    var selectedPhotoIndexForViewer by remember { mutableStateOf<Int?>(null) }
     val photoLikesMap = remember { mutableStateMapOf<Int, Int>() }
     val photoLikedStatusMap = remember { mutableStateMapOf<Int, Boolean>() }
 
@@ -376,18 +376,10 @@ fun ProfileScreen(
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(Color.DarkGray)
                                     .clickable {
-                                        selectedPhotoForViewer = FullScreenPhotoData(
-                                            id = photo.id,
-                                            title = photo.title,
-                                            imageUrl = photo.imageUrl,
-                                            creatorName = profile.name.ifEmpty { profile.username },
-                                            creatorUsername = profile.username,
-                                            creatorAvatar = profile.profilePic,
-                                            initialLikes = photo.initialLikes,
-                                            initialComments = photo.initialComments,
-                                            initialIsLiked = photo.initialIsLiked,
-                                            timeAgo = photo.timeAgo
-                                        )
+                                        val clickedIndex = personalPhotos.indexOf(photo)
+                                        if (clickedIndex >= 0) {
+                                            selectedPhotoIndexForViewer = clickedIndex
+                                        }
                                     }
                                     .testTag("my_profile_photo_${photo.id}")
                             ) {
@@ -613,11 +605,17 @@ fun ProfileScreen(
             }
         }
 
-        // Full-Screen Facebook-Style Photo Viewer Dialog
-        selectedPhotoForViewer?.let { activePhoto ->
+        // Full-Screen Instagram-Style Scrollable Photo Viewer Dialog
+        selectedPhotoIndexForViewer?.let { startIndex ->
+            val updatedPhotos = personalPhotos.map { p ->
+                val currentLikes = photoLikesMap[p.id] ?: p.initialLikes
+                val isLiked = photoLikedStatusMap[p.id] ?: p.initialIsLiked
+                p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
+            }
             FullScreenPhotoViewer(
-                photoData = activePhoto,
-                onDismiss = { selectedPhotoForViewer = null },
+                photos = updatedPhotos,
+                initialIndex = startIndex,
+                onDismiss = { selectedPhotoIndexForViewer = null },
                 onLikeChanged = { photoId, liked, newCount ->
                     photoLikedStatusMap[photoId] = liked
                     photoLikesMap[photoId] = newCount

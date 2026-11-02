@@ -393,6 +393,81 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun fetchAndSyncUserProfile() {
+        val user = auth?.currentUser ?: return
+        val uid = user.uid
+        val email = user.email ?: ""
+        val displayName = user.displayName ?: registeredName.value ?: email.split("@").firstOrNull()?.replaceFirstChar { it.uppercase() } ?: "User"
+        val defaultUsername = if (email.isNotEmpty()) email.split("@")[0].lowercase() else "user_${uid.take(6)}"
+        val photoUrl = user.photoUrl?.toString() ?: ""
+
+        try {
+            db?.collection("users")?.document(uid)?.get()
+                ?.addOnSuccessListener { document ->
+                    if (document != null && document.exists()) {
+                        val name = document.getString("name")?.ifEmpty { displayName } ?: displayName
+                        val username = document.getString("username")?.ifEmpty { defaultUsername } ?: defaultUsername
+                        val bio = document.getString("bio")?.ifEmpty { "Hey there! I am using YouSnap." } ?: "Hey there! I am using YouSnap."
+                        val category = document.getString("category")?.ifEmpty { "Digital Creator" } ?: "Digital Creator"
+                        val profilePic = document.getString("profilePic")?.ifEmpty { photoUrl } ?: photoUrl
+                        val isPinEnabled = document.getBoolean("isPinEnabled") ?: false
+                        val appPin = document.getString("appPin") ?: ""
+
+                        viewModelScope.launch {
+                            val current = profileState.value
+                            val updated = current.copy(
+                                name = name,
+                                username = username,
+                                email = email,
+                                bio = bio,
+                                category = category,
+                                profilePic = profilePic,
+                                isPinEnabled = isPinEnabled,
+                                appPin = appPin
+                            )
+                            repository.saveProfile(updated)
+                        }
+                    } else {
+                        val userMap = mapOf(
+                            "uid" to uid,
+                            "name" to displayName,
+                            "email" to email,
+                            "username" to defaultUsername,
+                            "bio" to "Hey there! I am using YouSnap.",
+                            "category" to "Digital Creator",
+                            "profilePic" to photoUrl,
+                            "createdAt" to com.google.firebase.Timestamp.now()
+                        )
+                        db?.collection("users")?.document(uid)?.set(userMap, com.google.firebase.firestore.SetOptions.merge())
+                        viewModelScope.launch {
+                            val current = profileState.value
+                            val updated = current.copy(
+                                name = displayName,
+                                username = defaultUsername,
+                                email = email,
+                                profilePic = photoUrl,
+                                bio = "Hey there! I am using YouSnap."
+                            )
+                            repository.saveProfile(updated)
+                        }
+                    }
+                }?.addOnFailureListener {
+                    viewModelScope.launch {
+                        val current = profileState.value
+                        val updated = current.copy(
+                            name = displayName,
+                            username = defaultUsername,
+                            email = email,
+                            profilePic = photoUrl
+                        )
+                        repository.saveProfile(updated)
+                    }
+                }
+        } catch (e: Exception) {
+            android.util.Log.e("YouSnapViewModel", "fetchAndSyncUserProfile error: ${e.message}")
+        }
+    }
+
     // Login with Firebase (with graceful fallback to registered local credentials / admin credentials)
     fun loginWithFirebase(email: String, pass: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
@@ -418,6 +493,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 currentAuth.signInWithEmailAndPassword(email, pass)
                     .addOnSuccessListener { authResult ->
                         val uid = authResult.user?.uid ?: ""
+                        prefs.edit().putBoolean("is_logged_in", true).apply()
+                        fetchAndSyncUserProfile()
                         // Fetch profile from Firestore
                         try {
                             db?.collection("users")?.document(uid)?.get()
@@ -884,7 +961,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _otherUserIsFollowing.value = updatedIsFollowing
 
         // Update the followers count map
-        val currentFollowers = _otherUserFollowers.value[normalized] ?: 4320
+        val currentFollowers = _otherUserFollowers.value[normalized] ?: 0
         val updatedFollowers = _otherUserFollowers.value.toMutableMap()
         updatedFollowers[normalized] = if (newFollowing) currentFollowers + 1 else (currentFollowers - 1).coerceAtLeast(0)
         _otherUserFollowers.value = updatedFollowers
