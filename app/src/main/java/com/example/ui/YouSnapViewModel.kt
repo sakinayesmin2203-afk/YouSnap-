@@ -1981,7 +1981,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val filename = "yousnap_${timestampNow}.$extension"
             val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
 
-            val (b2CdnUrl, b2FileName) = performDirectB2Upload(
+            val (b2CdnUrl, b2fileName) = performDirectB2Upload(
                 context = app,
                 uri = mediaUri,
                 fileName = filename
