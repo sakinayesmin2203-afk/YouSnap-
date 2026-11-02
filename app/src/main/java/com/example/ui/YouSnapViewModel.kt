@@ -1939,7 +1939,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         }
                     )
                     if (isSuccess) {
-                        val finalFileName = presignedResponse?.fileName ?: ""
+                        val finalFileName = fileName ?: ""
                         val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
                         _b2UploadedUrl.value = fullCdnUrl
                         _b2UploadSuccess.value = true
