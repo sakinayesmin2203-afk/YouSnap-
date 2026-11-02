@@ -78,26 +78,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val repository: YouSnapRepository
     val app = application
     private val prefs = application.getSharedPreferences("yousnap_settings_prefs", android.content.Context.MODE_PRIVATE)
-    val photoUploadsCount = MutableStateFlow(0)
-    val storiesUploadedCount = MutableStateFlow(0)
-    val fontScaleFlow = MutableStateFlow(1.0f)
-    val hapticFeedbackFlow = MutableStateFlow(true)
 
-    fun setFontScale(scale: Float) {
-        fontScaleFlow.value = scale
-    }
 
-    fun updateMonetizationStatus(status: String) {}
-    fun submitMonetizationApplication() {}
-    
-    fun clearAppCache() {
-        try {
-            app.cacheDir.deleteRecursively()
-            android.widget.Toast.makeText(app, "Cache cleared successfully!", android.widget.Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {}
-    }
-    
-    fun submitSupportTicket(message: string) {}
+
     
     // Local Authentication State for Sign Up and Login flow
     private val _registeredName = MutableStateFlow<String?>(null)
@@ -1959,7 +1942,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         }
                     )
                     if (isSuccess) {
-                        val finalFileName = fileName ?: ""
+                        val finalFileName = filename ?: ""
                         val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
                         _b2UploadedUrl.value = fullCdnUrl
                         _b2UploadSuccess.value = true
@@ -2004,11 +1987,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val (b2CdnUrl, b2FileName) = performDirectB2Upload(
                 context = app,
                 uri = mediaUri,
-                fileName = filename,
+                filename = filename,
                 contentType = contentType
             )
             val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
             val storedFileName = b2FileName ?: filename
+            val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
 
             if (isStory) {
                 // STORY UPLOAD
@@ -2056,10 +2040,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 onComplete()
                 clearAndNavigateTo(Screen.Home)
                 return@launch
-            }
-        }
-    }
-            if (mediaType == "photo") {
+            } else if (mediaType == "photo") {
                 // PHOTO POST UPLOAD (Auto-Categorized to Profile Photos tab)
                 val newId = (timestampNow % 100000).toInt() + 1000
                 val currentCreatorUid = auth?.currentUser?.uid ?: _currentUser.value?.uid ?: profile.username
