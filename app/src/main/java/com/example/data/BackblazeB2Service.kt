@@ -1,7 +1,6 @@
 package com.example.data
 
 import okhttp3.RequestBody
-import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -20,7 +19,7 @@ interface BackblazeB2Service {
         @Url uploadUrl: String,
         @Header("Content-Type") contentType: String,
         @Body fileBody: RequestBody
-    ): Response<ResponseBody>
+    ): Response<Void>
 
     companion object {
         private const val BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/"
@@ -46,6 +45,5 @@ data class PresignedUrlResponse(
     val presignedUrl: String? = null,
     val url: String? = null,
     val fileName: String? = null,
-    val filename: String? = null,
     val key: String? = null
 )
