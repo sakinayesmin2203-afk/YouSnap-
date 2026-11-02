@@ -1961,9 +1961,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // Unified Media Upload Function (Uploads directly to Backblaze B2, then saves to Firestore & Profile)
-    fun uploadMedia(
+        fun uploadMedia(
         mediaUri: Uri,
-        mediaType: String, // "photo" or "reel"
+        mediaType: String,
         caption: String,
         songTitle: String = "",
         gradientStart: String = "#E59424",
@@ -1974,22 +1974,21 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         if (_isB2Uploading.value) return
         viewModelScope.launch {
             val profile = profileState.value
-            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Exception) { null }
             val timestampNow = System.currentTimeMillis()
 
-        val extension = if (mediaType == "photo") "jpg" else "mp4"
-        val filename = "yousnap_${timestampNow}.$extension"
-        val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
+            val extension = if (mediaType == "photo") "jpg" else "mp4"
+            val filename = "yousnap_${timestampNow}.$extension"
+            val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
 
-        val (b2CdnUrl, b2FileName) = performDirectB2Upload(
-            context = app,
-            uri = mediaUri,
-            fileName = filename,
-            contentType = contentType
-        )
+            val (b2CdnUrl, b2FileName) = performDirectB2Upload(
+                context = app,
+                uri = mediaUri,
+                fileName = filename,
+                contentType = contentType
+            )
             val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
-            val storedFileName = b2FileName ?: fileName
-            val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
+            val storedFileName = b2FileName ?: filename
 
             if (isStory) {
                 // STORY UPLOAD
@@ -2005,7 +2004,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     "likes" to emptyList<String>(),
                     "mediaUrl" to finalMediaUrl,
                     "b2FileName" to storedFileName,
-                    "storageProvider" to storageProvider,
+                    "storageProvider" to if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback",
                     "mediaType" to if (mediaType == "reel") "video" else "image",
                     "createdAt" to com.google.firebase.Timestamp.now(),
                     "timestamp" to timestampNow,
@@ -2033,12 +2032,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
                 )
                 _storiesUploadedCount.value += 1
-                Toast.makeText(app, "Story uploaded to Backblaze B2! 🌟", Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(app, "Story uploaded to Backblaze B2! 🚀", android.widget.Toast.LENGTH_LONG).show()
                 onComplete()
                 clearAndNavigateTo(Screen.Home)
                 return@launch
             }
-
+        }
+    }
             if (mediaType == "photo") {
                 // PHOTO POST UPLOAD (Auto-Categorized to Profile Photos tab)
                 val newId = (timestampNow % 100000).toInt() + 1000
