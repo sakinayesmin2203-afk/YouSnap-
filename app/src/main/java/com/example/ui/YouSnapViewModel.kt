@@ -235,8 +235,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                 )
 
-                if (isSuccess) {
-                    val finalFileName = presignedResponse?.fileName ?: presignedResponse?.filename ?: filename
+                if (isSuccess) {val finalFileName = presignedResponse?.fileName ?: ""
                     val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
                     _b2UploadedUrl.value = fullCdnUrl
                     _b2UploadSuccess.value = true
@@ -1940,7 +1939,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         }
                     )
                     if (isSuccess) {
-                        val finalFileName = presignedResponse?.fileName ?: presignedResponse?.filename ?: filename
+                        val finalFileName = presignedResponse?.fileName ?: ""
                         val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
                         _b2UploadedUrl.value = fullCdnUrl
                         _b2UploadSuccess.value = true
