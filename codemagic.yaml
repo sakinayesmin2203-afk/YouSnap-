@@ -16,6 +16,17 @@ workflows:
           gradle -v
       - name: Build Release APK/AAB
         script: |
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+          if [ -f my-upload-key.jks ]; then
+            export KEYSTORE_PATH="$PWD/my-upload-key.jks"
+          elif [ -f debug.keystore ]; then
+            export KEYSTORE_PATH="$PWD/debug.keystore"
+            export KEYSTORE_PASSWORD="android"
+            export KEY_ALIAS="androiddebugkey"
+            export KEY_PASSWORD="android"
+          fi
           export PATH=$PWD/gradle-9.3.1/bin:$PATH
           gradle assembleRelease
     artifacts:
