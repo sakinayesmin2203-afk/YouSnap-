@@ -8,14 +8,17 @@ import java.io.InputStream
 class ProgressRequestBody(
     private val inputStream: InputStream,
     private val contentType: MediaType?,
+    private val knownLength: Long = -1L,
     private val onProgress: (progress: Float) -> Unit
 ) : RequestBody() {
 
     override fun contentType(): MediaType? = contentType
 
     override fun contentLength(): Long {
+        if (knownLength > 0L) return knownLength
         return try {
-            inputStream.available().toLong()
+            val avail = inputStream.available().toLong()
+            if (avail > 0L) avail else -1L
         } catch (e: Exception) {
             -1L
         }

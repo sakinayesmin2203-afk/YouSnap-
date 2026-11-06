@@ -95,9 +95,11 @@ fun UserProfileScreen(
 
     val userPhotos = remember(allPersonalPhotos, username) {
         allPersonalPhotos.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+            .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else "${it.id}" }
     }
     val userReels = remember(allReels, username) {
         allReels.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+            .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
     }
 
     LaunchedEffect(username) {

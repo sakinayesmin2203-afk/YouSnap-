@@ -61,6 +61,12 @@ interface YouSnapDao {
     @Query("DELETE FROM reels_table WHERE creatorUsername IN ('alex_travels', 'yuki_tech', 'chloe_bakes', 'arun_explorer', 'elena_dance', 'karan_fitness', 'maya_pottery', 'zack_skates', 'guest_user') OR creatorName IN ('Alex Rivera', 'Yuki Tanaka', 'Chloe Bennett', 'Arun Patel', 'Elena Rostova', 'Karan Mehta', 'Maya Lin', 'Zack Taylor', 'Guest User') OR id <= 8")
     suspend fun clearDemoReels()
 
+    @Query("DELETE FROM reels_table WHERE mediaUrl = :mediaUrl AND id != :keepId AND mediaUrl != ''")
+    suspend fun deleteDuplicateReelsByUrl(mediaUrl: String, keepId: Int)
+
+    @Query("DELETE FROM reels_table WHERE timestamp = :timestamp AND creatorUsername = :username AND id != :keepId")
+    suspend fun deleteDuplicateReelsByTimestamp(timestamp: Long, username: String, keepId: Int)
+
 
     // Comments Operations
     @Query("SELECT * FROM comments_table WHERE reelId = :reelId ORDER BY timestamp ASC")

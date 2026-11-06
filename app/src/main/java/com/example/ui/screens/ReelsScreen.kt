@@ -98,7 +98,7 @@ fun ReelsScreen(
             val isPrivate = userPrivacyMap[creator] ?: false
             val isFollowing = isFollowingMap[creator] ?: false
             !isPrivate || isOwner || isFollowing
-        }
+        }.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
     }
 
     // Build feed with a full-screen Native Ad after every 6 video reels

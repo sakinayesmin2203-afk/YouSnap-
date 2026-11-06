@@ -41,6 +41,10 @@ class YouSnapRepository(private val dao: YouSnapDao) {
     val reelsFlow: Flow<List<ReelEntity>> = dao.getReelsFlow()
 
     suspend fun insertReel(reel: ReelEntity) {
+        if (reel.mediaUrl.isNotBlank()) {
+            dao.deleteDuplicateReelsByUrl(reel.mediaUrl, reel.id)
+        }
+        dao.deleteDuplicateReelsByTimestamp(reel.timestamp, reel.creatorUsername, reel.id)
         dao.insertReel(reel)
     }
 
@@ -50,6 +54,10 @@ class YouSnapRepository(private val dao: YouSnapDao) {
 
     suspend fun deleteReelById(reelId: Int) {
         dao.deleteReelById(reelId)
+    }
+
+    suspend fun clearDemoReels() {
+        dao.clearDemoReels()
     }
 
     suspend fun toggleLikeReel(reelId: Int) {

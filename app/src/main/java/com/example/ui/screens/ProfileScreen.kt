@@ -54,13 +54,20 @@ fun ProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    // Filter reels to only show the user's uploaded ones
+    // Filter reels to only show the user's uploaded ones, deduplicated
     val personalReels = remember(userReels, profile.username) {
-        userReels.filter { it.creatorUsername == profile.username }
+        userReels
+            .filter { it.creatorUsername.equals(profile.username, ignoreCase = true) }
+            .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
     }
     
-    // Dynamic Personal Photos (Auto-categorized & synced with Firestore and local database)
-    val personalPhotos by viewModel.personalPhotosState.collectAsState()
+    // Dynamic Personal Photos (Only current user's photos, deduplicated)
+    val rawPersonalPhotos by viewModel.personalPhotosState.collectAsState()
+    val personalPhotos = remember(rawPersonalPhotos, profile.username) {
+        rawPersonalPhotos
+            .filter { it.creatorUsername.equals(profile.username, ignoreCase = true) }
+            .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else "${it.id}" }
+    }
     
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
     var selectedProfileTab by remember { mutableIntStateOf(0) } // 0: Photos, 1: Reels

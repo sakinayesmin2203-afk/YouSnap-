@@ -114,7 +114,7 @@ fun HomeScreen(
             val isPrivate = userPrivacyMap[creator] ?: false
             val isFollowing = otherUserIsFollowing[creator] ?: false
             !isPrivate || isOwner || isFollowing
-        }
+        }.distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else "${it.id}" }
     }
 
     val visibleReels = remember(reels, userPrivacyMap, otherUserIsFollowing, currentProfile) {
@@ -124,7 +124,7 @@ fun HomeScreen(
             val isPrivate = userPrivacyMap[creator] ?: false
             val isFollowing = otherUserIsFollowing[creator] ?: false
             !isPrivate || isOwner || isFollowing
-        }
+        }.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
     }
 
     var activePostForComments by remember { mutableStateOf<HomePostItem?>(null) }
@@ -1796,7 +1796,45 @@ fun StoryPlaybackDialog(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                if (storyState?.mediaType == "video" && !mediaModel.isNullOrEmpty()) {
+                if (storyState?.mediaType == "text") {
+                    // TEXT-ONLY STORY DISPLAY
+                    val gStart = remember(storyState?.bgGradientStart) {
+                        try { Color(android.graphics.Color.parseColor(storyState?.bgGradientStart ?: "#FF512F")) } catch (e: Exception) { Color(0xFFFF512F) }
+                    }
+                    val gEnd = remember(storyState?.bgGradientEnd) {
+                        try { Color(android.graphics.Color.parseColor(storyState?.bgGradientEnd ?: "#DD2476")) } catch (e: Exception) { Color(0xFFDD2476) }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Brush.verticalGradient(listOf(gStart, gEnd))),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 32.dp, vertical = 48.dp)
+                        ) {
+                            Text(
+                                text = storyState?.caption ?: "",
+                                color = Color.White,
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 36.sp,
+                                style = androidx.compose.ui.text.TextStyle(
+                                    shadow = androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black.copy(alpha = 0.5f),
+                                        offset = androidx.compose.ui.geometry.Offset(2f, 4f),
+                                        blurRadius = 8f
+                                    )
+                                )
+                            )
+                        }
+                    }
+                } else if (storyState?.mediaType == "video" && !mediaModel.isNullOrEmpty()) {
                     // VIDEO PLAYER FOR STORIES
                     com.example.ui.components.CdnVideoPlayer(
                         videoUrl = mediaModel,
@@ -1826,8 +1864,29 @@ fun StoryPlaybackDialog(
                     )
                 }
 
+                // If media has a text overlay, display stylish overlay banner
+                val storyCaption = storyState?.caption ?: ""
+                if (storyState?.mediaType != "text" && storyCaption.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 76.dp, start = 20.dp, end = 20.dp)
+                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = storyCaption,
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
                 // Error Fallback UI
-                if (imageError && storyState?.mediaType != "video") {
+                if (imageError && storyState?.mediaType != "video" && storyState?.mediaType != "text") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -1859,7 +1918,7 @@ fun StoryPlaybackDialog(
                 }
 
                 // Loading State Indicator
-                if (imageLoading && storyState?.mediaType != "video") {
+                if (imageLoading && storyState?.mediaType != "video" && storyState?.mediaType != "text") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -2003,7 +2062,7 @@ fun StoryPlaybackDialog(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 48.dp)
                         .windowInsetsPadding(WindowInsets.navigationBars),
                     shape = RoundedCornerShape(32.dp),
                     color = Color.Black.copy(alpha = 0.65f),

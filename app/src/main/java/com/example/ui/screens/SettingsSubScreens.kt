@@ -1602,8 +1602,8 @@ fun MonetizationRulesScreen(
             item {
                 MonetizationSection("★ 1. Monetization Eligibility Rules", listOf(
                     "1. Age Requirement: Users must be at least 18 years old to apply for monetization.",
-                    "2. Followers Requirement: Must have a minimum of 1,000 followers.",
-                    "3. Views Requirement: Must achieve at least 500,000 qualified video views.",
+                    "2. Followers Requirement: Must have a minimum of 500 followers.",
+                    "3. Views Requirement: Must achieve at least 5,000 qualified video views.",
                     "4. Community Guidelines: The account must not have any active community guidelines violations.",
                     "5. Application Process: Users can apply for monetization only after meeting all the specified criteria."
                 ))
@@ -2251,8 +2251,8 @@ fun MonetizationScreen(
     val storiesUploaded by viewModel.storiesUploadedCount.collectAsState()
 
     // Helper targets
-    val targetFollowers = 1000
-    val targetViews = 500000
+    val targetFollowers = 500
+    val targetViews = 5000
     val targetPhotos = 10
     val targetStories = 20
 
@@ -2402,7 +2402,7 @@ fun MonetizationScreen(
             // Metric Tracker 1: Followers
             EligibilityRequirementCard(
                 title = "Followers",
-                requirementText = "1,000 Followers",
+                requirementText = "500 Followers",
                 currentValue = followers,
                 targetValue = targetFollowers,
                 valueDisplay = "$followers / $targetFollowers",
@@ -2414,10 +2414,10 @@ fun MonetizationScreen(
             val formattedCurrentViews = if (videoViews >= 1000) "${videoViews / 1000}K" else videoViews.toString()
             EligibilityRequirementCard(
                 title = "Short Video Views",
-                requirementText = "500K Views",
+                requirementText = "5K Views",
                 currentValue = videoViews,
                 targetValue = targetViews,
-                valueDisplay = "$formattedCurrentViews / 500K",
+                valueDisplay = "$videoViews / 5K",
                 isMet = isViewsMet,
                 icon = Icons.Default.PlayArrow
             )

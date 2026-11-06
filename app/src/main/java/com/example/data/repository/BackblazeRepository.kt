@@ -26,10 +26,11 @@ class BackblazeRepository(private val apiService: BackblazeB2Service) {
         uploadUrl: String,
         contentType: String,
         inputStream: InputStream,
+        contentLength: Long = -1L,
         onProgress: (Float) -> Unit
     ): Boolean {
         val mediaType = contentType.toMediaTypeOrNull()
-        val requestBody = ProgressRequestBody(inputStream, mediaType, onProgress)
+        val requestBody = ProgressRequestBody(inputStream, mediaType, contentLength, onProgress)
         
         val response = apiService.uploadFileDirectly(
             uploadUrl = uploadUrl,

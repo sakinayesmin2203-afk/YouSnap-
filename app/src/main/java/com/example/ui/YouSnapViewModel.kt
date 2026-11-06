@@ -99,6 +99,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _registeredName.value = name
         _registeredEmailOrPhone.value = emailOrPhone
         _registeredPassword.value = word
+        _personalPhotosState.value = emptyList()
+        prefs.edit().remove("saved_personal_photos").apply()
+        _currentStoryState.value = null
+        viewModelScope.launch {
+            repository.clearDemoReels()
+        }
     }
 
     fun resetPassword(email: String, newPass: String): Boolean {
@@ -285,6 +291,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     // Sign Up with Firebase (with graceful fallback to local registration if Firebase is unconfigured)
     fun signUpWithFirebase(name: String, email: String, pass: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        _personalPhotosState.value = emptyList()
+        prefs.edit().remove("saved_personal_photos").apply()
+        _currentStoryState.value = null
+        viewModelScope.launch {
+            repository.clearDemoReels()
+        }
         viewModelScope.launch {
             try {
                 val currentAuth = auth
@@ -295,7 +307,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     repository.saveProfile(current.copy(
                         name = name,
                         username = email.split("@")[0].lowercase(),
-                        email = email
+                        email = email,
+                        profilePic = ""
                     ))
                     onSuccess()
                     return@launch
@@ -1477,7 +1490,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                     viewModelScope.launch {
                         repository.ensureInitialData()
-                        for (reel in realReels) {
+                        val uniqueRealReels = realReels.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
+                        for (reel in uniqueRealReels) {
                             repository.insertReel(reel)
                         }
                     }
@@ -1849,8 +1863,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val creatorUsername = obj.optString("creatorUsername")
                     val creatorName = obj.optString("creatorName")
                     
-                    // Filter out any demo accounts/photos
-                    if (id in 101..106 || creatorUsername == "alex_travels" || creatorName == "Alex Rivera") {
+                    // Filter out any demo accounts/photos and ensure it matches current profile
+                    if (id in 101..106 || creatorUsername in listOf("alex_travels", "guest_user", "demo_user") || creatorName in listOf("Alex Rivera", "Demo User", "Guest User")) {
+                        continue
+                    }
+                    if (creatorUsername.isNotEmpty() && !creatorUsername.equals(profile.username, ignoreCase = true)) {
                         continue
                     }
                     
@@ -1897,9 +1914,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 _b2UploadSuccess.value = false
                 Pair(null, null)
             } else {
+                var finalLength: Long = -1L
                 val finalInputStream: java.io.InputStream? = if (contentType.startsWith("image")) {
-                    for (i in 1..8) {
-                        kotlinx.coroutines.delay(50)
+                    for (i in 1..4) {
+                        kotlinx.coroutines.delay(30)
                         _b2UploadProgress.value = i * 0.03f
                     }
                     val originalStream = context.contentResolver.openInputStream(uri)
@@ -1918,14 +1936,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         originalBytes
                     }
-                    _b2UploadProgress.value = 0.25f
+                    finalLength = compactedBytes.size.toLong()
+                    _b2UploadProgress.value = 0.15f
                     java.io.ByteArrayInputStream(compactedBytes)
                 } else {
-                    for (i in 1..12) {
-                        kotlinx.coroutines.delay(70)
-                        _b2UploadProgress.value = i * 0.02f
+                    for (i in 1..4) {
+                        kotlinx.coroutines.delay(30)
+                        _b2UploadProgress.value = i * 0.03f
                     }
-                    _b2UploadProgress.value = 0.25f
+                    finalLength = try { 
+                        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L 
+                    } catch (e: Exception) { -1L }
+                    _b2UploadProgress.value = 0.15f
                     context.contentResolver.openInputStream(uri)
                 }
 
@@ -1937,8 +1959,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         uploadUrl = uploadUrl,
                         contentType = contentType,
                         inputStream = finalInputStream,
+                        contentLength = finalLength,
                         onProgress = { progress ->
-                            _b2UploadProgress.value = 0.25f + (progress * 0.75f)
+                            _b2UploadProgress.value = (0.15f + (progress * 0.85f)).coerceIn(0f, 1f)
                         }
                     )
                     if (isSuccess) {
@@ -1963,12 +1986,79 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // Text-Only Story Upload Function
+    fun uploadTextStory(
+        text: String,
+        gradientStart: String = "#FF512F",
+        gradientEnd: String = "#DD2476",
+        onComplete: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val profile = profileState.value
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Exception) { null }
+            val timestampNow = System.currentTimeMillis()
+            val ownerUsername = profile.username.ifEmpty { "me" }
+            val currentCreatorUid = auth?.currentUser?.uid ?: _currentUser.value?.uid ?: ownerUsername
+
+            val storyDoc = mapOf(
+                "storyId" to ownerUsername,
+                "ownerUsername" to ownerUsername,
+                "userId" to currentCreatorUid,
+                "creatorUid" to currentCreatorUid,
+                "viewerIds" to emptyList<String>(),
+                "viewsCount" to 0,
+                "likes" to emptyList<String>(),
+                "mediaUrl" to "",
+                "caption" to text.trim(),
+                "textOverlay" to text.trim(),
+                "bgGradientStart" to gradientStart,
+                "bgGradientEnd" to gradientEnd,
+                "mediaType" to "text",
+                "createdAt" to com.google.firebase.Timestamp.now(),
+                "timestamp" to timestampNow,
+                "hiddenFrom" to profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
+            )
+
+            try {
+                firestore?.collection("stories")?.document(ownerUsername)?.set(storyDoc)
+                    ?.addOnSuccessListener {
+                        android.util.Log.d("YouSnapViewModel", "Text Story saved to Firestore successfully")
+                    }
+                    ?.addOnFailureListener { e ->
+                        android.util.Log.e("YouSnapViewModel", "Text Story Firestore save failed: ${e.message}")
+                    }
+            } catch (e: Throwable) {
+                android.util.Log.e("YouSnapViewModel", "Text Story upload error: ${e.message}")
+            }
+
+            _currentStoryState.value = StoryModel(
+                storyId = ownerUsername,
+                ownerUsername = ownerUsername,
+                viewerIds = emptyList(),
+                viewsCount = 0,
+                likes = emptyList(),
+                mediaUrl = "",
+                mediaType = "text",
+                caption = text.trim(),
+                bgGradientStart = gradientStart,
+                bgGradientEnd = gradientEnd,
+                timestamp = timestampNow,
+                hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
+            )
+            _storiesUploadedCount.value += 1
+            android.widget.Toast.makeText(app, "Text Story published successfully! ✨", android.widget.Toast.LENGTH_LONG).show()
+            onComplete()
+            clearAndNavigateTo(Screen.Home)
+        }
+    }
+
     // Unified Media Upload Function (Uploads directly to Backblaze B2, then saves to Firestore & Profile)
-        fun uploadMedia(
+    fun uploadMedia(
         mediaUri: Uri,
         mediaType: String,
         caption: String,
         songTitle: String = "",
+        category: String = "Entertainment",
         gradientStart: String = "#E59424",
         gradientEnd: String = "#C48B5E",
         isStory: Boolean = false,
@@ -1995,7 +2085,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
 
             if (isStory) {
-                // STORY UPLOAD
+                // STORY UPLOAD (With Text Overlay & Media)
                 val ownerUsername = profile.username.ifEmpty { "me" }
                 val currentCreatorUid = auth?.currentUser?.uid ?: _currentUser.value?.uid ?: ownerUsername
                 val storyDoc = mapOf(
@@ -2007,8 +2097,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     "viewsCount" to 0,
                     "likes" to emptyList<String>(),
                     "mediaUrl" to finalMediaUrl,
+                    "caption" to caption,
+                    "textOverlay" to caption,
+                    "bgGradientStart" to gradientStart,
+                    "bgGradientEnd" to gradientEnd,
                     "b2FileName" to storedFileName,
-                    "storageProvider" to if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback",
+                    "storageProvider" to storageProvider,
                     "mediaType" to if (mediaType == "reel") "video" else "image",
                     "createdAt" to com.google.firebase.Timestamp.now(),
                     "timestamp" to timestampNow,
@@ -2033,6 +2127,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     likes = emptyList(),
                     mediaUrl = finalMediaUrl,
                     mediaType = if (mediaType == "reel") "video" else "image",
+                    caption = caption,
+                    bgGradientStart = gradientStart,
+                    bgGradientEnd = gradientEnd,
+                    timestamp = timestampNow,
                     hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
                 )
                 _storiesUploadedCount.value += 1
@@ -2067,6 +2165,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val photoDoc = mapOf(
                         "id" to newId.toString(),
                         "type" to "photo",
+                        "title" to caption,
+                        "category" to category,
                         "username" to profile.username,
                         "userId" to currentCreatorUid,
                         "creatorUid" to currentCreatorUid,
@@ -2097,7 +2197,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 // REEL VIDEO UPLOAD (Auto-Categorized to Profile Reels tab)
                 val thumbnailPath = extractVideoThumbnail(app, mediaUri)
                 val currentCreatorUid = auth?.currentUser?.uid ?: _currentUser.value?.uid ?: profile.username
+                val stableReelDocId = "reel_$timestampNow"
+                val stableReelId = (stableReelDocId.hashCode() and 0x7FFFFFFF).let { if (it <= 8) it + 1000 else it }
                 val newReel = ReelEntity(
+                    id = stableReelId,
                     creatorName = profile.name,
                     creatorUsername = profile.username,
                     creatorProfilePic = profile.profilePic,
@@ -2121,6 +2224,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 try {
                     val reelDoc = mapOf(
                         "type" to "reel",
+                        "title" to caption,
+                        "category" to category,
                         "username" to profile.username,
                         "userId" to currentCreatorUid,
                         "creatorUid" to currentCreatorUid,
@@ -2136,7 +2241,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "viewsCount" to 0,
                         "createdAt" to com.google.firebase.Timestamp.now()
                     )
-                    firestore?.collection("reels")?.document("reel_$timestampNow")?.set(reelDoc)
+                    firestore?.collection("reels")?.document(stableReelDocId)?.set(reelDoc)
                         ?.addOnSuccessListener {
                             android.util.Log.d("YouSnapViewModel", "Reel saved to Firestore successfully")
                         }
@@ -2630,6 +2735,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             likes = (doc.get("likes") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
                             mediaUrl = doc.getString("mediaUrl"),
                             mediaType = doc.getString("mediaType") ?: "image",
+                            caption = doc.getString("caption") ?: doc.getString("textOverlay") ?: "",
+                            bgGradientStart = doc.getString("bgGradientStart") ?: "#FF512F",
+                            bgGradientEnd = doc.getString("bgGradientEnd") ?: "#DD2476",
                             timestamp = doc.getLong("timestamp") ?: 0L,
                             hiddenFrom = hiddenFrom
                         )
@@ -2737,6 +2845,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val likes = likesRaw?.mapNotNull { it?.toString() } ?: emptyList()
                         val mediaUrl = snapshot.getString("mediaUrl") ?: ""
                         val mediaType = snapshot.getString("mediaType") ?: "image"
+                        val caption = snapshot.getString("caption") ?: snapshot.getString("textOverlay") ?: ""
+                        val bgGradientStart = snapshot.getString("bgGradientStart") ?: "#FF512F"
+                        val bgGradientEnd = snapshot.getString("bgGradientEnd") ?: "#DD2476"
                         
                         _currentStoryState.value = StoryModel(
                             storyId = ownerUsernameSafe,
@@ -2746,53 +2857,22 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             likes = likes,
                             mediaUrl = mediaUrl,
                             mediaType = mediaType,
+                            caption = caption,
+                            bgGradientStart = bgGradientStart,
+                            bgGradientEnd = bgGradientEnd,
                             timestamp = timestamp
                         )
                     } else {
-                        seedStoryDocument(ownerUsernameSafe)
+                        _currentStoryState.value = null
                     }
                 } catch (e: Throwable) {
                     android.util.Log.e("YouSnapViewModel", "Failed to parse story snapshot safely: ${e.message}")
+                    _currentStoryState.value = null
                 }
             }
         } catch (e: Throwable) {
             android.util.Log.e("YouSnapViewModel", "startListeningToStory exception: ${e.message}")
-            seedStoryDocument(ownerUsernameSafe)
-        }
-    }
-
-    private fun seedStoryDocument(ownerUsername: String) {
-        val ownerUsernameSafe = ownerUsername.ifEmpty { profileState.value.username }
-        val now = System.currentTimeMillis()
-        val newStory = mapOf(
-            "storyId" to ownerUsernameSafe,
-            "ownerUsername" to ownerUsernameSafe,
-            "viewerIds" to emptyList<String>(),
-            "viewsCount" to 0,
-            "likes" to emptyList<String>(),
-            "mediaUrl" to "",
-            "mediaType" to "image",
-            "createdAt" to com.google.firebase.Timestamp.now(),
-            "timestamp" to now
-        )
-
-        _currentStoryState.value = StoryModel(
-            storyId = ownerUsernameSafe,
-            ownerUsername = ownerUsernameSafe,
-            viewerIds = emptyList(),
-            viewsCount = 0,
-            likes = emptyList(),
-            mediaUrl = "",
-            mediaType = "image",
-            timestamp = now
-        )
-        
-        try {
-            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
-            firestore?.collection("stories")?.document(ownerUsernameSafe)
-                ?.set(newStory)
-        } catch (e: Throwable) {
-            android.util.Log.e("YouSnapViewModel", "seedStoryDocument exception: ${e.message}")
+            _currentStoryState.value = null
         }
     }
 
@@ -3223,7 +3303,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         
-        return result
+        return result.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
     }
 
     private fun extractVideoThumbnail(context: android.content.Context, uri: Uri): String? {
@@ -3255,6 +3335,9 @@ data class StoryModel(
     val likes: List<String> = emptyList(),
     val mediaUrl: String? = null,
     val mediaType: String = "image",
+    val caption: String = "",
+    val bgGradientStart: String = "#FF512F",
+    val bgGradientEnd: String = "#DD2476",
     val timestamp: Long = System.currentTimeMillis(),
     val hiddenFrom: List<String> = emptyList()
 )
