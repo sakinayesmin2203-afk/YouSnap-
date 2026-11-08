@@ -76,6 +76,7 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var errorDialogText by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // Configure Google Sign-In Client
@@ -107,6 +108,7 @@ fun LoginScreen(
     ) { result ->
         if (result.resultCode != Activity.RESULT_OK || result.data == null) {
             android.util.Log.w("LoginScreen", "Google Sign-In Activity Canceled or Failed")
+            isLoading = false
             return@rememberLauncherForActivityResult
         }
 
@@ -125,7 +127,10 @@ fun LoginScreen(
                         name = displayName,
                         idToken = idToken,
                         photoUrl = photoUrl,
-                        onSuccess = { onLoginSuccess() },
+                        onSuccess = {
+                            isLoading = false
+                            onLoginSuccess()
+                        },
                         onError = {
                             // Fallback to local success if Firebase Auth specifically fails but we have account info
                             viewModel.handleGoogleSignInSuccess(
@@ -133,15 +138,26 @@ fun LoginScreen(
                                 name = displayName,
                                 idToken = null,
                                 photoUrl = photoUrl,
-                                onSuccess = { onLoginSuccess() },
-                                onError = { onLoginSuccess() }
+                                onSuccess = {
+                                    isLoading = false
+                                    onLoginSuccess()
+                                },
+                                onError = {
+                                    isLoading = false
+                                    onLoginSuccess()
+                                }
                             )
                         }
                     )
+                } else {
+                    isLoading = false
                 }
+            } else {
+                isLoading = false
             }
         } catch (e: Throwable) {
             android.util.Log.e("LoginScreen", "Google Sign-In API Error: ${e.message}")
+            isLoading = false
             Toast.makeText(context, "Google Sign-In failed. Please try again.", Toast.LENGTH_SHORT).show()
         }
     }
@@ -190,7 +206,9 @@ fun LoginScreen(
         ) {
             Button(
                 onClick = {
+                    isLoading = true
                     viewModel.loginAsDemoUser {
+                        isLoading = false
                         onLoginSuccess()
                     }
                 },
@@ -407,13 +425,16 @@ fun LoginScreen(
                             if (enteredEmail.isEmpty() || enteredPassword.isEmpty()) {
                                 errorDialogText = "Please fill in all fields!"
                             } else {
+                                isLoading = true
                                 viewModel.loginWithFirebase(
                                     email = enteredEmail,
                                     pass = enteredPassword,
                                     onSuccess = {
+                                        isLoading = false
                                         onLoginSuccess()
                                     },
                                     onError = { error ->
+                                        isLoading = false
                                         errorDialogText = error
                                     }
                                 )
@@ -474,6 +495,7 @@ fun LoginScreen(
                     // Social Button: Google (Outlined, Multi-color G logo, Continue with Google)
                     Button(
                         onClick = {
+                            isLoading = true
                             coroutineScope.launch {
                                 try {
                                     val serverClientId = "87251634633-uc5e77coc96arckiac2si98e0ims7qfm.apps.googleusercontent.com"
@@ -499,15 +521,24 @@ fun LoginScreen(
                                             name = displayName,
                                             idToken = googleIdToken,
                                             photoUrl = photoUrl,
-                                            onSuccess = { onLoginSuccess() },
+                                            onSuccess = {
+                                                isLoading = false
+                                                onLoginSuccess()
+                                            },
                                             onError = {
                                                 viewModel.handleGoogleSignInSuccess(
                                                     email = email,
                                                     name = displayName,
                                                     idToken = null,
                                                     photoUrl = photoUrl,
-                                                    onSuccess = { onLoginSuccess() },
-                                                    onError = { onLoginSuccess() }
+                                                    onSuccess = {
+                                                        isLoading = false
+                                                        onLoginSuccess()
+                                                    },
+                                                    onError = {
+                                                        isLoading = false
+                                                        onLoginSuccess()
+                                                    }
                                                 )
                                             }
                                         )
@@ -522,6 +553,7 @@ fun LoginScreen(
                                         googleSignInLauncher.launch(signInIntent)
                                     } catch (ex: Throwable) {
                                         android.util.Log.e("LoginScreen", "Google Sign-In fallback failed: ${ex.message}")
+                                        isLoading = false
                                         Toast.makeText(context, "Could not start Google Sign-In", Toast.LENGTH_SHORT).show()
                                     }
                                 }
@@ -609,7 +641,9 @@ fun LoginScreen(
                     // Login with Demo Account Button
                     Button(
                         onClick = {
+                            isLoading = true
                             viewModel.loginAsDemoUser {
+                                isLoading = false
                                 onLoginSuccess()
                             }
                         },
@@ -663,6 +697,37 @@ fun LoginScreen(
                         viewModel.navigateTo(Screen.SignUp)
                     }
                 )
+            }
+        }
+
+        // Render loading overlay if isLoading is true
+        if (isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .clickable(enabled = false) {},
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF0F2C59))
+                        Text(
+                            text = "Logging in...",
+                            color = Color(0xFF0F2C59),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
             }
         }
 

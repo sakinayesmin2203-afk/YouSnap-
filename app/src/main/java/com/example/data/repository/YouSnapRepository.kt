@@ -77,6 +77,14 @@ class YouSnapRepository(private val dao: YouSnapDao) {
         }
     }
 
+    suspend fun clearAllData() {
+        dao.clearAllReels()
+        dao.clearProfile()
+        dao.clearComments()
+        dao.insertProfile(ProfileEntity())
+        dao.insertSettings(SettingsEntity())
+    }
+
     // Comments
     fun getCommentsForReel(reelId: Int): Flow<List<CommentEntity>> = dao.getCommentsForReelFlow(reelId)
 

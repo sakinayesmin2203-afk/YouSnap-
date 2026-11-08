@@ -13,8 +13,6 @@ import com.example.data.model.ReelEntity
 import com.example.data.model.SettingsEntity
 import com.example.data.repository.YouSnapRepository
 import com.example.ui.components.FullScreenPhotoData
-import com.example.data.BackblazeB2Service
-import com.example.data.repository.BackblazeRepository
 import com.example.data.CdnConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -39,6 +37,7 @@ data class SnapNotification(val id: Int, val type: String, val username: String,
 
 // Navigation Destinations
 sealed class Screen {
+    object Splash : Screen()
     object Login : Screen()
     object SignUp : Screen()
     object ForgotPassword : Screen()
@@ -141,9 +140,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val _currentUser = MutableStateFlow<com.google.firebase.auth.FirebaseUser?>(null)
     val currentUser = _currentUser.asStateFlow()
 
-    // Backblaze B2 Upload and Cloudflare CDN Configuration State
-    private val b2Service = BackblazeB2Service.create()
-    private val b2Repository = BackblazeRepository(b2Service)
+    // Supabase Storage Upload and Cloudflare CDN Configuration State
+    private val supabaseRepository = com.example.data.repository.SupabaseRepository()
 
     private val _b2UploadProgress = MutableStateFlow(0f)
     val b2UploadProgress: StateFlow<Float> = _b2UploadProgress.asStateFlow()
@@ -165,33 +163,20 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             _b2UploadedUrl.value = null
 
             try {
-                // Request Presigned URL
-                val presignedResponse = b2Repository.requestPresignedUrl(filename, contentType)
-                val uploadUrl = presignedResponse?.uploadUrl ?: presignedResponse?.presignedUrl ?: presignedResponse?.url
-
-                if (uploadUrl.isNullOrEmpty()) {
-                    _b2UploadSuccess.value = false
-                    _isB2Uploading.value = false
-                    return@launch
-                }
-
+                var finalLength: Long = -1L
                 val finalInputStream: java.io.InputStream
                 var isCompacted = false
 
                 if (contentType.startsWith("image")) {
-                    // --- REAL NATIVE ON-DEVICE PHOTO COMPRESSION ---
-                    // Step 1: Simulate starting the silent upload
                     for (i in 1..8) {
                         kotlinx.coroutines.delay(60)
-                        _b2UploadProgress.value = i * 0.03f // up to 0.24f
+                        _b2UploadProgress.value = i * 0.03f
                     }
-                    
-                    // Step 2: Read and compress image
                     val originalStream = context.contentResolver.openInputStream(uri)
                     val originalBytes = originalStream?.readBytes() ?: byteArrayOf()
                     originalStream?.close()
 
-                    val compactedBytes = if (originalBytes.size > 150 * 1024) { // Compresses if > 150KB
+                    val compactedBytes = if (originalBytes.size > 150 * 1024) {
                         val bitmap = android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
                         if (bitmap != null) {
                             val outputStream = java.io.ByteArrayOutputStream()
@@ -204,16 +189,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         originalBytes
                     }
+                    finalLength = compactedBytes.size.toLong()
                     finalInputStream = java.io.ByteArrayInputStream(compactedBytes)
                     _b2UploadProgress.value = 0.25f
                 } else if (contentType.startsWith("video")) {
-                    // --- SILENT HIGH-FIDELITY VIDEO OPTIMIZER SIMULATION ---
-                    // Simulates transcoding a 300MB HD video into a compact 15MB streaming format
                     for (i in 1..15) {
                         kotlinx.coroutines.delay(100)
-                        _b2UploadProgress.value = i * 0.016f // up to ~0.24f
+                        _b2UploadProgress.value = i * 0.016f
                     }
-                    
+                    finalLength = try { 
+                        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L 
+                    } catch (e: Exception) { -1L }
                     val inputStream = context.contentResolver.openInputStream(uri)
                     if (inputStream == null) {
                         _b2UploadSuccess.value = false
@@ -233,36 +219,36 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     finalInputStream = inputStream
                 }
 
-                // Perform direct PUT upload to Backblaze B2
-                val isSuccess = b2Repository.uploadFile(
-                    uploadUrl = uploadUrl,
+                val isSuccess = supabaseRepository.uploadFile(
+                    filename = filename,
                     contentType = contentType,
                     inputStream = finalInputStream,
+                    contentLength = finalLength,
                     onProgress = { progress ->
-                        // Map progress smoothly from 0.25f to 1.0f
                         _b2UploadProgress.value = 0.25f + (progress * 0.75f)
                     }
                 )
 
-                if (isSuccess) {val finalFileName = presignedResponse?.fileName ?: ""
-                    val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
+                if (isSuccess) {
+                    val fullCdnUrl = CdnConfig.getFullMediaUrl(filename)
                     _b2UploadedUrl.value = fullCdnUrl
                     _b2UploadSuccess.value = true
+                    _b2UploadProgress.value = 1.0f
                     val successMsg = if (isCompacted) {
-                        "Uploaded & Optimized Successfully! ✨"
+                        "Uploaded & Optimized to Supabase Successfully! ✨"
                     } else {
                         "Direct Upload Successful! 🎉"
                     }
                     android.widget.Toast.makeText(context, successMsg, android.widget.Toast.LENGTH_SHORT).show()
                 } else {
                     _b2UploadSuccess.value = false
-                    android.widget.Toast.makeText(context, "Direct Upload failed on B2 Server.", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, "Direct Upload failed on Supabase Storage.", android.widget.Toast.LENGTH_SHORT).show()
                 }
 
             } catch (e: Exception) {
-                android.util.Log.e("YouSnapViewModel", "B2 upload failed: ${e.message}")
+                android.util.Log.e("YouSnapViewModel", "Supabase upload failed: ${e.message}")
                 _b2UploadSuccess.value = false
-                android.widget.Toast.makeText(context, "B2 upload exception: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "Supabase upload exception: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
             } finally {
                 _isB2Uploading.value = false
             }
@@ -279,13 +265,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun logout() {
         cachedAppPin = ""
         try {
-            prefs.edit().putBoolean("is_logged_in", false).apply()
+            prefs.edit()
+                .putBoolean("is_logged_in", false)
+                .remove("saved_personal_photos")
+                .remove("recentSearches")
+                .apply()
             auth?.signOut()
         } catch (e: Throwable) {
             android.util.Log.e("YouSnapViewModel", "SignOut error: ${e.message}")
         }
         _currentUser.value = null
+        _personalPhotosState.value = emptyList()
+        _allStories.value = emptyList()
+        _currentStoryState.value = null
         _isAppLocked.value = false
+        viewModelScope.launch {
+            repository.clearAllData()
+        }
         clearAndNavigateTo(Screen.Login)
     }
 
@@ -1072,16 +1068,22 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // Current active screen - directly initialize to Home if user is already logged in
-    private val _currentScreen = MutableStateFlow<Screen>(
-        if (prefs.getBoolean("is_logged_in", false)) Screen.Home else Screen.Login
-    )
+    // Current active screen - starts on Splash Screen
+    private val _currentScreen = MutableStateFlow<Screen>(Screen.Splash)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
     // Screen Backstack to support back button clicks properly!
-    private val navigationBackstack = mutableListOf<Screen>(
-        if (prefs.getBoolean("is_logged_in", false)) Screen.Home else Screen.Login
-    )
+    private val navigationBackstack = mutableListOf<Screen>(Screen.Splash)
+
+    fun proceedFromSplash() {
+        val isAlreadyLoggedIn = prefs.getBoolean("is_logged_in", false)
+        val hasFirebaseUser = (auth?.currentUser != null)
+        if (isAlreadyLoggedIn && hasFirebaseUser) {
+            clearAndNavigateTo(Screen.Home)
+        } else {
+            clearAndNavigateTo(Screen.Login)
+        }
+    }
 
     // In-Memory Search query and filtered items
     private val _searchQuery = MutableStateFlow("")
@@ -1308,9 +1310,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
 
         // --- Persistent Login on App Start ---
-        val isAlreadyLoggedIn = prefs.getBoolean("is_logged_in", false)
-        if (isAlreadyLoggedIn) {
-            // User did NOT log out, they just reopened the app: NEVER lock, directly go to Home
+        val hasFirebaseUser = (auth?.currentUser != null)
+        if (!hasFirebaseUser && auth != null) {
+            // User is not signed in to Firebase Auth (e.g. deleted account or logged out).
+            // Wipe all local cache (profile, photos, reels, saved sessions) completely.
+            logout()
+        } else if (hasFirebaseUser) {
+            // User is logged in with valid Firebase Auth
             _isAppLocked.value = false
             _currentScreen.value = Screen.Home
             viewModelScope.launch {
@@ -1331,13 +1337,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                             val curSettings = settingsState.value
                                             repository.saveSettings(curSettings.copy(isPrivateAccount = isPrivate))
                                         }
-                                        // Still logged in without logout, keep unlocked and stay on Home
                                         _isAppLocked.value = false
                                         if (_currentScreen.value == Screen.Login) {
                                             clearAndNavigateTo(Screen.Home)
                                         }
                                     }
+                                } else {
+                                    // User account document was deleted from Firestore
+                                    logout()
                                 }
+                            }
+                            ?.addOnFailureListener {
+                                // Ignore network temporary failures
                             }
                     } catch (e: Throwable) {
                         // ignore
@@ -1345,7 +1356,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         } else {
-            // User is not logged in: ensure on Login screen
+            // Unconfigured or no persistent session
             _isAppLocked.value = false
             if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
                 _currentScreen.value = Screen.Login
@@ -1368,6 +1379,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         _currentUser.value = user
                         if (user != null) {
                             val isPersistedLogin = prefs.getBoolean("is_logged_in", false)
+                            startListeningToUserDoc(user.uid)
                             try {
                                 db?.collection("users")?.document(user.uid)?.get()
                                     ?.addOnSuccessListener { document ->
@@ -1399,6 +1411,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                                     }
                                                 }
                                             }
+                                        } else {
+                                            if (prefs.getBoolean("is_logged_in", false)) {
+                                                logout()
+                                            }
                                         }
                                     }
                             } catch (e: Throwable) {
@@ -1410,9 +1426,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                 clearAndNavigateTo(Screen.Home)
                             }
                         } else {
-                            // User is signed out of Firebase:
-                            // ONLY navigate to Login screen if the user has actually logged out (is_logged_in is false)
-                            if (!prefs.getBoolean("is_logged_in", false)) {
+                            // User is signed out of Firebase or account deleted:
+                            stopListeningToUserDoc()
+                            if (prefs.getBoolean("is_logged_in", false)) {
+                                logout()
+                            } else if (!prefs.getBoolean("is_logged_in", false)) {
                                 if (_currentScreen.value != Screen.SignUp && _currentScreen.value != Screen.ForgotPassword) {
                                     clearAndNavigateTo(Screen.Login)
                                 }
@@ -1430,6 +1448,36 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         // Live Real-Time Firestore Synchronization for Real Posts & Reels
         startListeningToFirestoreReels()
         startListeningToFirestorePosts()
+    }
+
+    private var userDocListener: com.google.firebase.firestore.ListenerRegistration? = null
+
+    private fun startListeningToUserDoc(uid: String) {
+        userDocListener?.remove()
+        try {
+            val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+            if (firestore != null && uid.isNotEmpty()) {
+                userDocListener = firestore.collection("users").document(uid).addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "User doc listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot == null || !snapshot.exists()) {
+                        android.util.Log.w("YouSnapViewModel", "Remote account deletion detected in Firestore! Logging out.")
+                        if (prefs.getBoolean("is_logged_in", false)) {
+                            logout()
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("YouSnapViewModel", "Failed to start user doc listener: ${e.message}")
+        }
+    }
+
+    private fun stopListeningToUserDoc() {
+        userDocListener?.remove()
+        userDocListener = null
     }
 
     private var firestoreReelsListener: com.google.firebase.firestore.ListenerRegistration? = null
@@ -1491,8 +1539,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     viewModelScope.launch {
                         repository.ensureInitialData()
                         val uniqueRealReels = realReels.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
+                        val remoteIds = uniqueRealReels.map { it.id }.toSet()
                         for (reel in uniqueRealReels) {
                             repository.insertReel(reel)
+                        }
+                        // Real-time deletion sync for reels deleted from Firestore
+                        val allLocalReels = repository.reelsFlow.first()
+                        for (local in allLocalReels) {
+                            if (local.creatorUsername.lowercase() !in demoUsernames && local.id !in remoteIds) {
+                                repository.deleteReelById(local.id)
+                            }
                         }
                     }
                 }
@@ -1558,6 +1614,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         firestoreReelsListener?.remove()
         firestorePostsListener?.remove()
         storyListenerRegistration?.remove()
+        userDocListener?.remove()
     }
 
     // Navigation System
@@ -1894,7 +1951,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         return emptyList()
     }
 
-    // Helper to perform direct Backblaze B2 upload and return (fullCdnUrl, finalFileName)
+    // Helper to perform direct Supabase Storage upload and return (fullCdnUrl, finalFileName)
     private suspend fun performDirectB2Upload(
         context: android.content.Context,
         uri: Uri,
@@ -1907,78 +1964,70 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _b2UploadedUrl.value = null
 
         return try {
-            val presignedResponse = b2Repository.requestPresignedUrl(filename, contentType)
-            val uploadUrl = presignedResponse?.uploadUrl ?: presignedResponse?.presignedUrl ?: presignedResponse?.url
+            var finalLength: Long = -1L
+            val finalInputStream: java.io.InputStream? = if (contentType.startsWith("image")) {
+                for (i in 1..4) {
+                    kotlinx.coroutines.delay(30)
+                    _b2UploadProgress.value = i * 0.03f
+                }
+                val originalStream = context.contentResolver.openInputStream(uri)
+                val originalBytes = originalStream?.readBytes() ?: byteArrayOf()
+                originalStream?.close()
 
-            if (uploadUrl.isNullOrEmpty()) {
-                _b2UploadSuccess.value = false
-                Pair(null, null)
-            } else {
-                var finalLength: Long = -1L
-                val finalInputStream: java.io.InputStream? = if (contentType.startsWith("image")) {
-                    for (i in 1..4) {
-                        kotlinx.coroutines.delay(30)
-                        _b2UploadProgress.value = i * 0.03f
-                    }
-                    val originalStream = context.contentResolver.openInputStream(uri)
-                    val originalBytes = originalStream?.readBytes() ?: byteArrayOf()
-                    originalStream?.close()
-
-                    val compactedBytes = if (originalBytes.size > 150 * 1024) {
-                        val bitmap = android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
-                        if (bitmap != null) {
-                            val outputStream = java.io.ByteArrayOutputStream()
-                            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
-                            outputStream.toByteArray()
-                        } else {
-                            originalBytes
-                        }
+                val compactedBytes = if (originalBytes.size > 150 * 1024) {
+                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
+                    if (bitmap != null) {
+                        val outputStream = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+                        outputStream.toByteArray()
                     } else {
                         originalBytes
                     }
-                    finalLength = compactedBytes.size.toLong()
-                    _b2UploadProgress.value = 0.15f
-                    java.io.ByteArrayInputStream(compactedBytes)
                 } else {
-                    for (i in 1..4) {
-                        kotlinx.coroutines.delay(30)
-                        _b2UploadProgress.value = i * 0.03f
-                    }
-                    finalLength = try { 
-                        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L 
-                    } catch (e: Exception) { -1L }
-                    _b2UploadProgress.value = 0.15f
-                    context.contentResolver.openInputStream(uri)
+                    originalBytes
                 }
+                finalLength = compactedBytes.size.toLong()
+                _b2UploadProgress.value = 0.15f
+                java.io.ByteArrayInputStream(compactedBytes)
+            } else {
+                for (i in 1..4) {
+                    kotlinx.coroutines.delay(30)
+                    _b2UploadProgress.value = i * 0.03f
+                }
+                finalLength = try { 
+                    context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L 
+                } catch (e: Exception) { -1L }
+                _b2UploadProgress.value = 0.15f
+                context.contentResolver.openInputStream(uri)
+            }
 
-                if (finalInputStream == null) {
+            if (finalInputStream == null) {
+                _b2UploadSuccess.value = false
+                Pair(null, null)
+            } else {
+                val isSuccess = supabaseRepository.uploadFile(
+                    filename = filename,
+                    contentType = contentType,
+                    inputStream = finalInputStream,
+                    contentLength = finalLength,
+                    onProgress = { progress ->
+                        _b2UploadProgress.value = (0.15f + (progress * 0.85f)).coerceIn(0f, 1f)
+                    }
+                )
+                if (isSuccess) {
+                    val finalFileName = filename ?: ""
+                    val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
+                    _b2UploadedUrl.value = fullCdnUrl
+                    _b2UploadSuccess.value = true
+                    _b2UploadProgress.value = 1.0f
+                    Pair(fullCdnUrl, finalFileName)
+                } else {
                     _b2UploadSuccess.value = false
                     Pair(null, null)
-                } else {
-                    val isSuccess = b2Repository.uploadFile(
-                        uploadUrl = uploadUrl,
-                        contentType = contentType,
-                        inputStream = finalInputStream,
-                        contentLength = finalLength,
-                        onProgress = { progress ->
-                            _b2UploadProgress.value = (0.15f + (progress * 0.85f)).coerceIn(0f, 1f)
-                        }
-                    )
-                    if (isSuccess) {
-                        val finalFileName = filename ?: ""
-                        val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
-                        _b2UploadedUrl.value = fullCdnUrl
-                        _b2UploadSuccess.value = true
-                        _b2UploadProgress.value = 1.0f
-                        Pair(fullCdnUrl, finalFileName)
-                    } else {
-                        _b2UploadSuccess.value = false
-                        Pair(null, null)
-                    }
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("YouSnapViewModel", "B2 direct upload failed: ${e.message}")
+            android.util.Log.e("YouSnapViewModel", "Supabase direct upload failed: ${e.message}")
             _b2UploadSuccess.value = false
             Pair(null, null)
         } finally {
@@ -2031,7 +2080,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.e("YouSnapViewModel", "Text Story upload error: ${e.message}")
             }
 
-            _currentStoryState.value = StoryModel(
+            val newStory = StoryModel(
                 storyId = ownerUsername,
                 ownerUsername = ownerUsername,
                 viewerIds = emptyList(),
@@ -2045,6 +2094,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 timestamp = timestampNow,
                 hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
             )
+            _currentStoryState.value = newStory
+            _allStories.value = listOf(newStory) + _allStories.value.filter { it.ownerUsername != ownerUsername }
             _storiesUploadedCount.value += 1
             android.widget.Toast.makeText(app, "Text Story published successfully! ✨", android.widget.Toast.LENGTH_LONG).show()
             onComplete()

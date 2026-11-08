@@ -1,56 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-    
-    // Posts collection rules
-    match /posts/{postId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
-    }
-
-    // Reels collection rules
-    match /reels/{reelId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
-    }
-
-    // Stories collection rules
-    match /stories/{storyId} {
+    match /{document=**} {
       allow read, write: if true;
     }
-    match /stories/{storyId=**} {
-      allow read, write: if true;
-    }
-
-    // Users collection
-    match /users/{userId} {
-      allow read, write: if true;
-    }
-
-    // Follows collection
-    match /follows/{followId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
-    }
-
-    // Notifications collection (with subcollections)
-    match /notifications/{userId} {
-      allow read: if isAuthenticated() && request.auth.uid == userId;
-      match /user_notifications/{notifId} {
-        allow read: if isAuthenticated() && request.auth.uid == userId;
-        allow write: if isAuthenticated();
-      }
-    }
-
-    // Reports and Applications
-    match /reports/{reportId} { allow write: if isAuthenticated(); }
-    match /post_reports/{reportId} { allow write: if isAuthenticated(); }
-    match /story_reports/{reportId} { allow write: if isAuthenticated(); }
-    match /support_tickets/{ticketId} { allow write: if isAuthenticated(); }
-    match /monetization_applications/{appId} { allow write: if isAuthenticated(); }
   }
 }

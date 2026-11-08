@@ -68,10 +68,19 @@ interface YouSnapDao {
     suspend fun deleteDuplicateReelsByTimestamp(timestamp: Long, username: String, keepId: Int)
 
 
+    @Query("DELETE FROM reels_table")
+    suspend fun clearAllReels()
+
+    @Query("DELETE FROM profile_table")
+    suspend fun clearProfile()
+
     // Comments Operations
     @Query("SELECT * FROM comments_table WHERE reelId = :reelId ORDER BY timestamp ASC")
     fun getCommentsForReelFlow(reelId: Int): Flow<List<CommentEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertComment(comment: CommentEntity)
+
+    @Query("DELETE FROM comments_table")
+    suspend fun clearComments()
 }

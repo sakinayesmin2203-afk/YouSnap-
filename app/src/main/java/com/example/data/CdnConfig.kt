@@ -1,7 +1,8 @@
 package com.example.data
 
 object CdnConfig {
-    const val CDN_BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/"
+    // Cloudflare Worker CDN routing to Supabase Storage public bucket
+    const val CDN_BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/public/"
 
     fun getFullMediaUrl(fileName: String?): String {
         if (fileName.isNullOrEmpty()) return ""

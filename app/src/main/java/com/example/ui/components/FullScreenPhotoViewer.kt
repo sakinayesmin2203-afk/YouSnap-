@@ -93,7 +93,7 @@ fun FullScreenPhotoViewer(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun FullScreenPhotoViewer(
     photos: List<FullScreenPhotoData>,
@@ -104,7 +104,7 @@ fun FullScreenPhotoViewer(
     if (photos.isEmpty()) return
 
     val validIndex = initialIndex.coerceIn(0, photos.size - 1)
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = validIndex)
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = validIndex) { photos.size }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -120,24 +120,15 @@ fun FullScreenPhotoViewer(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                userScrollEnabled = true
-            ) {
-                items(photos, key = { it.id }) { photo ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .fillParentMaxHeight()
-                    ) {
-                        FullScreenPostCard(
-                            photoData = photo,
-                            onDismiss = onDismiss,
-                            onLikeChanged = onLikeChanged
-                        )
-                    }
-                }
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                FullScreenPostCard(
+                    photoData = photos[page],
+                    onDismiss = onDismiss,
+                    onLikeChanged = onLikeChanged
+                )
             }
         }
     }

@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
             YouSnapTheme(darkTheme = false, fontScale = fontScale) {
                 // Handle android system back button within sub settings navigation or opened photo on Home
                 val isPostOpenedOnHome = currentScreen is Screen.Home && viewModel.hasOpenedPostFromProfile()
-                BackHandler(enabled = (currentScreen != Screen.Home && currentScreen != Screen.Login) || isPostOpenedOnHome) {
+                BackHandler(enabled = (currentScreen != Screen.Home && currentScreen != Screen.Login && currentScreen != Screen.Splash) || isPostOpenedOnHome) {
                     if (isPostOpenedOnHome) {
                         viewModel.clearOpenedHomePost()
                         val popped = viewModel.navigateBack()
@@ -164,6 +164,10 @@ class MainActivity : ComponentActivity() {
                 ) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding)) {
                         when (val activeScreen = currentScreen) {
+                            is Screen.Splash -> SplashScreen(
+                                onTimeout = { viewModel.proceedFromSplash() }
+                            )
+
                             is Screen.Login -> com.example.ui.screens.LoginScreen(
                                 viewModel = viewModel,
                                 onLoginSuccess = { viewModel.clearAndNavigateTo(Screen.Home) }
