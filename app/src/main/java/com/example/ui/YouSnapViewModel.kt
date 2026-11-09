@@ -219,7 +219,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     finalInputStream = inputStream
                 }
 
-                val isSuccess = supabaseRepository.uploadFile(
+                val uploadResult = supabaseRepository.uploadFile(
                     filename = filename,
                     contentType = contentType,
                     inputStream = finalInputStream,
@@ -229,20 +229,20 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                 )
 
-                if (isSuccess) {
-                    val fullCdnUrl = CdnConfig.getFullMediaUrl(filename)
-                    _b2UploadedUrl.value = fullCdnUrl
+                if (uploadResult.isSuccess && !uploadResult.fileUrl.isNullOrEmpty()) {
+                    _b2UploadedUrl.value = uploadResult.fileUrl
                     _b2UploadSuccess.value = true
                     _b2UploadProgress.value = 1.0f
                     val successMsg = if (isCompacted) {
-                        "Uploaded & Optimized to Supabase Successfully! ✨"
+                        "Uploaded & Optimized to Supabase Storage (YOUSNAP) Successfully! ✨"
                     } else {
                         "Direct Upload Successful! 🎉"
                     }
                     android.widget.Toast.makeText(context, successMsg, android.widget.Toast.LENGTH_SHORT).show()
                 } else {
                     _b2UploadSuccess.value = false
-                    android.widget.Toast.makeText(context, "Direct Upload failed on Supabase Storage.", android.widget.Toast.LENGTH_SHORT).show()
+                    val errorMsg = uploadResult.errorMessage ?: "Direct Upload failed on Supabase Storage (HTTP ${uploadResult.responseCode})."
+                    android.widget.Toast.makeText(context, "❌ $errorMsg", android.widget.Toast.LENGTH_LONG).show()
                 }
 
             } catch (e: Exception) {
@@ -1951,13 +1951,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         return emptyList()
     }
 
-    // Helper to perform direct Supabase Storage upload and return (fullCdnUrl, finalFileName)
+    // Helper to perform direct Supabase Storage upload and return UploadResult
     private suspend fun performDirectB2Upload(
         context: android.content.Context,
         uri: Uri,
         filename: String,
         contentType: String
-    ): Pair<String?, String?> {
+    ): com.example.data.repository.UploadResult {
         _isB2Uploading.value = true
         _b2UploadProgress.value = 0f
         _b2UploadSuccess.value = null
@@ -2003,9 +2003,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
             if (finalInputStream == null) {
                 _b2UploadSuccess.value = false
-                Pair(null, null)
+                com.example.data.repository.UploadResult(
+                    isSuccess = false,
+                    errorMessage = "Failed to open input stream for media file",
+                    responseCode = 400
+                )
             } else {
-                val isSuccess = supabaseRepository.uploadFile(
+                val result = supabaseRepository.uploadFile(
                     filename = filename,
                     contentType = contentType,
                     inputStream = finalInputStream,
@@ -2014,22 +2018,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         _b2UploadProgress.value = (0.15f + (progress * 0.85f)).coerceIn(0f, 1f)
                     }
                 )
-                if (isSuccess) {
-                    val finalFileName = filename ?: ""
-                    val fullCdnUrl = CdnConfig.getFullMediaUrl(finalFileName)
-                    _b2UploadedUrl.value = fullCdnUrl
+                if (result.isSuccess) {
+                    _b2UploadedUrl.value = result.fileUrl
                     _b2UploadSuccess.value = true
                     _b2UploadProgress.value = 1.0f
-                    Pair(fullCdnUrl, finalFileName)
                 } else {
                     _b2UploadSuccess.value = false
-                    Pair(null, null)
                 }
+                result
             }
         } catch (e: Exception) {
             android.util.Log.e("YouSnapViewModel", "Supabase direct upload failed: ${e.message}")
             _b2UploadSuccess.value = false
-            Pair(null, null)
+            com.example.data.repository.UploadResult(
+                isSuccess = false,
+                errorMessage = e.message ?: "Upload exception occurred",
+                responseCode = 500
+            )
         } finally {
             _isB2Uploading.value = false
         }
@@ -2103,7 +2108,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // Unified Media Upload Function (Uploads directly to Backblaze B2, then saves to Firestore & Profile)
+    // Unified Media Upload Function (Uploads directly to Supabase Storage, then saves to Firestore & Profile)
     fun uploadMedia(
         mediaUri: Uri,
         mediaType: String,
@@ -2125,15 +2130,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val filename = "yousnap_${timestampNow}.$extension"
             val contentType = if (mediaType == "photo") "image/jpeg" else "video/mp4"
 
-            val (b2CdnUrl, b2FileName) = performDirectB2Upload(
+            val uploadResult = performDirectB2Upload(
                 context = app,
                 uri = mediaUri,
                 filename = filename,
                 contentType = contentType
             )
-            val finalMediaUrl = b2CdnUrl ?: mediaUri.toString()
-            val storedFileName = b2FileName ?: filename
-            val storageProvider = if (b2CdnUrl != null) "Backblaze B2" else "Local URI Fallback"
+
+            if (!uploadResult.isSuccess || uploadResult.fileUrl.isNullOrEmpty()) {
+                val errorMsg = uploadResult.errorMessage ?: "Upload failed with HTTP code ${uploadResult.responseCode}"
+                Toast.makeText(app, "❌ Supabase Storage Upload Failed: $errorMsg", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+
+            val finalMediaUrl = uploadResult.fileUrl!!
+            val storedFileName = uploadResult.fileName ?: filename
+            val storageProvider = "Supabase Storage (YOUSNAP)"
+            val bucketName = "YOUSNAP"
 
             if (isStory) {
                 // STORY UPLOAD (With Text Overlay & Media)
@@ -2154,6 +2167,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     "bgGradientEnd" to gradientEnd,
                     "b2FileName" to storedFileName,
                     "storageProvider" to storageProvider,
+                    "bucket" to bucketName,
                     "mediaType" to if (mediaType == "reel") "video" else "image",
                     "createdAt" to com.google.firebase.Timestamp.now(),
                     "timestamp" to timestampNow,
@@ -2185,7 +2199,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     hiddenFrom = profile.hiddenStoryFrom.split(",").filter { it.isNotEmpty() }
                 )
                 _storiesUploadedCount.value += 1
-                android.widget.Toast.makeText(app, "Story uploaded to Backblaze B2! 🚀", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(app, "Story uploaded to Supabase Storage (YOUSNAP)! 🚀", android.widget.Toast.LENGTH_LONG).show()
                 onComplete()
                 clearAndNavigateTo(Screen.Home)
                 return@launch
@@ -2211,7 +2225,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 savePersonalPhotosToPrefs(updatedPhotos)
                 _photoUploadsCount.value += 1
 
-                // Save to Firestore with type: "photo" and Backblaze B2 URL
+                // Save to Firestore with type: "photo" and Supabase Storage URL
                 try {
                     val photoDoc = mapOf(
                         "id" to newId.toString(),
@@ -2226,6 +2240,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "mediaUrl" to finalMediaUrl,
                         "b2FileName" to storedFileName,
                         "storageProvider" to storageProvider,
+                        "bucket" to bucketName,
                         "likesCount" to 0,
                         "commentsCount" to 0,
                         "createdAt" to com.google.firebase.Timestamp.now()
@@ -2241,7 +2256,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     android.util.Log.e("YouSnapViewModel", "Photo Firestore save exception: ${e.message}")
                 }
 
-                Toast.makeText(app, "Photo uploaded to Backblaze B2! 📸 Added to Photos tab.", Toast.LENGTH_LONG).show()
+                Toast.makeText(app, "Photo uploaded to Supabase Storage (YOUSNAP)! 📸 Added to Photos tab.", Toast.LENGTH_LONG).show()
                 onComplete()
                 clearAndNavigateTo(Screen.Profile)
             } else {
@@ -2271,7 +2286,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 )
                 repository.insertReel(newReel)
 
-                // Save to Firestore with type: "reel" and Backblaze B2 URL
+                // Save to Firestore with type: "reel" and Supabase Storage URL
                 try {
                     val reelDoc = mapOf(
                         "type" to "reel",
@@ -2287,6 +2302,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "thumbnailUrl" to (thumbnailPath ?: ""),
                         "b2FileName" to storedFileName,
                         "storageProvider" to storageProvider,
+                        "bucket" to bucketName,
                         "likesCount" to 0,
                         "commentsCount" to 0,
                         "viewsCount" to 0,
@@ -2303,7 +2319,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     android.util.Log.e("YouSnapViewModel", "Reel Firestore save exception: ${e.message}")
                 }
 
-                Toast.makeText(app, "Video uploaded to Backblaze B2! 🎬 Added to Reels tab.", Toast.LENGTH_LONG).show()
+                Toast.makeText(app, "Video uploaded to Supabase Storage (YOUSNAP)! 🎬 Added to Reels tab.", Toast.LENGTH_LONG).show()
                 onComplete()
                 clearAndNavigateTo(Screen.Profile)
             }
@@ -2764,7 +2780,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 .limit(50)
                 .addSnapshotListener { snapshots, error ->
                     if (error != null) {
-                        android.util.Log.e("YouSnapViewModel", "Listen to all stories failed: ${error.message}")
+                        android.util.Log.w("YouSnapViewModel", "Listen to all stories listener notice: ${error.message}")
                         return@addSnapshotListener
                     }
                     
