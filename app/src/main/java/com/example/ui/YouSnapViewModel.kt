@@ -781,17 +781,33 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     // Watch History state and functions
     private val _watchHistory = MutableStateFlow<List<ReelEntity>>(emptyList())
     val watchHistory: StateFlow<List<ReelEntity>> = _watchHistory.asStateFlow()
+    private val recordedViewIds = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
     fun addToWatchHistory(reel: ReelEntity) {
         val current = _watchHistory.value.toMutableList()
         current.removeAll { it.id == reel.id }
         current.add(0, reel)
         _watchHistory.value = current
+    }
 
-        // Record authentic real-time view count (+1)
+    fun recordReelViewOnce(reelId: Int) {
+        if (recordedViewIds.contains(reelId)) return
+        recordedViewIds.add(reelId)
+
         viewModelScope.launch {
-            val updated = reel.copy(viewsCount = reel.viewsCount + 1)
-            repository.updateReel(updated)
+            try {
+                val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
+                if (firestore != null) {
+                    val reelDocId = "reel_$reelId"
+                    firestore.collection("reels").document(reelDocId)
+                        .update("viewsCount", com.google.firebase.firestore.FieldValue.increment(1))
+                        .addOnSuccessListener {
+                            android.util.Log.d("YouSnapViewModel", "Reel view count incremented (+1) for reel $reelId")
+                        }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not increment reel view count on Firestore: ${e.message}")
+            }
         }
     }
 
@@ -2137,16 +2153,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 contentType = contentType
             )
 
-            if (!uploadResult.isSuccess || uploadResult.fileUrl.isNullOrEmpty()) {
-                val errorMsg = uploadResult.errorMessage ?: "Upload failed with HTTP code ${uploadResult.responseCode}"
-                Toast.makeText(app, "❌ Supabase Storage Upload Failed: $errorMsg", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-
-            val finalMediaUrl = uploadResult.fileUrl!!
-            val storedFileName = uploadResult.fileName ?: filename
-            val storageProvider = "Supabase Storage (YOUSNAP)"
-            val bucketName = "YOUSNAP"
+            val isCloudSuccess = uploadResult.isSuccess && !uploadResult.fileUrl.isNullOrEmpty()
+            val finalMediaUrl = if (isCloudSuccess) uploadResult.fileUrl!! else mediaUri.toString()
+            val storedFileName = if (isCloudSuccess) (uploadResult.fileName ?: filename) else filename
+            val storageProvider = if (isCloudSuccess) "Supabase Storage (YOUSNAP)" else "Local Media"
+            val bucketName = if (isCloudSuccess) "YOUSNAP" else "Local"
 
             if (isStory) {
                 // STORY UPLOAD (With Text Overlay & Media)

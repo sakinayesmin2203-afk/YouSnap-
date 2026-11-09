@@ -37,9 +37,11 @@ class SupabaseRepository {
             val mediaType = contentType.toMediaTypeOrNull()
             val requestBody = ProgressRequestBody(inputStream, mediaType, contentLength, onProgress)
 
+            val rawToken = SupabaseStorageService.AUTHORIZATION_TOKEN.replace("Bearer ", "").trim()
             val request = Request.Builder()
                 .url(uploadUrl)
                 .addHeader("Authorization", SupabaseStorageService.AUTHORIZATION_TOKEN)
+                .addHeader("apikey", rawToken)
                 .addHeader("Content-Type", contentType)
                 .addHeader("x-upsert", "true")
                 .put(requestBody)

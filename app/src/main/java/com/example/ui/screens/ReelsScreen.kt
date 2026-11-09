@@ -116,13 +116,18 @@ fun ReelsScreen(
         }
     }
 
-    // Automatically log viewed reels into Watch History
+    // Automatically log viewed reels into Watch History & increment view count ONCE per unique view
+    val viewedReelIds = remember { mutableSetOf<Int>() }
     val visibleItemIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(visibleItemIndex, feedItems) {
+    LaunchedEffect(visibleItemIndex) {
         if (feedItems.isNotEmpty() && visibleItemIndex in feedItems.indices) {
             val currentItem = feedItems[visibleItemIndex]
             if (currentItem is ReelsFeedItem.Video) {
-                viewModel.addToWatchHistory(currentItem.reel)
+                val reel = currentItem.reel
+                viewModel.addToWatchHistory(reel)
+                if (viewedReelIds.add(reel.id)) {
+                    viewModel.recordReelViewOnce(reel.id)
+                }
             }
         }
     }
@@ -324,12 +329,9 @@ fun ReelViewportItem(
                 )
             }
     ) {
-        // Track Watch Time: Increment every 3 seconds while this Composable is active
+        // Track Watch Time: Record watch session start
         LaunchedEffect(reel.id) {
-            while (true) {
-                delay(3000)
-                viewModel.updateReelWatchTime(reel, 3)
-            }
+            viewModel.updateReelWatchTime(reel, 1)
         }
 
         // ACTUAL VIDEO PLAYER
