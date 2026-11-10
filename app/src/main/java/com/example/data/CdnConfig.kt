@@ -1,10 +1,10 @@
 package com.example.data
 
 object CdnConfig {
-    // Supabase Storage Bucket Name
-    const val BUCKET_NAME = "YOUSNAP"
+    // Supabase Storage Bucket Name (Matches user's Supabase Console: "YouSnap")
+    const val BUCKET_NAME = "YouSnap"
 
-    // Cloudflare Worker CDN routing to Supabase Storage public YOUSNAP bucket
+    // Cloudflare Worker CDN routing to Supabase Storage public YouSnap bucket
     const val CDN_BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/public/$BUCKET_NAME/"
 
     fun getFullMediaUrl(fileName: String?): String {

@@ -58,7 +58,7 @@ interface YouSnapDao {
     @Query("DELETE FROM reels_table WHERE id = :reelId")
     suspend fun deleteReelById(reelId: Int)
 
-    @Query("DELETE FROM reels_table WHERE creatorUsername IN ('alex_travels', 'yuki_tech', 'chloe_bakes', 'arun_explorer', 'elena_dance', 'karan_fitness', 'maya_pottery', 'zack_skates', 'guest_user') OR creatorName IN ('Alex Rivera', 'Yuki Tanaka', 'Chloe Bennett', 'Arun Patel', 'Elena Rostova', 'Karan Mehta', 'Maya Lin', 'Zack Taylor', 'Guest User') OR id <= 8")
+    @Query("DELETE FROM reels_table WHERE creatorUsername IN ('alex_travels', 'yuki_tech', 'chloe_bakes', 'arun_explorer', 'elena_dance', 'karan_fitness', 'maya_pottery', 'zack_skates', 'guest_user', 'demo_user') OR creatorName IN ('Alex Rivera', 'Yuki Tanaka', 'Chloe Bennett', 'Arun Patel', 'Elena Rostova', 'Karan Mehta', 'Maya Lin', 'Zack Taylor', 'Guest User', 'Demo User') OR id <= 100 OR mediaUrl LIKE '%commondatastorage%' OR mediaUrl LIKE '%unsplash%'")
     suspend fun clearDemoReels()
 
     @Query("DELETE FROM reels_table WHERE mediaUrl = :mediaUrl AND id != :keepId AND mediaUrl != ''")

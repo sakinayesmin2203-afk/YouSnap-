@@ -17,22 +17,27 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.VolumeMute
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,6 +52,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,7 +73,7 @@ data class FullScreenPhotoData(
     val initialLikes: Int,
     val initialComments: Int,
     val initialIsLiked: Boolean = false,
-    val timeAgo: String = "2 hours ago"
+    val timeAgo: String = "Just now"
 )
 
 data class PhotoCommentItem(
@@ -75,7 +81,8 @@ data class PhotoCommentItem(
     val authorName: String,
     val authorUsername: String,
     val text: String,
-    val timeAgo: String = "Just now"
+    val timeAgo: String = "Just now",
+    val isLiked: Boolean = false
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,7 +100,7 @@ fun FullScreenPhotoViewer(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullScreenPhotoViewer(
     photos: List<FullScreenPhotoData>,
@@ -104,7 +111,7 @@ fun FullScreenPhotoViewer(
     if (photos.isEmpty()) return
 
     val validIndex = initialIndex.coerceIn(0, photos.size - 1)
-    val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = validIndex) { photos.size }
+    val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = validIndex)
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -115,20 +122,67 @@ fun FullScreenPhotoViewer(
             decorFitsSystemWindows = false
         )
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFF0D0D0D)
         ) {
-            androidx.compose.foundation.pager.HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
-                FullScreenPostCard(
-                    photoData = photos[page],
-                    onDismiss = onDismiss,
-                    onLikeChanged = onLikeChanged
-                )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                // 1. TOP APP BAR (Instagram Posts Detail Header)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .background(Color(0xFF0D0D0D))
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("instagram_posts_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Text(
+                        text = "Posts",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                HorizontalDivider(color = Color(0xFF1E1E1E), thickness = 0.5.dp)
+
+                // 2. SCROLLABLE POSTS FEED (LazyColumn allowing vertical scrolling through profile photos/videos)
+                LazyColumn(
+                    state = lazyListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 32.dp)
+                ) {
+                    itemsIndexed(photos, key = { index, photo -> "${photo.id}_$index" }) { index, photo ->
+                        InstagramPostCard(
+                            photoData = photo,
+                            photoIndex = index,
+                            totalCount = photos.size,
+                            onLikeChanged = onLikeChanged
+                        )
+                    }
+                }
             }
         }
     }
@@ -136,9 +190,10 @@ fun FullScreenPhotoViewer(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FullScreenPostCard(
+fun InstagramPostCard(
     photoData: FullScreenPhotoData,
-    onDismiss: () -> Unit,
+    photoIndex: Int,
+    totalCount: Int,
     onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -148,33 +203,13 @@ fun FullScreenPostCard(
     var isLiked by remember(photoData.id) { mutableStateOf(photoData.initialIsLiked) }
     var likesCount by remember(photoData.id) { mutableStateOf(photoData.initialLikes) }
     var showBigHeartAnim by remember { mutableStateOf(false) }
+    var isSaved by remember(photoData.id) { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(false) }
 
-    // Comments State
-    val commentsList = remember(photoData.id) {
-        mutableStateListOf(
-            PhotoCommentItem(
-                authorName = "Priyanka Bora",
-                authorUsername = "priya_b",
-                text = "Absolutely stunning capture! The lighting is so pure. ✨",
-                timeAgo = "1 hour ago"
-            ),
-            PhotoCommentItem(
-                authorName = "Rahul Sharma",
-                authorUsername = "rahul_clicks",
-                text = "Love this perspective! Which spot was this taken at? 📸",
-                timeAgo = "45 mins ago"
-            ),
-            PhotoCommentItem(
-                authorName = "Ananya Das",
-                authorUsername = "ananya_d",
-                text = "Gorgeous view! Adding this to my travel bucket list 🔥",
-                timeAgo = "20 mins ago"
-            )
-        )
-    }
+    // Dynamic Comments State based on actual post
+    val commentsList = remember(photoData.id) { mutableStateListOf<PhotoCommentItem>() }
     var showCommentSheet by remember { mutableStateOf(false) }
     var newCommentText by remember { mutableStateOf("") }
-    var isSaved by remember(photoData.id) { mutableStateOf(false) }
 
     val likeScale by animateFloatAsState(
         targetValue = if (isLiked) 1.25f else 1f,
@@ -198,16 +233,16 @@ fun FullScreenPostCard(
         }
     }
 
-    fun sharePhoto() {
+    fun sharePost() {
         val sendIntent = Intent().apply {
             action = Intent.ACTION_SEND
             putExtra(
                 Intent.EXTRA_TEXT,
-                "Check out this photo by ${photoData.creatorName} (@${photoData.creatorUsername}): ${photoData.title}\n${photoData.imageUrl}"
+                "Check out @${photoData.creatorUsername.ifEmpty { "user" }}'s post on YouSnap!\n${photoData.imageUrl}"
             )
             type = "text/plain"
         }
-        val shareIntent = Intent.createChooser(sendIntent, "Share photo via")
+        val shareIntent = Intent.createChooser(sendIntent, "Share post via")
         context.startActivity(shareIntent)
     }
 
@@ -217,670 +252,669 @@ fun FullScreenPostCard(
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
-    Box(
+    // Instagram Gradient Brush for Profile Avatar Ring
+    val instagramGradient = remember {
+        Brush.sweepGradient(
+            listOf(
+                Color(0xFFF9CE34),
+                Color(0xFFEE2A7B),
+                Color(0xFF6228D7),
+                Color(0xFFF9CE34)
+            )
+        )
+    }
+
+    val displayUsername = remember(photoData) {
+        photoData.creatorUsername.ifEmpty {
+            photoData.creatorName.lowercase().replace(" ", "_").ifEmpty { "yousnap_user" }
+        }
+    }
+
+    Column(
         modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
+            .fillMaxWidth()
+            .background(Color(0xFF000000))
+            .padding(bottom = 16.dp)
     ) {
-            // Main Content: Column with Top Bar, Center Photo, and Bottom Facebook Action Bar
+        // A) HEADER: Creator Profile Ring + Dynamic Username + Audio Title + 3-dots Menu
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Profile Avatar with Instagram Gradient Ring
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .border(2.dp, instagramGradient, CircleShape)
+                    .padding(2.5.dp)
+                    .clip(CircleShape)
+                    .background(Color.DarkGray),
+                contentAlignment = Alignment.Center
+            ) {
+                if (photoData.creatorAvatar.isNotEmpty() && (photoData.creatorAvatar.startsWith("http") || photoData.creatorAvatar.startsWith("content://"))) {
+                    AsyncImage(
+                        model = photoData.creatorAvatar,
+                        contentDescription = photoData.creatorName,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    val initials = if (photoData.creatorName.length >= 2) photoData.creatorName.take(2).uppercase()
+                                   else if (photoData.creatorName.isNotEmpty()) photoData.creatorName.take(1).uppercase()
+                                   else "Y"
+                    Text(
+                        text = initials,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            // Dynamic Username + Audio Track Subtitle
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = displayUsername,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = Color(0xFFF1F1F1),
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text(
+                        text = "Original Audio - @$displayUsername",
+                        color = Color(0xFFE1E1E1),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Options 3-dots Menu Icon
+            IconButton(
+                onClick = {
+                    Toast.makeText(context, "Post options", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Options",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        // B) MEDIA CONTENT VIEW (Full-Width with Double-Tap Heart Animation & Indicators)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f) // Square/Full-Width Instagram ratio
+                .background(Color(0xFF121212))
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (!isLiked) {
+                                toggleLike()
+                            } else {
+                                showBigHeartAnim = true
+                            }
+                        }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = photoData.imageUrl,
+                contentDescription = photoData.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("instagram_post_image_${photoData.id}")
+            )
+
+            // Top-Right Carousel Indicator Chip (e.g. "1/7")
+            if (totalCount > 1) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.65f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "${photoIndex + 1}/$totalCount",
+                        color = Color.White,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Bottom-Right Mute/Unmute Icon Button for media
+            Surface(
+                color = Color.Black.copy(alpha = 0.65f),
+                shape = CircleShape,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .clickable { isMuted = !isMuted }
+            ) {
+                Icon(
+                    imageVector = if (isMuted) Icons.Default.VolumeMute else Icons.Default.VolumeUp,
+                    contentDescription = "Audio toggle",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .padding(6.dp)
+                        .size(16.dp)
+                )
+            }
+
+            // Big Double-Tap Heart Pop Animation
+            LaunchedEffect(showBigHeartAnim) {
+                if (showBigHeartAnim) {
+                    kotlinx.coroutines.delay(800)
+                    showBigHeartAnim = false
+                }
+            }
+
+            this@Column.AnimatedVisibility(
+                visible = showBigHeartAnim,
+                enter = scaleIn(spring(dampingRatio = Spring.DampingRatioMediumBouncy)) + fadeIn(),
+                exit = scaleOut() + fadeOut()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Favorite,
+                    contentDescription = null,
+                    tint = Color(0xFFFF2A6D),
+                    modifier = Modifier.size(90.dp)
+                )
+            }
+        }
+
+        // C) ACTION BAR: Like (Heart), Comment, Share, Bookmark (Save)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left Group: Like, Comment, Share
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // 1. LIKE HEART BUTTON
+                IconButton(
+                    onClick = { toggleLike() },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("post_like_button_${photoData.id}")
+                ) {
+                    Icon(
+                        imageVector = if (isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = "Like",
+                        tint = if (isLiked) Color(0xFFFF2A6D) else Color.White,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .scale(likeScale)
+                    )
+                }
+
+                // 2. COMMENT BUBBLE BUTTON
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clickable { showCommentSheet = true }
+                        .testTag("post_comment_button_${photoData.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ChatBubbleOutline,
+                        contentDescription = "Comment",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    if (commentsList.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "${commentsList.size}",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
+                    }
+                }
+
+                // 3. SHARE PAPERPLANE BUTTON
+                IconButton(
+                    onClick = { sharePost() },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("post_share_button_${photoData.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.Send,
+                        contentDescription = "Share",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Right Group: 4. BOOKMARK / SAVE BUTTON
+            IconButton(
+                onClick = { toggleSave() },
+                modifier = Modifier
+                    .size(36.dp)
+                    .testTag("post_save_button_${photoData.id}")
+            ) {
+                Icon(
+                    imageVector = if (isSaved) Icons.Default.Bookmark else Icons.Outlined.BookmarkBorder,
+                    contentDescription = "Save",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+
+        // D) LIKES COUNT & LIKED BY SECTION
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+        ) {
+            if (likesCount > 0) {
+                Text(
+                    text = "%,d likes".format(likesCount),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.5.sp
+                )
+            } else {
+                Text(
+                    text = "Be the first to like this",
+                    color = Color(0xFFA8A8A8),
+                    fontSize = 12.5.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // E) CAPTION: Dynamic Username + Real Caption
+            if (photoData.title.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = buildAnnotatedString {
+                            append(displayUsername)
+                            append(" ")
+                        },
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp
+                    )
+                    Text(
+                        text = photoData.title,
+                        color = Color.White,
+                        fontSize = 13.5.sp,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
+            // F) COMMENTS PREVIEW SECTION
+            if (commentsList.isNotEmpty()) {
+                commentsList.take(2).forEach { comment ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = comment.authorUsername,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = comment.text,
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Icon(
+                            imageVector = if (comment.isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                            contentDescription = "Comment like",
+                            tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF888888),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+
+                if (commentsList.size > 2) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "View all ${commentsList.size} comments",
+                        color = Color(0xFFA8A8A8),
+                        fontSize = 13.sp,
+                        modifier = Modifier.clickable { showCommentSheet = true }
+                    )
+                }
+            } else {
+                Text(
+                    text = "Add a comment...",
+                    color = Color(0xFF8E8E8E),
+                    fontSize = 12.5.sp,
+                    modifier = Modifier.clickable { showCommentSheet = true }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // G) DYNAMIC TIMESTAMP
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = photoData.timeAgo,
+                    color = Color(0xFF8E8E8E),
+                    fontSize = 11.5.sp
+                )
+            }
+        }
+    }
+
+    // COMMENT MODAL BOTTOM SHEET
+    if (showCommentSheet) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                keyboardController?.hide()
+                focusManager.clearFocus()
+                showCommentSheet = false
+            },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = Color(0xFF121212),
+            contentColor = Color.White,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            dragHandle = null,
+            modifier = Modifier.fillMaxHeight(0.75f)
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
             ) {
-                // 1. TOP BAR (Facebook style: Close button + Creator info)
+                // Drag Handle
+                Box(
+                    modifier = Modifier
+                        .padding(top = 10.dp, bottom = 6.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0xFF333333))
+                        .align(Alignment.CenterHorizontally)
+                )
+
+                // Comments Title Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Back / Close button (X)
+                    Text(
+                        text = "Comments (${commentsList.size})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = Color.White
+                    )
                     IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .background(Color.White.copy(alpha = 0.16f), CircleShape)
-                            .testTag("photo_viewer_close_button")
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            showCommentSheet = false
+                        },
+                        modifier = Modifier.size(28.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
                             tint = Color.White,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
+                }
 
-                    Spacer(modifier = Modifier.width(12.dp))
+                HorizontalDivider(color = Color(0xFF262626), thickness = 0.5.dp)
 
-                    // Creator Avatar
+                // Comments List
+                if (commentsList.isEmpty()) {
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .border(1.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-                            .background(Color.DarkGray),
+                            .weight(1f)
+                            .fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (photoData.creatorAvatar.isNotEmpty() && (photoData.creatorAvatar.startsWith("http") || photoData.creatorAvatar.startsWith("content://"))) {
-                            AsyncImage(
-                                model = photoData.creatorAvatar,
-                                contentDescription = photoData.creatorName,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            val initials = remember(photoData.creatorName) {
-                                if (photoData.creatorName.length >= 2) photoData.creatorName.take(2).uppercase()
-                                else if (photoData.creatorName.isNotEmpty()) photoData.creatorName.take(1).uppercase()
-                                else "U"
-                            }
-                            Text(
-                                text = initials,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    // Creator Name & Username + Time
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = photoData.creatorName,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "@${photoData.creatorUsername}",
-                                color = Color(0xFFB0B3B8),
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = " • ${photoData.timeAgo}",
-                                color = Color(0xFF8A8D91),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                }
-
-                // 2. CENTER: Full Photo display with Double-tap to Like
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onDoubleTap = {
-                                    if (!isLiked) {
-                                        toggleLike()
-                                    } else {
-                                        showBigHeartAnim = true
-                                    }
-                                }
-                            )
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Photo image
-                    AsyncImage(
-                        model = photoData.imageUrl,
-                        contentDescription = photoData.title,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("fullscreen_photo_image")
-                    )
-
-                    // Big Double-Tap Heart Animation
-                    LaunchedEffect(showBigHeartAnim) {
-                        if (showBigHeartAnim) {
-                            kotlinx.coroutines.delay(800)
-                            showBigHeartAnim = false
-                        }
-                    }
-
-                    this@Column.AnimatedVisibility(
-                        visible = showBigHeartAnim,
-                        enter = scaleIn(spring(dampingRatio = Spring.DampingRatioMediumBouncy)) + fadeIn(),
-                        exit = scaleOut() + fadeOut()
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(96.dp)
-                                .background(Color.Black.copy(alpha = 0.45f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Favorite,
-                                contentDescription = null,
-                                tint = Color(0xFFFF2A6D),
-                                modifier = Modifier.size(64.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Photo Title / Caption Text
-                if (photoData.title.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(Color.Transparent, Color(0xFF111111))
-                                )
-                            )
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Text(
-                            text = photoData.title,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                // 3. BOTTOM: Facebook-Style Reactions & Action Bar
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(Color(0xFF161616), Color(0xFF0D0D0D))
-                            )
-                        )
-                        .navigationBarsPadding()
-                        .padding(bottom = 20.dp)
-                ) {
-                    // Reactions Count Summary Row (Facebook style: Thumb & Heart icons + count)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        // Left: Like Reaction indicators
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Facebook Blue Thumb Circle
-                            Box(
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .background(Color(0xFF1877F2), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.ThumbUp,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                            }
-
-                            // Red Heart Circle (overlapped)
-                            Box(
-                                modifier = Modifier
-                                    .offset(x = (-4).dp)
-                                    .size(20.dp)
-                                    .background(Color(0xFFFA383E), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Favorite,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(4.dp))
-
-                            Text(
-                                text = "%,d likes".format(likesCount),
-                                color = Color(0xFFB0B3B8),
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.testTag("photo_viewer_likes_count")
-                            )
-                        }
-
-                        // Right: Comments and Shares summary
-                        Text(
-                            text = "${commentsList.size} comments • 18 shares",
-                            color = Color(0xFFB0B3B8),
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.clickable { showCommentSheet = true }
-                        )
-                    }
-
-                    // Divider Line
-                    HorizontalDivider(
-                        color = Color(0xFF333333),
-                        thickness = 0.7.dp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
-                    )
-
-                    // Four Clean Facebook-Style Action Buttons: Like, Comment, Share, Save (Matching Facebook Reference Screenshot)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 1. LIKE BUTTON
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { toggleLike() }
-                                .padding(vertical = 10.dp)
-                                .testTag("photo_viewer_like_button"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isLiked) Icons.Filled.ThumbUp else Icons.Outlined.ThumbUp,
-                                contentDescription = "Like",
-                                tint = if (isLiked) Color(0xFF1877F2) else Color.White,
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .scale(likeScale)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isLiked) "Liked" else "Like",
-                                color = if (isLiked) Color(0xFF1877F2) else Color.White,
-                                fontSize = 13.5.sp,
-                                fontWeight = if (isLiked) FontWeight.Bold else FontWeight.SemiBold
-                            )
-                        }
-
-                        // 2. COMMENT BUTTON
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showCommentSheet = true }
-                                .padding(vertical = 10.dp)
-                                .testTag("photo_viewer_comment_button"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(
                                 imageVector = Icons.Outlined.ChatBubbleOutline,
-                                contentDescription = "Comment",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
+                                contentDescription = null,
+                                tint = Color(0xFF8E8E8E),
+                                modifier = Modifier.size(48.dp)
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Comment",
-                                color = Color.White,
-                                fontSize = 13.5.sp,
-                                fontWeight = FontWeight.SemiBold
+                                text = "No comments yet",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = Color.White
                             )
-                        }
-
-                        // 3. SHARE BUTTON
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { sharePhoto() }
-                                .padding(vertical = 10.dp)
-                                .testTag("photo_viewer_share_button"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Share,
-                                contentDescription = "Share",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Share",
-                                color = Color.White,
-                                fontSize = 13.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        // 4. SAVE BUTTON (From user's reference screenshot)
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { toggleSave() }
-                                .padding(vertical = 10.dp)
-                                .testTag("photo_viewer_save_button"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isSaved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                                contentDescription = "Save",
-                                tint = if (isSaved) Color(0xFF1877F2) else Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isSaved) "Saved" else "Save",
-                                color = if (isSaved) Color(0xFF1877F2) else Color.White,
-                                fontSize = 13.5.sp,
-                                fontWeight = if (isSaved) FontWeight.Bold else FontWeight.SemiBold
+                                text = "Start the conversation.",
+                                fontSize = 12.5.sp,
+                                color = Color(0xFF8E8E8E)
                             )
                         }
                     }
-                }
-            }
-
-            // 4. COMMENT BOTTOM SHEET OVERLAY (Clean White Facebook-Style ModalBottomSheet)
-            if (showCommentSheet) {
-                ModalBottomSheet(
-                    onDismissRequest = {
-                        keyboardController?.hide()
-                        focusManager.clearFocus()
-                        showCommentSheet = false
-                    },
-                    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                    containerColor = Color.White,
-                    contentColor = Color(0xFF050505),
-                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                    dragHandle = null,
-                    modifier = Modifier.fillMaxHeight(0.75f)
-                ) {
-                    Column(
+                } else {
+                    LazyColumn(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .navigationBarsPadding()
-                            .imePadding()
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp),
+                        contentPadding = PaddingValues(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        // Drag Handle Pill
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 10.dp, bottom = 6.dp)
-                                .width(40.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color(0xFFCCD0D5))
-                                .align(Alignment.CenterHorizontally)
-                        )
+                        items(commentsList.size, key = { commentsList[it].id }) { idx ->
+                            val comment = commentsList[idx]
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEE2A7B)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = comment.authorName.take(1).uppercase(),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
 
-                        // Header: Title & Close Button
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = comment.authorUsername,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = Color.White
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = comment.timeAgo,
+                                            fontSize = 11.5.sp,
+                                            color = Color(0xFF8E8E8E)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = comment.text,
+                                        fontSize = 13.sp,
+                                        color = Color.White
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        commentsList[idx] = comment.copy(isLiked = !comment.isLiked)
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (comment.isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                                        contentDescription = "Like comment",
+                                        tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF8E8E8E),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Comment Input Box
+                Surface(
+                    color = Color(0xFF121212),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column {
+                        HorizontalDivider(color = Color(0xFF262626), thickness = 0.5.dp)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Comments (${commentsList.size})",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 17.sp,
-                                color = Color(0xFF050505)
-                            )
-                            IconButton(
-                                onClick = {
-                                    keyboardController?.hide()
-                                    focusManager.clearFocus()
-                                    showCommentSheet = false
-                                },
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .background(Color(0xFFF0F2F5), CircleShape)
-                                    .testTag("photo_comment_close_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Close comments",
-                                    tint = Color(0xFF65676B),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        HorizontalDivider(color = Color(0xFFE4E6EB), thickness = 0.8.dp)
-
-                        // Comments List (weight 1f so it shrinks flexibly when keyboard opens)
-                        if (commentsList.isEmpty()) {
                             Box(
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth(),
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF3897F0)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.padding(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.ChatBubbleOutline,
-                                        contentDescription = null,
-                                        tint = Color(0xFFBCC0C8),
-                                        modifier = Modifier.size(48.dp)
+                                Text(
+                                    text = "Y",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            val postCommentAction = {
+                                val trimmed = newCommentText.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    commentsList.add(
+                                        0,
+                                        PhotoCommentItem(
+                                            authorName = "You",
+                                            authorUsername = "you",
+                                            text = trimmed,
+                                            timeAgo = "Just now"
+                                        )
                                     )
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Text(
-                                        text = "No comments yet",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp,
-                                        color = Color(0xFF050505)
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Be the first to share your thoughts!",
-                                        fontSize = 13.5.sp,
-                                        color = Color(0xFF65676B)
-                                    )
+                                    newCommentText = ""
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    Toast.makeText(context, "Comment posted!", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        } else {
-                            val listState = rememberLazyListState()
-                            LazyColumn(
-                                state = listState,
+
+                            OutlinedTextField(
+                                value = newCommentText,
+                                onValueChange = { newCommentText = it },
+                                placeholder = {
+                                    Text("Add a comment...", color = Color(0xFF8E8E8E), fontSize = 13.sp)
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(24.dp),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                keyboardActions = KeyboardActions(onSend = { postCommentAction() }),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = Color(0xFF262626),
+                                    unfocusedContainerColor = Color(0xFF262626),
+                                    focusedBorderColor = Color(0xFF3897F0),
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp)
-                                    .pointerInput(Unit) {
-                                        detectTapGestures(onTap = {
-                                            keyboardController?.hide()
-                                            focusManager.clearFocus()
-                                        })
-                                    },
-                                contentPadding = PaddingValues(vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                items(commentsList, key = { it.id }) { comment ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        // Author Avatar with clean colorful circle
-                                        val avatarColor = remember(comment.authorName) {
-                                            when (comment.authorName.hashCode().mod(5)) {
-                                                0 -> Color(0xFF1877F2) // FB Blue
-                                                1 -> Color(0xFF42B72A) // Green
-                                                2 -> Color(0xFFFA383E) // Coral
-                                                3 -> Color(0xFF8B5CF6) // Purple
-                                                else -> Color(0xFFF59E0B) // Amber
-                                            }
-                                        }
+                                    .height(46.dp)
+                                    .testTag("instagram_comment_input_field")
+                            )
 
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(CircleShape)
-                                                .background(avatarColor),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = comment.authorName.take(1).uppercase(),
-                                                color = Color.White,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 15.sp
-                                            )
-                                        }
+                            Spacer(modifier = Modifier.width(8.dp))
 
-                                        Spacer(modifier = Modifier.width(10.dp))
+                            val hasText = newCommentText.trim().isNotEmpty()
 
-                                        // Author Name & Comment Bubble (Classic Facebook Soft Gray Bubble on White)
-                                        Column(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clip(RoundedCornerShape(18.dp))
-                                                .background(Color(0xFFF0F2F5))
-                                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = comment.authorName,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.5.sp,
-                                                    color = Color(0xFF050505)
-                                                )
-                                                Text(
-                                                    text = comment.timeAgo,
-                                                    fontSize = 11.5.sp,
-                                                    color = Color(0xFF65676B)
-                                                )
-                                            }
-
-                                            Spacer(modifier = Modifier.height(4.dp))
-
-                                            Text(
-                                                text = comment.text,
-                                                fontSize = 13.5.sp,
-                                                color = Color(0xFF1C1E21),
-                                                lineHeight = 18.5.sp
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Bottom Input Field (Clean White Surface with Soft Gray Pill Field)
-                        Surface(
-                            color = Color.White,
-                            shadowElevation = 8.dp,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column {
-                                HorizontalDivider(color = Color(0xFFE4E6EB), thickness = 0.8.dp)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Current User Avatar
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF1877F2)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "Y",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(8.dp))
-
-                                    val postCommentAction = {
-                                        val trimmed = newCommentText.trim()
-                                        if (trimmed.isNotEmpty()) {
-                                            commentsList.add(
-                                                0,
-                                                PhotoCommentItem(
-                                                    authorName = "You",
-                                                    authorUsername = "you",
-                                                    text = trimmed,
-                                                    timeAgo = "Just now"
-                                                )
-                                            )
-                                            newCommentText = ""
-                                            keyboardController?.hide()
-                                            focusManager.clearFocus()
-                                            Toast.makeText(context, "Comment posted!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = newCommentText,
-                                        onValueChange = { newCommentText = it },
-                                        placeholder = {
-                                            Text("Write a comment...", color = Color(0xFF65676B), fontSize = 13.5.sp)
-                                        },
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(24.dp),
-                                        keyboardOptions = KeyboardOptions(
-                                            imeAction = ImeAction.Send
-                                        ),
-                                        keyboardActions = KeyboardActions(
-                                            onSend = { postCommentAction() }
-                                        ),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = Color(0xFFF0F2F5),
-                                            unfocusedContainerColor = Color(0xFFF0F2F5),
-                                            focusedBorderColor = Color(0xFF1877F2),
-                                            unfocusedBorderColor = Color.Transparent,
-                                            focusedTextColor = Color(0xFF050505),
-                                            unfocusedTextColor = Color(0xFF050505)
-                                        ),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(48.dp)
-                                            .testTag("photo_comment_input_field")
+                            IconButton(
+                                onClick = postCommentAction,
+                                enabled = hasText,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(
+                                        if (hasText) Color(0xFF3897F0) else Color(0xFF262626),
+                                        CircleShape
                                     )
-
-                                    Spacer(modifier = Modifier.width(8.dp))
-
-                                    val hasCommentText = newCommentText.trim().isNotEmpty()
-
-                                    IconButton(
-                                        onClick = postCommentAction,
-                                        enabled = hasCommentText,
-                                        modifier = Modifier
-                                            .size(42.dp)
-                                            .background(
-                                                if (hasCommentText) Color(0xFF1877F2) else Color(0xFFE4E6EB),
-                                                CircleShape
-                                            )
-                                            .testTag("photo_comment_submit_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.Send,
-                                            contentDescription = "Post Comment",
-                                            tint = if (hasCommentText) Color.White else Color(0xFF8A8D91),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
+                                    .testTag("instagram_comment_submit_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Post",
+                                    tint = if (hasText) Color.White else Color(0xFF8E8E8E),
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }
@@ -888,3 +922,4 @@ fun FullScreenPostCard(
             }
         }
     }
+}

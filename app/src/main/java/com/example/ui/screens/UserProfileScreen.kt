@@ -709,16 +709,18 @@ fun UserProfileScreen(
         }
     }
 
-    // Facebook-Style Fullscreen Photo Viewer
+    // Instagram-Style Fullscreen Posts Detail Viewer
     selectedPhoto?.let { photo ->
-        val isLiked = likedPhotosState.contains(photo.id)
-        val currentLikes = photoLikesMap[photo.id] ?: photo.initialLikes
+        val initialIdx = userPhotos.indexOfFirst { it.id == photo.id }.coerceAtLeast(0)
+        val updatedUserPhotos = userPhotos.map { p ->
+            val isLiked = likedPhotosState.contains(p.id)
+            val currentLikes = photoLikesMap[p.id] ?: p.initialLikes
+            p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
+        }
 
         FullScreenPhotoViewer(
-            photoData = photo.copy(
-                initialLikes = currentLikes,
-                initialIsLiked = isLiked
-            ),
+            photos = updatedUserPhotos,
+            initialIndex = initialIdx,
             onDismiss = { selectedPhoto = null },
             onLikeChanged = { photoId, liked, newCount ->
                 if (liked) {
