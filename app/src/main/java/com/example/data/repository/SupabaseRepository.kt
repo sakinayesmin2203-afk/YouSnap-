@@ -33,31 +33,57 @@ class SupabaseRepository {
         onProgress: (Float) -> Unit
     ): UploadResult {
         return try {
-            val uploadUrl = SupabaseStorageService.UPLOAD_ENDPOINT + filename
             val mediaType = contentType.toMediaTypeOrNull()
             val requestBody = ProgressRequestBody(inputStream, mediaType, contentLength, onProgress)
 
             val authToken = SupabaseStorageService.AUTHORIZATION_TOKEN
             val apiKey = SupabaseStorageService.API_KEY
-            val request = Request.Builder()
-                .url(uploadUrl)
+
+            // 1. Direct Supabase Storage REST API Upload (POST method with x-upsert: true)
+            val directUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + filename
+            val directRequest = Request.Builder()
+                .url(directUrl)
                 .addHeader("Authorization", authToken)
                 .addHeader("apikey", apiKey)
                 .addHeader("Content-Type", contentType)
                 .addHeader("x-upsert", "true")
-                .put(requestBody)
+                .post(requestBody)
                 .build()
 
-            val response = client.newCall(request).execute()
-            val isSuccess = response.isSuccessful
-            val responseCode = response.code
-            val responseMessage = response.message
-            val responseBody = response.body?.string() ?: ""
+            var response = client.newCall(directRequest).execute()
+            var isSuccess = response.isSuccessful
+            var responseCode = response.code
+            var responseBody = response.body?.string() ?: ""
             response.close()
+
+            // 2. If direct POST fails, attempt Cloudflare Worker Fallback
+            if (!isSuccess) {
+                val workerUrl = SupabaseStorageService.WORKER_ENDPOINT + filename
+                val workerRequest = Request.Builder()
+                    .url(workerUrl)
+                    .addHeader("Authorization", authToken)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Content-Type", contentType)
+                    .addHeader("x-upsert", "true")
+                    .post(requestBody)
+                    .build()
+
+                try {
+                    response = client.newCall(workerRequest).execute()
+                    if (response.isSuccessful) {
+                        isSuccess = true
+                        responseCode = response.code
+                        responseBody = response.body?.string() ?: ""
+                    }
+                    response.close()
+                } catch (e: Exception) {
+                    android.util.Log.w("SupabaseRepository", "Worker upload fallback failed: ${e.message}")
+                }
+            }
 
             if (isSuccess) {
                 val fullCdnUrl = CdnConfig.getFullMediaUrl(filename)
-                android.util.Log.d("SupabaseRepository", "Upload success: $fullCdnUrl")
+                android.util.Log.d("SupabaseRepository", "Supabase Storage upload success: $fullCdnUrl (code: $responseCode)")
                 UploadResult(
                     isSuccess = true,
                     fileUrl = fullCdnUrl,
@@ -65,11 +91,10 @@ class SupabaseRepository {
                     responseCode = responseCode
                 )
             } else {
-                val errorDetails = if (responseBody.isNotBlank()) responseBody else responseMessage
-                android.util.Log.e("SupabaseRepository", "Upload failed with code: $responseCode, details: $errorDetails")
+                android.util.Log.e("SupabaseRepository", "Upload failed with code: $responseCode, details: $responseBody")
                 UploadResult(
                     isSuccess = false,
-                    errorMessage = "Supabase Storage upload failed (HTTP $responseCode: $errorDetails)",
+                    errorMessage = "Supabase Storage upload failed (HTTP $responseCode: $responseBody)",
                     responseCode = responseCode
                 )
             }

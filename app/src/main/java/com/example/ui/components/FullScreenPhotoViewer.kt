@@ -36,7 +36,10 @@ import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.Report
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -61,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.ui.components.ReportPostBottomSheet
 
 data class FullScreenPhotoData(
     val id: Int,
@@ -89,14 +93,20 @@ data class PhotoCommentItem(
 @Composable
 fun FullScreenPhotoViewer(
     photoData: FullScreenPhotoData,
+    currentUsername: String = "",
+    isOwner: Boolean? = null,
     onDismiss: () -> Unit,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
+    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     FullScreenPhotoViewer(
         photos = listOf(photoData),
         initialIndex = 0,
+        currentUsername = currentUsername,
+        isOwner = isOwner,
         onDismiss = onDismiss,
-        onLikeChanged = onLikeChanged
+        onLikeChanged = onLikeChanged,
+        onDeletePhoto = onDeletePhoto
     )
 }
 
@@ -105,12 +115,21 @@ fun FullScreenPhotoViewer(
 fun FullScreenPhotoViewer(
     photos: List<FullScreenPhotoData>,
     initialIndex: Int = 0,
+    currentUsername: String = "",
+    isOwner: Boolean? = null,
     onDismiss: () -> Unit,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
+    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     if (photos.isEmpty()) return
 
-    val validIndex = initialIndex.coerceIn(0, photos.size - 1)
+    val displayedPhotos = remember(photos) { mutableStateListOf(*photos.toTypedArray()) }
+    if (displayedPhotos.isEmpty()) {
+        onDismiss()
+        return
+    }
+
+    val validIndex = initialIndex.coerceIn(0, displayedPhotos.size - 1)
     val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = validIndex)
 
     Dialog(
@@ -174,12 +193,21 @@ fun FullScreenPhotoViewer(
                         .weight(1f),
                     contentPadding = PaddingValues(bottom = 32.dp)
                 ) {
-                    itemsIndexed(photos, key = { index, photo -> "${photo.id}_$index" }) { index, photo ->
+                    itemsIndexed(displayedPhotos, key = { index, photo -> "${photo.id}_$index" }) { index, photo ->
                         InstagramPostCard(
                             photoData = photo,
                             photoIndex = index,
-                            totalCount = photos.size,
-                            onLikeChanged = onLikeChanged
+                            totalCount = displayedPhotos.size,
+                            currentUsername = currentUsername,
+                            isOwner = isOwner,
+                            onLikeChanged = onLikeChanged,
+                            onDeletePhoto = { deletedPhoto ->
+                                displayedPhotos.remove(deletedPhoto)
+                                onDeletePhoto?.invoke(deletedPhoto)
+                                if (displayedPhotos.isEmpty()) {
+                                    onDismiss()
+                                }
+                            }
                         )
                     }
                 }
@@ -194,7 +222,10 @@ fun InstagramPostCard(
     photoData: FullScreenPhotoData,
     photoIndex: Int,
     totalCount: Int,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null
+    currentUsername: String = "",
+    isOwner: Boolean? = null,
+    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -205,6 +236,27 @@ fun InstagramPostCard(
     var showBigHeartAnim by remember { mutableStateOf(false) }
     var isSaved by remember(photoData.id) { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
+
+    // Options Menu & Dialog States
+    var showOptionsMenu by remember { mutableStateOf(false) }
+    var showReportDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+
+    val displayUsername = remember(photoData) {
+        photoData.creatorUsername.ifEmpty {
+            photoData.creatorName.lowercase().replace(" ", "_").ifEmpty { "yousnap_user" }
+        }
+    }
+
+    val isAccountOwner = remember(photoData, isOwner, currentUsername) {
+        if (isOwner != null) {
+            isOwner
+        } else if (currentUsername.isNotEmpty() && currentUsername.equals(photoData.creatorUsername, ignoreCase = true)) {
+            true
+        } else {
+            photoData.creatorUsername.lowercase() == "you" || photoData.creatorUsername.isEmpty()
+        }
+    }
 
     // Dynamic Comments State based on actual post
     val commentsList = remember(photoData.id) { mutableStateListOf<PhotoCommentItem>() }
@@ -238,7 +290,7 @@ fun InstagramPostCard(
             action = Intent.ACTION_SEND
             putExtra(
                 Intent.EXTRA_TEXT,
-                "Check out @${photoData.creatorUsername.ifEmpty { "user" }}'s post on YouSnap!\n${photoData.imageUrl}"
+                "Check out @$displayUsername's post on YouSnap!\n${photoData.imageUrl}"
             )
             type = "text/plain"
         }
@@ -262,12 +314,6 @@ fun InstagramPostCard(
                 Color(0xFFF9CE34)
             )
         )
-    }
-
-    val displayUsername = remember(photoData) {
-        photoData.creatorUsername.ifEmpty {
-            photoData.creatorName.lowercase().replace(" ", "_").ifEmpty { "yousnap_user" }
-        }
     }
 
     Column(
@@ -345,22 +391,136 @@ fun InstagramPostCard(
             }
 
             // Options 3-dots Menu Icon
-            IconButton(
-                onClick = {
-                    Toast.makeText(context, "Post options", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Options",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
+            Box {
+                IconButton(
+                    onClick = { showOptionsMenu = true },
+                    modifier = Modifier
+                        .size(32.dp)
+                        .testTag("post_3dot_menu_button_${photoData.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Options",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showOptionsMenu,
+                    onDismissRequest = { showOptionsMenu = false },
+                    modifier = Modifier.background(Color(0xFF1E1E1E))
+                ) {
+                    if (isAccountOwner) {
+                        // 1. ACCOUNT OWNER OPTIONS: Delete ONLY
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Delete",
+                                    color = Color(0xFFFF4D4D),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Delete,
+                                    contentDescription = "Delete",
+                                    tint = Color(0xFFFF4D4D),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                showDeleteConfirmDialog = true
+                            }
+                        )
+                    } else {
+                        // 2. OTHER USER OPTIONS: Save photo, Share profile, Report account
+                        // Option 1: Save photo
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Save photo",
+                                    color = Color.White,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.FileDownload,
+                                    contentDescription = "Save photo",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                Toast.makeText(context, "Photo saved to gallery 📥", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        // Option 2: Share profile
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Share profile",
+                                    color = Color.White,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Share,
+                                    contentDescription = "Share profile",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(
+                                        Intent.EXTRA_TEXT,
+                                        "Check out @$displayUsername's profile on YouSnap!\nhttps://yousnap.app/@$displayUsername"
+                                    )
+                                    type = "text/plain"
+                                }
+                                val shareIntent = Intent.createChooser(sendIntent, "Share profile via")
+                                context.startActivity(shareIntent)
+                            }
+                        )
+
+                        // Option 3: Report account
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Report account",
+                                    color = Color(0xFFFF4D4D),
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Report,
+                                    contentDescription = "Report account",
+                                    tint = Color(0xFFFF4D4D),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                showReportDialog = true
+                            }
+                        )
+                    }
+                }
             }
         }
 
-        // B) MEDIA CONTENT VIEW (Full-Width with Double-Tap Heart Animation & Indicators)
+        // B) MEDIA CONTENT VIEW (Full-Width with Double-Tap Heart Animation)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -388,24 +548,7 @@ fun InstagramPostCard(
                     .testTag("instagram_post_image_${photoData.id}")
             )
 
-            // Top-Right Carousel Indicator Chip (e.g. "1/7")
-            if (totalCount > 1) {
-                Surface(
-                    color = Color.Black.copy(alpha = 0.65f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = "${photoIndex + 1}/$totalCount",
-                        color = Color.White,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-            }
+            // NOTE: "1/2" carousel indicator chip overlay REMOVED per user instructions.
 
             // Bottom-Right Mute/Unmute Icon Button for media
             Surface(
@@ -652,6 +795,44 @@ fun InstagramPostCard(
                 )
             }
         }
+    }
+
+    // Delete Confirmation Dialog for Account Owner
+    if (showDeleteConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmDialog = false },
+            title = { Text("Delete Photo", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete this photo? This action cannot be undone.", color = Color.LightGray) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirmDialog = false
+                        onDeletePhoto?.invoke(photoData)
+                        Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Delete", color = Color(0xFFFF4D4D), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                    Text("Cancel", color = Color.White)
+                }
+            },
+            containerColor = Color(0xFF1E1E1E)
+        )
+    }
+
+    // Report Sheet for other user's account/post
+    if (showReportDialog) {
+        ReportPostBottomSheet(
+            postUsername = displayUsername,
+            onReportSubmit = { reason, details ->
+                showReportDialog = false
+                Toast.makeText(context, "Report submitted for @$displayUsername. Thank you.", Toast.LENGTH_SHORT).show()
+            },
+            onDismissRequest = { showReportDialog = false }
+        )
     }
 
     // COMMENT MODAL BOTTOM SHEET

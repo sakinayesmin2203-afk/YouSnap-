@@ -717,6 +717,7 @@ fun HomeScreen(
         selectedPhotoForViewer?.let { photo ->
             FullScreenPhotoViewer(
                 photoData = photo,
+                currentUsername = currentProfile?.username ?: "",
                 onDismiss = { selectedPhotoForViewer = null }
             )
         }

@@ -718,9 +718,11 @@ fun UserProfileScreen(
             p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
         }
 
+        val currentUsername = viewModel.profileState.collectAsState().value?.username ?: ""
         FullScreenPhotoViewer(
             photos = updatedUserPhotos,
             initialIndex = initialIdx,
+            currentUsername = currentUsername,
             onDismiss = { selectedPhoto = null },
             onLikeChanged = { photoId, liked, newCount ->
                 if (liked) {

@@ -622,10 +622,20 @@ fun ProfileScreen(
             FullScreenPhotoViewer(
                 photos = updatedPhotos,
                 initialIndex = startIndex,
+                isOwner = true,
                 onDismiss = { selectedPhotoIndexForViewer = null },
                 onLikeChanged = { photoId, liked, newCount ->
                     photoLikedStatusMap[photoId] = liked
                     photoLikesMap[photoId] = newCount
+                },
+                onDeletePhoto = { photoToDelete ->
+                    viewModel.deletePhotoPost(
+                        postId = photoToDelete.id.toString(),
+                        imageUrl = photoToDelete.imageUrl,
+                        creatorUsername = photoToDelete.creatorUsername,
+                        creatorUid = photoToDelete.creatorUid,
+                        onSuccess = {}
+                    )
                 }
             )
         }
