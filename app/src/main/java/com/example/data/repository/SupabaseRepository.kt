@@ -79,6 +79,12 @@ class SupabaseRepository {
                     responseCode = responseCode
                 )
             }
+        } catch (e: Exception) {
+            android.util.Log.e("SupabaseRepository", "Upload exception: ${e.message}")
+            UploadResult(
+                isSuccess = false,
+                errorMessage = e.localizedMessage ?: "Network exception during upload"
+            )
         }
     }
 

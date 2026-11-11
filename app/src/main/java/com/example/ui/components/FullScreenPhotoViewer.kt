@@ -857,7 +857,6 @@ fun InstagramPostCard(
                         .background(Color(0xFFE0E0E0))
                 )
             },
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier.fillMaxHeight(0.75f)
         ) {
             Column(

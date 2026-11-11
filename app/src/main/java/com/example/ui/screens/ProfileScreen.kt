@@ -42,6 +42,7 @@ import com.example.ui.components.FullScreenPhotoViewer
 import com.example.ui.components.ReelItem
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material.icons.outlined.VideoLibrary
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -141,398 +142,399 @@ fun ProfileScreen(
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
             ) {
-            // Profile Header Area
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Profile photo circle
-                    Box(
-                        modifier = Modifier
-                            .size(80.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(Color(0xFFFCAF45), Color(0xFFF56040), Color(0xFFE1306C))
-                                )
-                            )
-                            .padding(2.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                                .background(Color.DarkGray),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (profile.profilePic.isNotEmpty() && (profile.profilePic.startsWith("content://") || profile.profilePic.startsWith("http"))) {
-                                AsyncImage(
-                                    model = profile.profilePic,
-                                    contentDescription = "Profile Photo",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                Text(
-                                    text = profile.name.take(1).uppercase(),
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White,
-                                    fontSize = 32.sp
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(24.dp))
-
-                    // Stats row (Posts, Followers, Following)
+                // Profile Header Area
+                Column(modifier = Modifier.padding(16.dp)) {
                     Row(
-                        horizontalArrangement = Arrangement.SpaceAround,
-                        modifier = Modifier.weight(1f)
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        StatItem(count = (personalPhotos.size + personalReels.size).toString(), label = "Posts")
-                        StatItem(count = formatEngCount(followersCount), label = "Followers")
-                        StatItem(count = formatEngCount(followingCount), label = "Following")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Bio Description details
-                Text(
-                    text = profile.name,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                // Category tag & Private tag
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = profile.category,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    if (settings.isPrivateAccount) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color(0xFF2E2019).copy(alpha = 0.08f)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Private Account",
-                                    modifier = Modifier.size(11.dp),
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = "Private",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Text(
-                    text = profile.bio,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Row with Edit Profile and Creator Tools shortcut
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { onNavigateTo(Screen.EditProfile) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .testTag("edit_profile_button")
-                    ) {
-                        Text(
-                            text = "Edit Profile",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Button(
-                        onClick = { onNavigateTo(Screen.CreatorTools) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .testTag("creator_tools_button")
-                    ) {
-                        Text(
-                            text = "Creator Tools 💰",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
-            // Tab bar visual (Photos & Reels)
-            TabRow(
-                selectedTabIndex = selectedProfileTab,
-                containerColor = MaterialTheme.colorScheme.background,
-                contentColor = MaterialTheme.colorScheme.onBackground,
-                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)) }
-            ) {
-                Tab(
-                    selected = selectedProfileTab == 0,
-                    onClick = { selectedProfileTab = 0 },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Default.GridOn,
-                            contentDescription = "Photos Grid",
-                            tint = if (selectedProfileTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                    }
-                )
-                Tab(
-                    selected = selectedProfileTab == 1,
-                    onClick = { selectedProfileTab = 1 },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Outlined.VideoLibrary,
-                            contentDescription = "Reels",
-                            tint = if (selectedProfileTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                    }
-                )
-            }
-
-            // Tab Content
-            when (selectedProfileTab) {
-                0 -> {
-                    // Photos Feed Grid with Full-Screen Facebook-style Viewer Click
-                    if (personalPhotos.isEmpty()) {
+                        // Profile photo circle
                         Box(
                             modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
+                                .size(80.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(Color(0xFFFCAF45), Color(0xFFF56040), Color(0xFFE1306C))
+                                    )
+                                )
+                                .padding(2.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(24.dp)
-                            ) {
-                                Text("📸", fontSize = 48.sp)
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "No uploaded Photos",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Photos you create will show up here, synced with the database!",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                .testTag("profile_photo_grid"),
-                            contentPadding = PaddingValues(1.5.dp),
-                            horizontalArrangement = Arrangement.spacedBy(1.5.dp),
-                            verticalArrangement = Arrangement.spacedBy(1.5.dp)
-                        ) {
-                            items(personalPhotos, key = { it.id }) { photo ->
-                            val currentLikes = photoLikesMap[photo.id] ?: photo.initialLikes
-                            val isLiked = photoLikedStatusMap[photo.id] ?: photo.initialIsLiked
-
                             Box(
                                 modifier = Modifier
-                                    .aspectRatio(1f)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(Color.DarkGray)
-                                    .clickable {
-                                        val clickedIndex = personalPhotos.indexOf(photo)
-                                        if (clickedIndex >= 0) {
-                                            selectedPhotoIndexForViewer = clickedIndex
-                                        }
-                                    }
-                                    .testTag("my_profile_photo_${photo.id}")
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
+                                    .background(Color.DarkGray),
+                                contentAlignment = Alignment.Center
                             ) {
-                                AsyncImage(
-                                    model = photo.imageUrl,
-                                    contentDescription = photo.title,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-
-                                // Subtle like counter indicator overlay
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .align(Alignment.BottomStart)
-                                        .background(
-                                            Brush.verticalGradient(
-                                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
-                                            )
-                                        )
-                                        .padding(horizontal = 6.dp, vertical = 4.dp)
-                                ) {
+                                if (profile.profilePic.isNotEmpty() && (profile.profilePic.startsWith("content://") || profile.profilePic.startsWith("http"))) {
+                                    AsyncImage(
+                                        model = profile.profilePic,
+                                        contentDescription = "Profile Photo",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
                                     Text(
-                                        text = "❤️ %,d".format(currentLikes),
+                                        text = profile.name.take(1).uppercase(),
+                                        fontWeight = FontWeight.Bold,
                                         color = Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        fontSize = 32.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        // Stats row (Posts, Followers, Following)
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceAround,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            StatItem(count = (personalPhotos.size + personalReels.size).toString(), label = "Posts")
+                            StatItem(count = formatEngCount(followersCount), label = "Followers")
+                            StatItem(count = formatEngCount(followingCount), label = "Following")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Bio Description details
+                    Text(
+                        text = profile.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    // Category tag & Private tag
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = profile.category,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        if (settings.isPrivateAccount) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF2E2019).copy(alpha = 0.08f)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Private Account",
+                                        modifier = Modifier.size(11.dp),
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "Private",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            1 -> {
-                    // Reels feed grid
-                    if (personalReels.isEmpty()) {
-                        Box(
+                    Text(
+                        text = profile.bio,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Row with Edit Profile and Creator Tools shortcut
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { onNavigateTo(Screen.EditProfile) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .fillMaxWidth(),
-                            contentAlignment = Alignment.Center
+                                .height(36.dp)
+                                .testTag("edit_profile_button")
                         ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(24.dp)
-                            ) {
-                                Text("📽️", fontSize = 48.sp)
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "No uploaded Reels",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Reels you create will show up here, synced with the database!",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
+                            Text(
+                                text = "Edit Profile",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
+
+                        Button(
+                            onClick = { onNavigateTo(Screen.CreatorTools) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .fillMaxWidth()
-                                .testTag("profile_grid"),
-                            contentPadding = PaddingValues(1.dp),
-                            horizontalArrangement = Arrangement.spacedBy(1.dp),
-                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                                .height(36.dp)
+                                .testTag("creator_tools_button")
                         ) {
-                            items(personalReels) { reel ->
-                                val startColor = remember(reel.bgGradientStart) {
-                                    try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) } 
-                                    catch (e: Exception) { Color(0xFFE1306C) }
-                                }
-                                val endColor = remember(reel.bgGradientEnd) {
-                                    try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) } 
-                                    catch (e: Exception) { Color(0xFF833AB4) }
-                                }
+                            Text(
+                                text = "Creator Tools 💰",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
 
-                                Box(
-                                    modifier = Modifier
-                                        .aspectRatio(9f / 16f)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
-                                        .clickable { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
-                                        .testTag("profile_item_${reel.id}"),
-                                    contentAlignment = Alignment.Center
+                // Tab bar visual (Photos & Reels)
+                TabRow(
+                    selectedTabIndex = selectedProfileTab,
+                    containerColor = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.onBackground,
+                    divider = { HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)) }
+                ) {
+                    Tab(
+                        selected = selectedProfileTab == 0,
+                        onClick = { selectedProfileTab = 0 },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.GridOn,
+                                contentDescription = "Photos Grid",
+                                tint = if (selectedProfileTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    )
+                    Tab(
+                        selected = selectedProfileTab == 1,
+                        onClick = { selectedProfileTab = 1 },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Outlined.VideoLibrary,
+                                contentDescription = "Reels",
+                                tint = if (selectedProfileTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    )
+                }
+
+                // Tab Content
+                when (selectedProfileTab) {
+                    0 -> {
+                        // Photos Feed Grid with Full-Screen Facebook-style Viewer Click
+                        if (personalPhotos.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(24.dp)
                                 ) {
-                                    val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
-                                    if (thumbnailToLoad.isNotEmpty()) {
+                                    Text("📸", fontSize = 48.sp)
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "No uploaded Photos",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Photos you create will show up here, synced with the database!",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .testTag("profile_photo_grid"),
+                                contentPadding = PaddingValues(1.5.dp),
+                                horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.5.dp)
+                            ) {
+                                items(personalPhotos, key = { it.id }) { photo ->
+                                    val currentLikes = photoLikesMap[photo.id] ?: photo.initialLikes
+                                    val isLiked = photoLikedStatusMap[photo.id] ?: photo.initialIsLiked
+
+                                    Box(
+                                        modifier = Modifier
+                                            .aspectRatio(1f)
+                                            .clip(RoundedCornerShape(2.dp))
+                                            .background(Color.DarkGray)
+                                            .clickable {
+                                                val clickedIndex = personalPhotos.indexOf(photo)
+                                                if (clickedIndex >= 0) {
+                                                    selectedPhotoIndexForViewer = clickedIndex
+                                                }
+                                            }
+                                            .testTag("my_profile_photo_${photo.id}")
+                                    ) {
                                         AsyncImage(
-                                            model = thumbnailToLoad,
-                                            contentDescription = reel.caption,
+                                            model = photo.imageUrl,
+                                            contentDescription = photo.title,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
+
+                                        // Subtle like counter indicator overlay
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .align(Alignment.BottomStart)
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
+                                                    )
+                                                )
+                                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "❤️ %,d".format(currentLikes),
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        // Reels feed grid
+                        if (personalReels.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    Text("📽️", fontSize = 48.sp)
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "No uploaded Reels",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Reels you create will show up here, synced with the database!",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .testTag("profile_grid"),
+                                contentPadding = PaddingValues(1.dp),
+                                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                items(personalReels) { reel ->
+                                    val startColor = remember(reel.bgGradientStart) {
+                                        try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) }
+                                        catch (e: Exception) { Color(0xFFE1306C) }
+                                    }
+                                    val endColor = remember(reel.bgGradientEnd) {
+                                        try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) }
+                                        catch (e: Exception) { Color(0xFF833AB4) }
                                     }
 
-                                    // Dark gradient overlay for view count readability
                                     Box(
                                         modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
-                                                    startY = 100f
-                                                )
-                                            )
-                                    )
-
-                                    // View Count Overlay with Play icon
-                                    Row(
-                                        modifier = Modifier
-                                            .align(Alignment.BottomStart)
-                                            .padding(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            .aspectRatio(9f / 16f)
+                                            .clip(RoundedCornerShape(2.dp))
+                                            .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
+                                            .clickable { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
+                                            .testTag("profile_item_${reel.id}"),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Views",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(12.dp)
+                                        val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
+                                        if (thumbnailToLoad.isNotEmpty()) {
+                                            AsyncImage(
+                                                model = thumbnailToLoad,
+                                                contentDescription = reel.caption,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+
+                                        // Dark gradient overlay for view count readability
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
+                                                        startY = 100f
+                                                    )
+                                                )
                                         )
-                                        Text(
-                                            text = formatProfileViews(reel.viewsCount),
-                                            color = Color.White,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
+
+                                        // View Count Overlay with Play icon
+                                        Row(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PlayArrow,
+                                                contentDescription = "Views",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                text = formatProfileViews(reel.viewsCount),
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -650,6 +652,7 @@ fun ProfileScreen(
         }
     }
 }
+
 
 @Composable
 fun StatItem(count: String, label: String) {
