@@ -77,7 +77,8 @@ data class FullScreenPhotoData(
     val initialLikes: Int,
     val initialComments: Int,
     val initialIsLiked: Boolean = false,
-    val timeAgo: String = "Just now"
+    val timeAgo: String = "Just now",
+    val firestoreDocId: String? = null
 )
 
 data class PhotoCommentItem(
@@ -857,13 +858,13 @@ fun InstagramPostCard(
                         .background(Color(0xFFE0E0E0))
                 )
             },
-            contentWindowInsets = { WindowInsets(0.dp, 0.dp, 0.dp, 0.dp) },
-            modifier = Modifier.fillMaxHeight(0.75f)
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .imePadding()
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.85f)
+                    .background(Color.White)
                     .navigationBarsPadding()
             ) {
                 // Comments Title Header

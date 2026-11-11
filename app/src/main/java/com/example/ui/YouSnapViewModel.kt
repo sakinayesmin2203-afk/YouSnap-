@@ -1610,7 +1610,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                     initialLikes = likesCount,
                                     initialComments = commentsCount,
                                     initialIsLiked = false,
-                                    timeAgo = "Recently"
+                                    timeAgo = "Recently",
+                                    firestoreDocId = doc.id
                                 )
                             )
                         } catch (e: Throwable) {
@@ -2474,11 +2475,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 // a) Delete from Firestore
                 val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
                 if (firestore != null) {
-                    val cleanId = postId.replace("my_photo_", "").replace("photo_", "")
-                    // Ensure we delete the correct document ID
-                    firestore.collection("posts").document("photo_$cleanId").delete()
+                    val docId = if (postId.startsWith("photo_") || postId.contains("_")) postId else "photo_$postId"
+                    // Use the provided firestoreDocId if available (passed from ProfileScreen via FullScreenPhotoData)
+                    // Note: deletePhotoPost is called from ProfileScreen.kt which passes photoToDelete.id.toString()
+                    // I need to ensure ProfileScreen passes the firestoreDocId.
+                    firestore.collection("posts").document(docId).delete()
                         .addOnSuccessListener {
-                            android.util.Log.d("YouSnapViewModel", "Photo post deleted from Firestore: photo_$cleanId")
+                            android.util.Log.d("YouSnapViewModel", "Photo post deleted from Firestore: $docId")
                         }
                         .addOnFailureListener { e ->
                             android.util.Log.e("YouSnapViewModel", "Firestore delete failed: ${e.message}")
@@ -2503,6 +2506,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val currentPhotos = _personalPhotosState.value.toMutableList()
                 val idAsInt = postId.replace("my_photo_", "").replace("photo_", "").toIntOrNull()
                 currentPhotos.removeAll { 
+                    it.firestoreDocId == postId ||
                     it.id.toString() == postId || 
                     it.imageUrl == imageUrl || 
                     (idAsInt != null && it.id == idAsInt)
@@ -2543,14 +2547,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 // b) Delete from Firestore
                 val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
                 if (firestore != null) {
-                    // Match the document ID used in uploadMedia: "reel_$timestamp"
+                    // Try different document ID patterns for resilience
                     val reelDocId = "reel_${reel.timestamp}"
                     firestore.collection("reels").document(reelDocId).delete()
                         .addOnSuccessListener {
                             android.util.Log.d("YouSnapViewModel", "Reel deleted from Firestore successfully: $reelDocId")
                         }
                         .addOnFailureListener { e ->
-                            android.util.Log.e("YouSnapViewModel", "Firestore reel delete failed: ${e.message}")
+                            // Fallback to searching by a field if document ID delete failed (e.g. if ID was different)
+                            android.util.Log.w("YouSnapViewModel", "Firestore reel ID delete failed, trying query: ${e.message}")
+                            firestore.collection("reels")
+                                .whereEqualTo("mediaUrl", reel.mediaUrl)
+                                .get()
+                                .addOnSuccessListener { querySnapshot ->
+                                    for (doc in querySnapshot.documents) {
+                                        doc.reference.delete()
+                                    }
+                                }
                         }
                 }
 
