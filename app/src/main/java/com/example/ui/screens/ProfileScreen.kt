@@ -126,12 +126,21 @@ fun ProfileScreen(
         },
         modifier = modifier.fillMaxSize()
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
+        var isRefreshing by remember { mutableStateOf(false) }
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                isRefreshing = true
+                viewModel.fetchAndSyncUserProfile()
+                viewModel.refreshHomeFeed { isRefreshing = false }
+            },
+            modifier = Modifier.padding(innerPadding)
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+            ) {
             // Profile Header Area
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(

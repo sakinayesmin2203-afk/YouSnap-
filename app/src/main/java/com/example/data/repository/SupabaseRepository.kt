@@ -79,12 +79,30 @@ class SupabaseRepository {
                     responseCode = responseCode
                 )
             }
+        }
+    }
+
+    suspend fun deleteFile(filename: String): Boolean {
+        return try {
+            val authToken = SupabaseStorageService.AUTHORIZATION_TOKEN
+            val apiKey = SupabaseStorageService.API_KEY
+            val encodedFilename = java.net.URLEncoder.encode(filename, java.nio.charset.StandardCharsets.UTF_8.toString())
+            val deleteUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
+
+            val request = Request.Builder()
+                .url(deleteUrl)
+                .addHeader("Authorization", authToken)
+                .addHeader("apikey", apiKey)
+                .delete()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                android.util.Log.d("SupabaseRepository", "Delete response: ${response.code}")
+                response.isSuccessful
+            }
         } catch (e: Exception) {
-            android.util.Log.e("SupabaseRepository", "Upload exception: ${e.message}")
-            UploadResult(
-                isSuccess = false,
-                errorMessage = e.localizedMessage ?: "Network exception during upload"
-            )
+            android.util.Log.e("SupabaseRepository", "Delete exception: ${e.message}")
+            false
         }
     }
 }

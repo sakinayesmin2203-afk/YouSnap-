@@ -844,29 +844,28 @@ fun InstagramPostCard(
                 showCommentSheet = false
             },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = Color(0xFF121212),
-            contentColor = Color.White,
+            containerColor = Color.White,
+            contentColor = Color.Black,
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-            dragHandle = null,
+            dragHandle = {
+                Box(
+                    modifier = Modifier
+                        .padding(vertical = 12.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0xFFE0E0E0))
+                )
+            },
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier.fillMaxHeight(0.75f)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .navigationBarsPadding()
                     .imePadding()
+                    .navigationBarsPadding()
             ) {
-                // Drag Handle
-                Box(
-                    modifier = Modifier
-                        .padding(top = 10.dp, bottom = 6.dp)
-                        .width(36.dp)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color(0xFF333333))
-                        .align(Alignment.CenterHorizontally)
-                )
-
                 // Comments Title Header
                 Row(
                     modifier = Modifier
@@ -879,7 +878,7 @@ fun InstagramPostCard(
                         text = "Comments (${commentsList.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
-                        color = Color.White
+                        color = Color.Black
                     )
                     IconButton(
                         onClick = {
@@ -892,13 +891,13 @@ fun InstagramPostCard(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = Color.White,
+                            tint = Color.Black,
                             modifier = Modifier.size(18.dp)
                         )
                     }
                 }
 
-                HorizontalDivider(color = Color(0xFF262626), thickness = 0.5.dp)
+                HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
 
                 // Comments List
                 if (commentsList.isEmpty()) {
@@ -912,7 +911,7 @@ fun InstagramPostCard(
                             Icon(
                                 imageVector = Icons.Outlined.ChatBubbleOutline,
                                 contentDescription = null,
-                                tint = Color(0xFF8E8E8E),
+                                tint = Color(0xFFBDBDBD),
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(modifier = Modifier.height(8.dp))
@@ -920,12 +919,12 @@ fun InstagramPostCard(
                                 text = "No comments yet",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
-                                color = Color.White
+                                color = Color.Black
                             )
                             Text(
                                 text = "Start the conversation.",
                                 fontSize = 12.5.sp,
-                                color = Color(0xFF8E8E8E)
+                                color = Color(0xFF757575)
                             )
                         }
                     }
@@ -967,20 +966,20 @@ fun InstagramPostCard(
                                             text = comment.authorUsername,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = Color.White
+                                            color = Color.Black
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
                                             text = comment.timeAgo,
                                             fontSize = 11.5.sp,
-                                            color = Color(0xFF8E8E8E)
+                                            color = Color(0xFF757575)
                                         )
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
                                         text = comment.text,
                                         fontSize = 13.sp,
-                                        color = Color.White
+                                        color = Color.Black
                                     )
                                 }
 
@@ -993,7 +992,7 @@ fun InstagramPostCard(
                                     Icon(
                                         imageVector = if (comment.isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
                                         contentDescription = "Like comment",
-                                        tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF8E8E8E),
+                                        tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF757575),
                                         modifier = Modifier.size(14.dp)
                                     )
                                 }
@@ -1004,11 +1003,11 @@ fun InstagramPostCard(
 
                 // Comment Input Box
                 Surface(
-                    color = Color(0xFF121212),
+                    color = Color.White,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column {
-                        HorizontalDivider(color = Color(0xFF262626), thickness = 0.5.dp)
+                        HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1055,19 +1054,19 @@ fun InstagramPostCard(
                                 value = newCommentText,
                                 onValueChange = { newCommentText = it },
                                 placeholder = {
-                                    Text("Add a comment...", color = Color(0xFF8E8E8E), fontSize = 13.sp)
+                                    Text("Add a comment...", color = Color(0xFF757575), fontSize = 13.sp)
                                 },
                                 singleLine = true,
                                 shape = RoundedCornerShape(24.dp),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                 keyboardActions = KeyboardActions(onSend = { postCommentAction() }),
                                 colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = Color(0xFF262626),
-                                    unfocusedContainerColor = Color(0xFF262626),
+                                    focusedContainerColor = Color(0xFFF5F5F5),
+                                    unfocusedContainerColor = Color(0xFFF5F5F5),
                                     focusedBorderColor = Color(0xFF3897F0),
                                     unfocusedBorderColor = Color.Transparent,
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
+                                    focusedTextColor = Color.Black,
+                                    unfocusedTextColor = Color.Black
                                 ),
                                 modifier = Modifier
                                     .weight(1f)
@@ -1085,7 +1084,7 @@ fun InstagramPostCard(
                                 modifier = Modifier
                                     .size(38.dp)
                                     .background(
-                                        if (hasText) Color(0xFF3897F0) else Color(0xFF262626),
+                                        if (hasText) Color(0xFF3897F0) else Color(0xFFEEEEEE),
                                         CircleShape
                                     )
                                     .testTag("instagram_comment_submit_button")
@@ -1093,7 +1092,7 @@ fun InstagramPostCard(
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.Send,
                                     contentDescription = "Post",
-                                    tint = if (hasText) Color.White else Color(0xFF8E8E8E),
+                                    tint = if (hasText) Color.White else Color(0xFF757575),
                                     modifier = Modifier.size(16.dp)
                                 )
                             }

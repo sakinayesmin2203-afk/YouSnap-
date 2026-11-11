@@ -13,6 +13,7 @@ import com.example.data.model.ReelEntity
 import com.example.data.model.SettingsEntity
 import com.example.data.repository.YouSnapRepository
 import com.example.ui.components.FullScreenPhotoData
+import com.example.ui.utils.VideoCompressor
 import com.example.data.CdnConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -1982,36 +1983,28 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         return try {
             var finalLength: Long = -1L
             val finalInputStream: java.io.InputStream? = if (contentType.startsWith("image")) {
-                for (i in 1..4) {
-                    kotlinx.coroutines.delay(30)
-                    _b2UploadProgress.value = i * 0.03f
+                // Efficiently load and compress image
+                val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    android.graphics.BitmapFactory.decodeStream(stream)
                 }
-                val originalStream = context.contentResolver.openInputStream(uri)
-                val originalBytes = originalStream?.readBytes() ?: byteArrayOf()
-                originalStream?.close()
 
-                val compactedBytes = if (originalBytes.size > 150 * 1024) {
-                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
-                    if (bitmap != null) {
-                        val outputStream = java.io.ByteArrayOutputStream()
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
-                        outputStream.toByteArray()
-                    } else {
-                        originalBytes
-                    }
+                if (bitmap != null) {
+                    val outputStream = java.io.ByteArrayOutputStream()
+                    // Compress to JPEG to reduce size and memory footprint
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+                    val compressedBytes = outputStream.toByteArray()
+                    
+                    finalLength = compressedBytes.size.toLong()
+                    _b2UploadProgress.value = 0.15f
+                    java.io.ByteArrayInputStream(compressedBytes)
                 } else {
-                    originalBytes
+                    // Fallback if compression fails
+                    context.contentResolver.openInputStream(uri)
                 }
-                finalLength = compactedBytes.size.toLong()
-                _b2UploadProgress.value = 0.15f
-                java.io.ByteArrayInputStream(compactedBytes)
             } else {
-                for (i in 1..4) {
-                    kotlinx.coroutines.delay(30)
-                    _b2UploadProgress.value = i * 0.03f
-                }
-                finalLength = try { 
-                    context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L 
+                // For other files, just use the stream and get length
+                finalLength = try {
+                    context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
                 } catch (e: Exception) { -1L }
                 _b2UploadProgress.value = 0.15f
                 context.contentResolver.openInputStream(uri)
@@ -2137,6 +2130,36 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         onComplete: () -> Unit = {}
     ) {
         if (_isB2Uploading.value) return
+        
+        // If it's a reel, compress it first
+        if (mediaType == "reel") {
+            VideoCompressor.compressVideo(
+                context = app,
+                inputUri = mediaUri,
+                onSuccess = { compressedFile ->
+                    proceedWithUpload(Uri.fromFile(compressedFile), mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
+                },
+                onError = { e ->
+                    android.util.Log.e("YouSnapViewModel", "Compression failed, uploading original: ${e.message}")
+                    proceedWithUpload(mediaUri, mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
+                }
+            )
+        } else {
+            proceedWithUpload(mediaUri, mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
+        }
+    }
+
+    private fun proceedWithUpload(
+        mediaUri: Uri,
+        mediaType: String,
+        caption: String,
+        songTitle: String,
+        category: String,
+        gradientStart: String,
+        gradientEnd: String,
+        isStory: Boolean,
+        onComplete: () -> Unit
+    ) {
         viewModelScope.launch {
             val profile = profileState.value
             val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Exception) { null }
