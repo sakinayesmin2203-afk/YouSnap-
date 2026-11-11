@@ -2475,24 +2475,28 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
                 if (firestore != null) {
                     val cleanId = postId.replace("my_photo_", "").replace("photo_", "")
+                    // Ensure we delete the correct document ID
                     firestore.collection("posts").document("photo_$cleanId").delete()
                         .addOnSuccessListener {
-                            android.util.Log.d("YouSnapViewModel", "Photo post deleted from Firestore: $postId")
+                            android.util.Log.d("YouSnapViewModel", "Photo post deleted from Firestore: photo_$cleanId")
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("YouSnapViewModel", "Firestore delete failed: ${e.message}")
                         }
                 }
                 
-                // b) Simulated/Real Cloud Storage Cleanup
+                // b) Supabase Storage Cleanup
                 try {
                     if (imageUrl.startsWith("http") && !imageUrl.contains("unsplash")) {
+                        // Extract filename from URL (e.g., yousnap_12345.jpg)
                         val filename = imageUrl.substringAfterLast("/")
-                        val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
-                        storage.reference.child("uploads/$filename").delete()
-                            .addOnSuccessListener {
-                                android.util.Log.d("YouSnapViewModel", "Media file deleted from Firebase Storage")
-                            }
+                        if (filename.isNotEmpty()) {
+                            val success = supabaseRepository.deleteFile(filename)
+                            android.util.Log.d("YouSnapViewModel", "Supabase file delete result for $filename: $success")
+                        }
                     }
                 } catch (e: Throwable) {
-                    android.util.Log.d("YouSnapViewModel", "Storage file delete skipped or unavailable: ${e.message}")
+                    android.util.Log.e("YouSnapViewModel", "Supabase delete exception: ${e.message}")
                 }
 
                 // c) Clean up local states (personalPhotosState)
@@ -2539,22 +2543,28 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 // b) Delete from Firestore
                 val firestore = db ?: try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (e: Throwable) { null }
                 if (firestore != null) {
-                    firestore.collection("reels").document("reel_${reel.timestamp}").delete()
+                    // Match the document ID used in uploadMedia: "reel_$timestamp"
+                    val reelDocId = "reel_${reel.timestamp}"
+                    firestore.collection("reels").document(reelDocId).delete()
                         .addOnSuccessListener {
-                            android.util.Log.d("YouSnapViewModel", "Reel deleted from Firestore successfully")
+                            android.util.Log.d("YouSnapViewModel", "Reel deleted from Firestore successfully: $reelDocId")
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("YouSnapViewModel", "Firestore reel delete failed: ${e.message}")
                         }
                 }
 
-                // c) Simulated/Real Cloud Storage File deletion
+                // c) Supabase Storage File deletion
                 try {
-                    val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
-                    val storageRef = storage.reference.child("reels/${reel.creatorUsername}")
-                    storageRef.delete()
-                        .addOnSuccessListener {
-                            android.util.Log.d("YouSnapViewModel", "Reel media deleted from Firebase Storage")
+                    if (reel.mediaUrl.startsWith("http")) {
+                        val filename = reel.mediaUrl.substringAfterLast("/")
+                        if (filename.isNotEmpty()) {
+                            val success = supabaseRepository.deleteFile(filename)
+                            android.util.Log.d("YouSnapViewModel", "Supabase reel delete result for $filename: $success")
                         }
+                    }
                 } catch (e: Throwable) {
-                    android.util.Log.d("YouSnapViewModel", "Reel storage delete skipped: ${e.message}")
+                    android.util.Log.e("YouSnapViewModel", "Reel storage delete exception: ${e.message}")
                 }
 
                 Toast.makeText(app, "Video deleted successfully! 🗑️", Toast.LENGTH_LONG).show()
