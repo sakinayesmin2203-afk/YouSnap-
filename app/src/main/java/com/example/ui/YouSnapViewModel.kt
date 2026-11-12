@@ -98,7 +98,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val myFollowersCount = MutableStateFlow(0)
     val followersCount: StateFlow<Int> = myFollowersCount.asStateFlow()
     val myFollowingCount = MutableStateFlow(0)
-    val currentUser = MutableStateFlow(auth.currentUser)
+    val currentUser = MutableStateFlow<com.google.firebase.auth.FirebaseUser?>(null)
     
     val allUsers = MutableStateFlow<List<ProfileEntity>>(emptyList())
     val blockedAccounts = MutableStateFlow<List<ProfileEntity>>(emptyList())
@@ -142,52 +142,75 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         backstack.push(Screen.Splash)
-        loadPersonalPhotosFromPrefs()
-        listenToAuthChanges()
-        fetchAndSyncUserProfile()
-        refreshHomeFeed()
-        fetchAllUsers()
-        loadSearchHistory()
+        try {
+            currentUser.value = auth.currentUser
+        } catch (e: Throwable) {
+            android.util.Log.e("YouSnapViewModel", "Safe init currentUser: ${e.message}")
+        }
+        try { loadPersonalPhotosFromPrefs() } catch (e: Throwable) {}
+        try { listenToAuthChanges() } catch (e: Throwable) {}
+        try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
+        try { refreshHomeFeed() } catch (e: Throwable) {}
+        try { fetchAllUsers() } catch (e: Throwable) {}
+        try { loadSearchHistory() } catch (e: Throwable) {}
     }
 
     private fun loadSearchHistory() {
-        val searches = prefs.getStringSet("recent_searches", emptySet())?.toList() ?: emptyList()
-        recentSearchesFlow.value = searches
+        try {
+            val searches = prefs.getStringSet("recent_searches", emptySet())?.toList() ?: emptyList()
+            recentSearchesFlow.value = searches
+        } catch (e: Throwable) {}
     }
 
     fun fetchAllUsers() {
-        db.collection("users").limit(100).get().addOnSuccessListener { snapshot ->
-            allUsers.value = snapshot.documents.mapNotNull { it.toObject(ProfileEntity::class.java) }
+        try {
+            db.collection("users").limit(100).get().addOnSuccessListener { snapshot ->
+                allUsers.value = snapshot.documents.mapNotNull { it.toObject(ProfileEntity::class.java) }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("YouSnapViewModel", "fetchAllUsers safe: ${e.message}")
         }
     }
 
     private fun listenToAuthChanges() {
-        auth.addAuthStateListener { firebaseAuth ->
-            currentUser.value = firebaseAuth.currentUser
-            if (firebaseAuth.currentUser != null) {
-                fetchAndSyncUserProfile()
+        try {
+            auth.addAuthStateListener { firebaseAuth ->
+                currentUser.value = firebaseAuth.currentUser
+                if (firebaseAuth.currentUser != null) {
+                    fetchAndSyncUserProfile()
+                }
             }
+        } catch (e: Throwable) {
+            android.util.Log.e("YouSnapViewModel", "listenToAuthChanges safe: ${e.message}")
         }
     }
 
     fun fetchAndSyncUserProfile() {
-        val uid = auth.currentUser?.uid ?: return
-        db.collection("users").document(uid).get().addOnSuccessListener { doc ->
-            if (doc.exists()) {
-                val profile = doc.toObject(ProfileEntity::class.java)
-                if (profile != null) {
-                    _profileState.value = profile
-                    myFollowersCount.value = profile.followersCount
-                    myFollowingCount.value = profile.followingCount
+        try {
+            val uid = auth.currentUser?.uid ?: return
+            db.collection("users").document(uid).get().addOnSuccessListener { doc ->
+                if (doc.exists()) {
+                    val profile = doc.toObject(ProfileEntity::class.java)
+                    if (profile != null) {
+                        _profileState.value = profile
+                        myFollowersCount.value = profile.followersCount
+                        myFollowingCount.value = profile.followingCount
+                    }
                 }
             }
+        } catch (e: Throwable) {
+            android.util.Log.e("YouSnapViewModel", "fetchAndSyncUserProfile safe: ${e.message}")
         }
     }
 
     fun proceedFromSplash() {
-        if (auth.currentUser != null) {
-            clearAndNavigateTo(Screen.Home)
-        } else {
+        try {
+            if (auth.currentUser != null) {
+                clearAndNavigateTo(Screen.Home)
+            } else {
+                clearAndNavigateTo(Screen.Login)
+            }
+        } catch (e: Throwable) {
             clearAndNavigateTo(Screen.Login)
         }
     }
