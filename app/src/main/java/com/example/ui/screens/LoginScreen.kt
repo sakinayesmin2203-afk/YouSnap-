@@ -496,67 +496,13 @@ fun LoginScreen(
                     Button(
                         onClick = {
                             isLoading = true
-                            coroutineScope.launch {
-                                try {
-                                    val serverClientId = "87251634633-uc5e77coc96arckiac2si98e0ims7qfm.apps.googleusercontent.com"
-                                    val googleIdOption = GetSignInWithGoogleOption.Builder(serverClientId).build()
-
-                                    val request = GetCredentialRequest.Builder()
-                                        .addCredentialOption(googleIdOption)
-                                        .build()
-
-                                    val credentialManager = CredentialManager.create(context)
-                                    val result = credentialManager.getCredential(context, request)
-                                    val credential = result.credential
-
-                                    if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                                        val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                                        val googleIdToken = googleIdTokenCredential.idToken
-                                        val email = googleIdTokenCredential.id
-                                        val displayName = googleIdTokenCredential.displayName ?: email.split("@").firstOrNull() ?: "Google User"
-                                        val photoUrl = googleIdTokenCredential.profilePictureUri?.toString() ?: ""
-
-                                        viewModel.handleGoogleSignInSuccess(
-                                            email = email,
-                                            name = displayName,
-                                            idToken = googleIdToken,
-                                            photoUrl = photoUrl,
-                                            onSuccess = {
-                                                isLoading = false
-                                                onLoginSuccess()
-                                            },
-                                            onError = {
-                                                viewModel.handleGoogleSignInSuccess(
-                                                    email = email,
-                                                    name = displayName,
-                                                    idToken = null,
-                                                    photoUrl = photoUrl,
-                                                    onSuccess = {
-                                                        isLoading = false
-                                                        onLoginSuccess()
-                                                    },
-                                                    onError = {
-                                                        isLoading = false
-                                                        onLoginSuccess()
-                                                    }
-                                                )
-                                            }
-                                        )
-                                    } else {
-                                        val signInIntent = googleSignInClient.signInIntent
-                                        googleSignInLauncher.launch(signInIntent)
-                                    }
-                                } catch (e: Throwable) {
-                                    android.util.Log.w("LoginScreen", "CredentialManager failed, trying GoogleSignInClient: ${e.message}")
-                                    try {
-                                        val signInIntent = googleSignInClient.signInIntent
-                                        googleSignInLauncher.launch(signInIntent)
-                                    } catch (ex: Throwable) {
-                                        android.util.Log.e("LoginScreen", "Google Sign-In fallback failed: ${ex.message}")
-                                        isLoading = false
-                                        Toast.makeText(context, "Could not start Google Sign-In", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
+                            try {
+                                val signInIntent = googleSignInClient.signInIntent
+                                googleSignInLauncher.launch(signInIntent)
+                            } catch (e: Throwable) {
+                                android.util.Log.e("LoginScreen", "Google Sign-In launch failed: ${e.message}")
+                                isLoading = false
+                                Toast.makeText(context, "Google Sign-In error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White),
