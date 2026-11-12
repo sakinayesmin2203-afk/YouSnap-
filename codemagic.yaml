@@ -25,24 +25,44 @@ workflows:
     scripts:
       - name: Set up environment and local properties
         script: |
-          echo "Setting up Android SDK and environment..."
+          echo "Setting up Android SDK and properties..."
           if [ -n "$ANDROID_SDK_ROOT" ]; then
             echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           fi
+
+          # Accept Android SDK licenses
+          yes | sdkmanager --licenses 2>/dev/null || true
+
           # Ensure .env exists for Secrets Gradle plugin
           if [ -f .env.example ] && [ ! -f .env ]; then
             cp .env.example .env
           fi
+
+          # Ensure debug.keystore exists for signing (as .keystore files are gitignored)
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 --decode debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          fi
+
       - name: Prepare Gradle wrapper
         script: |
           chmod +x gradlew
-      - name: Build Release APK/AAB
+
+      - name: Build Release APK
         script: |
-          # Build both signed Release APK and Android App Bundle
-          ./gradlew assembleRelease bundleRelease --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Build Release AAB (App Bundle)
+        script: |
+          ./gradlew bundleRelease --no-daemon --stacktrace
+
       - name: Build Debug APK (fallback)
         script: |
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
     artifacts:
       - app/build/outputs/**/*.apk
       - app/build/outputs/**/*.aab
@@ -71,15 +91,23 @@ workflows:
           if [ -n "$ANDROID_SDK_ROOT" ]; then
             echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           fi
+          yes | sdkmanager --licenses 2>/dev/null || true
           if [ -f .env.example ] && [ ! -f .env ]; then
             cp .env.example .env
+          fi
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 --decode debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
       - name: Prepare Gradle wrapper
         script: |
           chmod +x gradlew
       - name: Build Debug APK
         script: |
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace
     artifacts:
       - app/build/outputs/**/*.apk
       - "**/*.apk"
