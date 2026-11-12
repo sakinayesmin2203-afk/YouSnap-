@@ -3098,7 +3098,7 @@ fun NotificationSettingsScreen(
                     Text("Receive push notifications on likes, followers, and comments.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
                 Switch(
-                    checked = settings.pushNotificationsEnabled,
+                    checked = settings.pushNotifications,
                     onCheckedChange = { viewModel.togglePushNotifications() },
                     modifier = Modifier.testTag("push_notif_switch")
                 )
@@ -3114,7 +3114,7 @@ fun NotificationSettingsScreen(
                     Text("Temporarily silence all alerts for focus time.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
                 Switch(
-                    checked = settings.quietModeEnabled,
+                    checked = settings.quietMode,
                     onCheckedChange = { viewModel.toggleQuietMode() },
                     modifier = Modifier.testTag("quiet_mode_switch")
                 )
@@ -3150,7 +3150,7 @@ fun AppPreferencesScreen(
     val hapticFeedbackEnabled by viewModel.hapticFeedbackFlow.collectAsState()
     var reduceMotionEnabled by remember { mutableStateOf(false) }
     var orientationLockEnabled by remember { mutableStateOf(true) }
-    var captionsEnabled by remember { mutableStateOf(settings.captionsToggle) }
+    var captionsEnabled by remember { mutableStateOf(settings.captionsEnabled) }
 
     // Dialog for App Language
     if (showLanguageDialog) {
@@ -3212,7 +3212,7 @@ fun AppPreferencesScreen(
                                     selectedTheme = theme
                                     showThemeDialog = false
                                     if (theme.contains("Dark")) {
-                                        if (!settings.forceDarkMode) viewModel.toggleDarkMode()
+                                        if (!settings.darkMode) viewModel.toggleDarkMode()
                                     }
                                     android.widget.Toast.makeText(viewModel.app, "Theme set to $theme", android.widget.Toast.LENGTH_SHORT).show()
                                 }
@@ -3225,7 +3225,7 @@ fun AppPreferencesScreen(
                                     selectedTheme = theme
                                     showThemeDialog = false
                                     if (theme.contains("Dark")) {
-                                        if (!settings.forceDarkMode) viewModel.toggleDarkMode()
+                                        if (!settings.darkMode) viewModel.toggleDarkMode()
                                     }
                                     android.widget.Toast.makeText(viewModel.app, "Theme set to $theme", android.widget.Toast.LENGTH_SHORT).show()
                                 }
@@ -3464,7 +3464,7 @@ fun DataStorageScreen(
     settings: SettingsEntity,
     onBack: () -> Unit
 ) {
-    var dataSaverEnabled by remember { mutableStateOf(settings.dataSaverMode) }
+    var dataSaverEnabled by remember { mutableStateOf(settings.dataSaver) }
     var downloadWifiOnly by remember { mutableStateOf(true) }
     var autoSaveGallery by remember { mutableStateOf(false) }
 

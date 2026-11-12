@@ -1,12 +1,12 @@
 package com.example.ui
 
-object Toast {
-    fun makeText(c: android.content.Context?, t: CharSequence?, d: Int): FakeToast = FakeToast
-    fun makeText(c: android.content.Context?, resId: Int, d: Int): FakeToast = FakeToast
-    const val LENGTH_SHORT = 0
-    const val LENGTH_LONG = 1
-}
+import android.content.Context
+import android.widget.Toast
 
-object FakeToast {
-    fun show() {}
+object Toast {
+    fun makeText(context: Context, message: String, duration: Int): android.widget.Toast {
+        return android.widget.Toast.makeText(context, message, duration)
+    }
+    const val LENGTH_SHORT = android.widget.Toast.LENGTH_SHORT
+    const val LENGTH_LONG = android.widget.Toast.LENGTH_LONG
 }

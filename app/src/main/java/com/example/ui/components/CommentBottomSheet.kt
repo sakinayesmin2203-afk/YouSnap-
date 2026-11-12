@@ -7,13 +7,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,8 +35,12 @@ fun CommentBottomSheet(
     onDismissRequest: () -> Unit,
     sheetState: SheetState
 ) {
-    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomInsetPadding = maxOf(imeBottom, navBottom)
 
     ModalBottomSheet(
         onDismissRequest = {
@@ -42,34 +49,71 @@ fun CommentBottomSheet(
             onDismissRequest()
         },
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        dragHandle = { BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)) }
+        containerColor = Color.White,
+        contentColor = Color.Black,
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0xFFDDDDDD))
+                )
+            }
+        },
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .wrapContentHeight()
-                .imePadding()
-                .navigationBarsPadding()
+                .fillMaxHeight(0.85f)
+                .background(Color.White)
+                .padding(bottom = bottomInsetPadding)
         ) {
-            // Header
-            Text(
-                text = "Comments (${comments.size})",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+            // Header: Title and Close button
+            Row(
                 modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .padding(bottom = 16.dp)
-            )
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Comments (${comments.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = Color.Black
+                )
+                IconButton(
+                    onClick = {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        onDismissRequest()
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = Color.Black,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+            HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
 
             // Scrollable Comments List
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 280.dp)
+                    .weight(1f)
             ) {
                 if (comments.isEmpty()) {
                     Box(
@@ -84,13 +128,15 @@ fun CommentBottomSheet(
                             )
                             Text(
                                 text = "No comments yet",
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                fontSize = 14.sp
+                                color = Color.Black,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Be the first to start the conversation!",
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                                fontSize = 12.sp
+                                text = "Start the conversation.",
+                                color = Color.Gray,
+                                fontSize = 13.sp
                             )
                         }
                     }
@@ -105,19 +151,18 @@ fun CommentBottomSheet(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.Top
                             ) {
-                                // Mini avatar
                                 Box(
                                     modifier = Modifier
-                                        .size(32.dp)
+                                        .size(34.dp)
                                         .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                                        .background(Color(0xFF3897F0).copy(alpha = 0.12f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         text = comment.username.take(1).uppercase(),
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontSize = 12.sp
+                                        color = Color(0xFF3897F0),
+                                        fontSize = 13.sp
                                     )
                                 }
 
@@ -133,7 +178,7 @@ fun CommentBottomSheet(
                                             text = "@${comment.username}",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = Color.Black
                                         )
 
                                         val formattedTime = remember(comment.timestamp) {
@@ -147,7 +192,7 @@ fun CommentBottomSheet(
                                         Text(
                                             text = formattedTime,
                                             fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                            color = Color.Gray
                                         )
                                     }
 
@@ -156,7 +201,7 @@ fun CommentBottomSheet(
                                     Text(
                                         text = comment.text,
                                         fontSize = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                                        color = Color.Black.copy(alpha = 0.85f)
                                     )
                                 }
                             }
@@ -165,57 +210,86 @@ fun CommentBottomSheet(
                 }
             }
 
-            Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+            HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
 
-            // Post Comment Section
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Post Comment Input Bar - Fixed neatly on top of the keyboard
+            Surface(
+                color = Color.White,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                OutlinedTextField(
-                    value = commentText,
-                    onValueChange = onCommentTextChange,
-                    placeholder = { Text("Add a comment...", fontSize = 14.sp, color = Color.Gray) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Black,
-                        unfocusedBorderColor = Color.Black,
-                        focusedTextColor = Color.Black,
-                        unfocusedTextColor = Color.Black,
-                        cursorColor = Color.Black,
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(24.dp),
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .testTag("comment_input_field"),
-                    maxLines = 3
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                IconButton(
-                    onClick = {
-                        keyboardController?.hide()
-                        focusManager.clearFocus()
-                        onPostComment()
-                    },
-                    enabled = commentText.trim().isNotEmpty(),
-                    colors = IconButtonDefaults.iconButtonColors(
-                        contentColor = Color.Black,
-                        disabledContentColor = Color.Gray.copy(alpha = 0.4f)
-                    ),
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("post_comment_button")
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Send,
-                        contentDescription = "Post Comment",
-                        modifier = Modifier.size(20.dp)
+                    // User Avatar
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF3897F0)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Y",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    OutlinedTextField(
+                        value = commentText,
+                        onValueChange = onCommentTextChange,
+                        placeholder = { Text("Add a comment...", fontSize = 14.sp, color = Color.Gray) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF3897F0),
+                            unfocusedBorderColor = Color(0xFF3897F0),
+                            focusedTextColor = Color.Black,
+                            unfocusedTextColor = Color.Black,
+                            cursorColor = Color.Black,
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("comment_input_field"),
+                        maxLines = 3
                     )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    IconButton(
+                        onClick = {
+                            val trimmed = commentText.trim()
+                            if (trimmed.isNotEmpty()) {
+                                onPostComment()
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                            }
+                        },
+                        enabled = commentText.trim().isNotEmpty(),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = Color(0xFFF0F2F5),
+                            contentColor = Color(0xFF3897F0),
+                            disabledContainerColor = Color(0xFFF0F2F5).copy(alpha = 0.5f),
+                            disabledContentColor = Color.Gray.copy(alpha = 0.4f)
+                        ),
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .testTag("post_comment_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Post Comment",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }

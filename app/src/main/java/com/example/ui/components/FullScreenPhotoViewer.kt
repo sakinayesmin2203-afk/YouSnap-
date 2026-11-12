@@ -67,7 +67,7 @@ import coil.compose.AsyncImage
 import com.example.ui.components.ReportPostBottomSheet
 
 data class FullScreenPhotoData(
-    val id: Int,
+    val id: String,
     val title: String,
     val imageUrl: String,
     val creatorName: String,
@@ -97,7 +97,7 @@ fun FullScreenPhotoViewer(
     currentUsername: String = "",
     isOwner: Boolean? = null,
     onDismiss: () -> Unit,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     FullScreenPhotoViewer(
@@ -119,7 +119,7 @@ fun FullScreenPhotoViewer(
     currentUsername: String = "",
     isOwner: Boolean? = null,
     onDismiss: () -> Unit,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     if (photos.isEmpty()) return
@@ -225,7 +225,7 @@ fun InstagramPostCard(
     totalCount: Int,
     currentUsername: String = "",
     isOwner: Boolean? = null,
-    onLikeChanged: ((photoId: Int, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -858,14 +858,19 @@ fun InstagramPostCard(
                         .background(Color(0xFFE0E0E0))
                 )
             },
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
             modifier = Modifier.fillMaxWidth()
         ) {
+            val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val bottomInsetPadding = maxOf(imeBottom, navBottom)
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.85f)
                     .background(Color.White)
-                    .navigationBarsPadding()
+                    .padding(bottom = bottomInsetPadding)
             ) {
                 // Comments Title Header
                 Row(

@@ -73,8 +73,8 @@ fun ProfileScreen(
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
     var selectedProfileTab by remember { mutableIntStateOf(0) } // 0: Photos, 1: Reels
     var selectedPhotoIndexForViewer by remember { mutableStateOf<Int?>(null) }
-    val photoLikesMap = remember { mutableStateMapOf<Int, Int>() }
-    val photoLikedStatusMap = remember { mutableStateMapOf<Int, Boolean>() }
+    val photoLikesMap = remember { mutableStateMapOf<String, Int>() }
+    val photoLikedStatusMap = remember { mutableStateMapOf<String, Boolean>() }
 
     val followersCount by viewModel.myFollowersCount.collectAsState()
     val followingCount by viewModel.myFollowingCount.collectAsState()
@@ -194,8 +194,8 @@ fun ProfileScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             StatItem(count = (personalPhotos.size + personalReels.size).toString(), label = "Posts")
-                            StatItem(count = formatEngCount(followersCount), label = "Followers")
-                            StatItem(count = formatEngCount(followingCount), label = "Following")
+                            StatItem(count = com.example.ui.utils.FormatUtils.formatCount(followersCount), label = "Followers")
+                            StatItem(count = com.example.ui.utils.FormatUtils.formatCount(followingCount), label = "Following")
                         }
                     }
 
@@ -529,7 +529,7 @@ fun ProfileScreen(
                                                 modifier = Modifier.size(12.dp)
                                             )
                                             Text(
-                                                text = formatProfileViews(reel.viewsCount),
+                                                text = com.example.ui.utils.FormatUtils.formatCount(reel.viewsCount),
                                                 color = Color.White,
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold
@@ -654,6 +654,7 @@ fun ProfileScreen(
 }
 
 
+
 @Composable
 fun StatItem(count: String, label: String) {
     Column(
@@ -671,14 +672,6 @@ fun StatItem(count: String, label: String) {
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
-    }
-}
-
-private fun formatProfileViews(count: Int): String {
-    return when {
-        count >= 1_000_000 -> String.format("%.1fM", count / 1_000_000f)
-        count >= 1_000 -> String.format("%.1fK", count / 1_000f)
-        else -> count.toString()
     }
 }
 

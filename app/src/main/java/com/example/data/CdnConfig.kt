@@ -1,19 +1,20 @@
 package com.example.data
 
 object CdnConfig {
-    // Supabase Storage Bucket Name (Matches user's Supabase Console: "YouSnap")
     const val BUCKET_NAME = "YouSnap"
-
-    // Cloudflare Worker CDN routing to Supabase Storage public YouSnap bucket
-    const val CDN_BASE_URL = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/public/$BUCKET_NAME/"
-
-    fun getFullMediaUrl(fileName: String?): String {
-        if (fileName.isNullOrEmpty()) return ""
-        if (fileName.startsWith("http://") || fileName.startsWith("https://")) {
-            return fileName
+    const val PROJECT_ID = "crzvoplnzqbvljstnmmm"
+    const val STORAGE_BASE_URL = "https://$PROJECT_ID.supabase.co/storage/v1/object/public/$BUCKET_NAME/"
+    
+    fun getFullMediaUrl(filename: String): String {
+        if (filename.isEmpty()) return ""
+        if (filename.startsWith("http://") || filename.startsWith("https://")) {
+            // Fix legacy placeholder urls so uploaded media streams directly from Supabase Storage
+            if (filename.contains("yousnap.app/storage/v1/object/public/yousnap/")) {
+                val fname = filename.substringAfterLast("/")
+                return "$STORAGE_BASE_URL$fname"
+            }
+            return filename
         }
-        val cleanFileName = if (fileName.startsWith("/")) fileName.substring(1) else fileName
-        val cleanBaseUrl = if (CDN_BASE_URL.endsWith("/")) CDN_BASE_URL else "$CDN_BASE_URL/"
-        return cleanBaseUrl + cleanFileName
+        return "$STORAGE_BASE_URL$filename"
     }
 }

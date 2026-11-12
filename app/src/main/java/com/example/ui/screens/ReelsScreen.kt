@@ -6,9 +6,10 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -84,10 +85,6 @@ fun ReelsScreen(
     
     val currentUserProfile by viewModel.profileState.collectAsState()
     
-    val listState = rememberLazyListState()
-    var selectedReelForComments by remember { mutableStateOf<ReelEntity?>(null) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
     val userPrivacyMap by viewModel.userPrivacyMap.collectAsState()
     val isFollowingMap by viewModel.otherUserIsFollowing.collectAsState()
 
@@ -106,22 +103,29 @@ fun ReelsScreen(
         buildReelsFeedWithAds(visibleReels, adInterval = 6)
     }
 
+    val pagerState = rememberPagerState(
+        initialPage = 0,
+        pageCount = { feedItems.size }
+    )
+    var selectedReelForComments by remember { mutableStateOf<ReelEntity?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     // Auto-scroll to startReelId if specified
     LaunchedEffect(startReelId, feedItems) {
         if (startReelId != null && feedItems.isNotEmpty()) {
             val targetIndex = feedItems.indexOfFirst { it is ReelsFeedItem.Video && it.reel.id == startReelId }
             if (targetIndex >= 0) {
-                listState.scrollToItem(targetIndex)
+                pagerState.scrollToPage(targetIndex)
             }
         }
     }
 
     // Automatically log viewed reels into Watch History & increment view count ONCE per unique view
     val viewedReelIds = remember { mutableSetOf<Int>() }
-    val visibleItemIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(visibleItemIndex) {
-        if (feedItems.isNotEmpty() && visibleItemIndex in feedItems.indices) {
-            val currentItem = feedItems[visibleItemIndex]
+    val currentPage by remember { derivedStateOf { pagerState.currentPage } }
+    LaunchedEffect(currentPage) {
+        if (feedItems.isNotEmpty() && currentPage in feedItems.indices) {
+            val currentItem = feedItems[currentPage]
             if (currentItem is ReelsFeedItem.Video) {
                 val reel = currentItem.reel
                 viewModel.addToWatchHistory(reel)
@@ -191,44 +195,51 @@ fun ReelsScreen(
                     }
                 }
             } else {
-                // Immersive scrollable Reels feed where each item fills the screen viewport
-                LazyColumn(
-                    state = listState,
+                // Immersive full-screen Reels feed with rigid snap paging (Instagram / YouTube Shorts style)
+                val flingBehavior = PagerDefaults.flingBehavior(
+                    state = pagerState,
+                    pagerSnapDistance = PagerSnapDistance.atMost(1),
+                    snapAnimationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                )
+
+                VerticalPager(
+                    state = pagerState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .testTag("reels_vertical_feed")
-                ) {
-                    itemsIndexed(
-                        feedItems,
-                        key = { _, item ->
-                            when (item) {
-                                is ReelsFeedItem.Video -> "reel_${item.reel.id}"
-                                is ReelsFeedItem.Ad -> "ad_${item.adSlotId}"
-                            }
+                        .testTag("reels_vertical_feed"),
+                    flingBehavior = flingBehavior,
+                    beyondViewportPageCount = 1,
+                    key = { index ->
+                        when (val item = feedItems[index]) {
+                            is ReelsFeedItem.Video -> "reel_${item.reel.id}"
+                            is ReelsFeedItem.Ad -> "ad_${item.adSlotId}"
                         }
-                    ) { index, item ->
-                        Box(
-                            modifier = Modifier
-                                .fillParentMaxSize()
-                                .background(Color.Black)
-                        ) {
-                            when (item) {
-                                is ReelsFeedItem.Video -> {
-                                    ReelViewportItem(
-                                        reel = item.reel,
-                                        viewModel = viewModel,
-                                        onLikeToggle = { viewModel.toggleLikeReel(item.reel) },
-                                        onCommentClick = { selectedReelForComments = item.reel },
-                                        onFollowToggle = { viewModel.toggleFollowCreator(item.reel) },
-                                        onNavigateTo = onNavigateTo
-                                    )
-                                }
-                                is ReelsFeedItem.Ad -> {
-                                    FullScreenNativeVideoAd(
-                                        adUnitId = item.adUnitId,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
+                    }
+                ) { pageIndex ->
+                    val item = feedItems[pageIndex]
+                    val isItemActive = pagerState.currentPage == pageIndex
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black)
+                    ) {
+                        when (item) {
+                            is ReelsFeedItem.Video -> {
+                                ReelViewportItem(
+                                    reel = item.reel,
+                                    viewModel = viewModel,
+                                    isActive = isItemActive,
+                                    onLikeToggle = { viewModel.toggleLikeReel(item.reel) },
+                                    onCommentClick = { selectedReelForComments = item.reel },
+                                    onFollowToggle = { viewModel.toggleFollowCreator(item.reel) },
+                                    onNavigateTo = onNavigateTo
+                                )
+                            }
+                            is ReelsFeedItem.Ad -> {
+                                FullScreenNativeVideoAd(
+                                    adUnitId = item.adUnitId,
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
                         }
                     }
@@ -289,6 +300,7 @@ fun ReelsScreen(
 fun ReelViewportItem(
     reel: ReelEntity,
     viewModel: YouSnapViewModel,
+    isActive: Boolean = true,
     onLikeToggle: () -> Unit,
     onCommentClick: () -> Unit,
     onFollowToggle: () -> Unit,
@@ -330,8 +342,10 @@ fun ReelViewportItem(
             }
     ) {
         // Track Watch Time: Record watch session start
-        LaunchedEffect(reel.id) {
-            viewModel.updateReelWatchTime(reel, 1)
+        LaunchedEffect(reel.id, isActive) {
+            if (isActive) {
+                viewModel.updateReelWatchTime(reel, 1)
+            }
         }
 
         // ACTUAL VIDEO PLAYER
@@ -339,7 +353,7 @@ fun ReelViewportItem(
             CdnVideoPlayer(
                 videoUrl = reel.mediaUrl,
                 modifier = Modifier.fillMaxSize(),
-                autoPlay = true,
+                autoPlay = isActive,
                 isLooping = true
             )
         } else if (reel.thumbnailUrl.isNotEmpty()) {

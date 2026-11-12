@@ -430,22 +430,37 @@ fun HomeScreen(
                 // Item B1: Dynamic Profile-Opened Post (if user clicked a photo from any user's profile)
                 selectedHomePost?.let { profilePost ->
                     item(key = "profile_opened_post_${profilePost.id}") {
-                        val isLiked = homePostLikedState[profilePost.id] ?: profilePost.isLiked
-                        val likesCount = homePostLikesCount[profilePost.id] ?: profilePost.likesCount
+                        val isLiked = homePostLikedState[profilePost.id] ?: profilePost.initialIsLiked
+                        val likesCount = homePostLikesCount[profilePost.id] ?: profilePost.initialLikes
                         val commentsForPost = homePostCommentsMap[profilePost.id] ?: emptyList()
-                        val isBookmarked = homePostBookmarked[profilePost.id] ?: profilePost.isBookmarked
+                        val isBookmarked = homePostBookmarked[profilePost.id] ?: false
 
-                        val isOwner = currentProfile.username.lowercase() == profilePost.username.lowercase()
+                        val isOwner = currentProfile.username.lowercase() == profilePost.creatorUsername.lowercase()
+
+                        val postItem = HomePostItem(
+                            id = profilePost.id,
+                            username = profilePost.creatorUsername,
+                            userDisplayName = profilePost.creatorName,
+                            userAvatarUrl = profilePost.creatorAvatar,
+                            creatorUid = profilePost.creatorUid,
+                            imageUrl = profilePost.imageUrl,
+                            caption = profilePost.title,
+                            likesCount = likesCount,
+                            commentsCount = commentsForPost.size,
+                            isLiked = isLiked,
+                            isBookmarked = isBookmarked,
+                            timeAgo = profilePost.timeAgo
+                        )
 
                         FeedPhotoPostCard(
-                            post = profilePost,
+                            post = postItem,
                             isLiked = isLiked,
                             likesCount = likesCount,
-                            commentsCount = commentsForPost.size.coerceAtLeast(profilePost.commentsCount),
+                            commentsCount = postItem.commentsCount,
                             isBookmarked = isBookmarked,
                             onLikeToggle = { viewModel.toggleLikeHomePost(profilePost.id) },
                             onCommentClick = {
-                                activePostForComments = profilePost
+                                activePostForComments = postItem
                             },
                             onShareClick = {
                                 try {
@@ -454,7 +469,7 @@ fun HomeScreen(
                                         putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Post")
                                         putExtra(
                                             android.content.Intent.EXTRA_TEXT,
-                                            "Check out @${profilePost.username}'s photo on YouSnap! 📸✨"
+                                            "Check out @${profilePost.creatorUsername}'s photo on YouSnap! 📸✨"
                                         )
                                     }
                                     val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
@@ -474,37 +489,26 @@ fun HomeScreen(
                                 ).show()
                             },
                             onProfileClick = {
-                                if (profilePost.username == currentProfile.username) {
+                                if (profilePost.creatorUsername == currentProfile.username) {
                                     onNavigateTo(Screen.Profile)
                                 } else {
-                                    onNavigateTo(Screen.OtherProfile(profilePost.username))
+                                    onNavigateTo(Screen.OtherProfile(profilePost.creatorUsername))
                                 }
                             },
                             onPhotoClick = {
-                                selectedPhotoForViewer = FullScreenPhotoData(
-                                    id = profilePost.id.hashCode(),
-                                    title = profilePost.caption,
-                                    imageUrl = profilePost.imageUrl,
-                                    creatorName = profilePost.userDisplayName,
-                                    creatorUsername = profilePost.username,
-                                    creatorAvatar = profilePost.userAvatarUrl,
-                                    initialLikes = profilePost.likesCount,
-                                    initialComments = profilePost.commentsCount,
-                                    initialIsLiked = profilePost.isLiked,
-                                    timeAgo = profilePost.timeAgo
-                                )
+                                selectedPhotoForViewer = profilePost
                             },
                             onDismissBanner = {
                                 viewModel.clearOpenedHomePost()
                             },
                             isOwner = isOwner,
                             onDeleteClick = {
-                                viewModel.deletePhotoPost(profilePost.id, profilePost.imageUrl) {
+                                viewModel.deletePhotoPost(profilePost.id, profilePost.imageUrl, profilePost.creatorUsername, profilePost.creatorUid) {
                                     viewModel.clearOpenedHomePost()
                                 }
                             },
                             onRequestReport = {
-                                postToReport = profilePost
+                                postToReport = postItem
                             }
                         )
                     }

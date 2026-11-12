@@ -14,5 +14,12 @@ data class ProfileEntity(
     val hiddenStoryFrom: String = "", // Comma-separated usernames
     val email: String = "",
     val isPinEnabled: Boolean = false,
-    val appPin: String = ""
+    val appPin: String = "",
+    val followersCount: Int = 0,
+    val followingCount: Int = 0,
+    val postCount: Int = 0,
+    val videoViewsCount: Int = 0,
+    val photoUploadsCount: Int = 0,
+    val storiesUploadedCount: Int = 0,
+    val monetizationStatus: String = "NOT_ELIGIBLE"
 )

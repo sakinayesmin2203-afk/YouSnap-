@@ -5,15 +5,17 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "settings_table")
 data class SettingsEntity(
-    @PrimaryKey val id: Int = 1,
+    @PrimaryKey val id: Int = 0,
     val isPrivateAccount: Boolean = false,
-    val is2FaEnabled: Boolean = false,
+    val pushNotifications: Boolean = true,
+    val darkMode: Boolean = false,
+    val language: String = "English",
+    val appPin: String = "",
+    val isPinEnabled: Boolean = false,
+    val fontScale: Float = 1.0f,
     val highQualityUploads: Boolean = true,
-    val sensitiveContentFilter: Boolean = false,
-    val autoPlaySettings: Boolean = true,
-    val pushNotificationsEnabled: Boolean = true,
-    val quietModeEnabled: Boolean = false,
-    val forceDarkMode: Boolean = true, // default to True for an Insta-dark look, can toggle
-    val captionsToggle: Boolean = true,
-    val dataSaverMode: Boolean = false
+    val hapticFeedback: Boolean = true,
+    val quietMode: Boolean = false,
+    val captionsEnabled: Boolean = false,
+    val dataSaver: Boolean = false
 )
