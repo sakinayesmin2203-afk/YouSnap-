@@ -1,0 +1,92 @@
+# Codemagic CI/CD configuration for YouSnap Android Application
+# Documentation: https://docs.codemagic.io/yaml-quick-start/
+
+workflows:
+  android-release:
+    name: YouSnap Release APK/AAB
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      vars:
+        PACKAGE_NAME: "Com.yousnap.app"
+      java: 17
+    triggering:
+      events:
+        - push
+        - tag
+        - pull_request
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+        - pattern: 'master'
+          include: true
+          source: true
+    scripts:
+      - name: Set up environment and local properties
+        script: |
+          echo "Setting up Android SDK and environment..."
+          if [ -n "$ANDROID_SDK_ROOT" ]; then
+            echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          fi
+          # Ensure .env exists for Secrets Gradle plugin
+          if [ -f .env.example ] && [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+      - name: Prepare Gradle wrapper
+        script: |
+          chmod +x gradlew
+      - name: Build Release APK/AAB
+        script: |
+          # Build both signed Release APK and Android App Bundle
+          ./gradlew assembleRelease bundleRelease --stacktrace
+      - name: Build Debug APK (fallback)
+        script: |
+          ./gradlew assembleDebug --stacktrace
+    artifacts:
+      - app/build/outputs/**/*.apk
+      - app/build/outputs/**/*.aab
+      - app/build/outputs/**/mapping.txt
+      - "**/*.apk"
+      - "**/*.aab"
+    publishing:
+      email:
+        recipients:
+          - sakinayesmin2203@gmail.com
+        notify:
+          success: true
+          failure: true
+
+  android-debug:
+    name: YouSnap Debug APK
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      vars:
+        PACKAGE_NAME: "Com.yousnap.app"
+      java: 17
+    scripts:
+      - name: Set up environment and local properties
+        script: |
+          if [ -n "$ANDROID_SDK_ROOT" ]; then
+            echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          fi
+          if [ -f .env.example ] && [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+      - name: Prepare Gradle wrapper
+        script: |
+          chmod +x gradlew
+      - name: Build Debug APK
+        script: |
+          ./gradlew assembleDebug --stacktrace
+    artifacts:
+      - app/build/outputs/**/*.apk
+      - "**/*.apk"
+    publishing:
+      email:
+        recipients:
+          - sakinayesmin2203@gmail.com
+        notify:
+          success: true
+          failure: true
