@@ -161,20 +161,6 @@ fun SettingsScreen(
                     subtitle = "Metrics, analytics and creator dashboard",
                     onClick = { onNavigateTo(Screen.CreatorTools) }
                 )
-                HorizontalDivider(modifier = Modifier.padding(start = 52.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                SettingsItem(
-                    icon = Icons.Outlined.MonetizationOn,
-                    title = "Monetization Program",
-                    subtitle = "Check eligibility and submit payout application",
-                    onClick = { onNavigateTo(Screen.MonetizationScreen) }
-                )
-                HorizontalDivider(modifier = Modifier.padding(start = 52.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                SettingsItem(
-                    icon = Icons.Outlined.TrendingUp,
-                    title = "Boost Reel",
-                    subtitle = "Promote your reels for more views",
-                    onClick = { onNavigateTo(Screen.BoostReel) }
-                )
             }
 
             // Section 4: Security & Support
