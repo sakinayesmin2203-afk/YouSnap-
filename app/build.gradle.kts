@@ -106,6 +106,7 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.transformer)
+  implementation(libs.androidx.media3.effect)
   implementation("com.google.android.gms:play-services-ads:23.6.0")
 
   // Uncomment ALL FOUR of the following dependencies together to use Firebase Auth and Google

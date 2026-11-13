@@ -8,15 +8,25 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.*
 import com.example.ui.components.FullScreenPhotoData
+import com.example.ui.utils.CompressionState
 import com.example.ui.utils.VideoCompressor
 import com.example.data.repository.SupabaseRepository
+import com.example.data.repository.UploadResult
+import com.example.data.repository.UploadTransferState
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FieldValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.util.Stack
 import java.io.File
 import java.io.FileOutputStream
@@ -92,8 +102,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val otherUserIsFollowing = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val isB2Uploading = MutableStateFlow(false)
     val b2UploadProgress = MutableStateFlow(0f)
+    val uploadStatusMessage = MutableStateFlow("Preparing media...")
+    val uploadErrorMessage = MutableStateFlow<String?>(null)
     val activeReelComments = MutableStateFlow<List<CommentEntity>>(emptyList())
     val currentCommentText = MutableStateFlow("")
+
+    fun clearUploadError() {
+        uploadErrorMessage.value = null
+    }
 
     val myFollowersCount = MutableStateFlow(0)
     val followersCount: StateFlow<Int> = myFollowersCount.asStateFlow()
@@ -258,174 +274,225 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     ) {
         if (isB2Uploading.value) return
 
-        if (mediaType == "reel" || mediaType == "video" || mediaType == "video_reel") {
-            VideoCompressor.compressVideo(
-                context = app,
-                inputUri = mediaUri,
-                onSuccess = { compressedFile ->
-                    viewModelScope.launch {
-                        proceedWithUpload(Uri.fromFile(compressedFile), mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
-                    }
-                },
-                onError = { e ->
-                    android.util.Log.e("YouSnapViewModel", "Compression failed: ${e.message}")
-                    viewModelScope.launch {
-                        proceedWithUpload(mediaUri, mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
-                    }
-                }
-            )
-        } else {
-            viewModelScope.launch {
-                proceedWithUpload(mediaUri, mediaType, caption, songTitle, category, gradientStart, gradientEnd, isStory, onComplete)
-            }
-        }
-    }
-
-    private suspend fun proceedWithUpload(
-        uri: Uri,
-        type: String,
-        caption: String,
-        songTitle: String,
-        category: String,
-        gradientStart: String,
-        gradientEnd: String,
-        isStory: Boolean,
-        onComplete: () -> Unit
-    ) {
         isB2Uploading.value = true
-        b2UploadProgress.value = 0.2f
-        val timestamp = System.currentTimeMillis()
-        val isVideo = type == "reel" || type == "video" || type == "video_reel"
-        val extension = if (isVideo) "mp4" else "jpg"
-        val filename = "yousnap_${timestamp}.$extension"
-        val contentType = if (isVideo) "video/mp4" else "image/jpeg"
+        b2UploadProgress.value = 0f
+        uploadErrorMessage.value = null
+        val isVideo = mediaType == "reel" || mediaType == "video" || mediaType == "video_reel"
+        uploadStatusMessage.value = if (isVideo) "Compressing video..." else "Preparing photo..."
 
-        b2UploadProgress.value = 0.5f
+        viewModelScope.launch {
+            var fileToUpload: File? = null
+            val timestamp = System.currentTimeMillis()
+            val extension = if (isVideo) "mp4" else "jpg"
+            val filename = "yousnap_${timestamp}.$extension"
+            val contentType = if (isVideo) "video/mp4" else "image/jpeg"
 
-        val finalUrl = try {
-            val tempFile = java.io.File(app.cacheDir, filename)
-            app.contentResolver.openInputStream(uri)?.use { input ->
-                tempFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-
-            b2UploadProgress.value = 0.8f
-            val result = kotlinx.coroutines.withTimeoutOrNull(6000L) {
-                supabaseRepository.uploadFile(
-                    file = tempFile,
-                    filename = filename,
-                    contentType = contentType,
-                    onProgress = { progress ->
-                        b2UploadProgress.value = 0.5f + (progress * 0.5f)
+            try {
+                // Stage 1: Prepare / Compress Video (0% -> 40% for videos, 0% -> 5% for photos)
+                if (isVideo) {
+                    var compressionFailed = false
+                    VideoCompressor.compressVideoFlow(
+                        context = app,
+                        inputUri = mediaUri
+                    ).collect { state ->
+                        when (state) {
+                            is CompressionState.Progress -> {
+                                b2UploadProgress.value = (state.fraction * 0.40f).coerceIn(0f, 0.40f)
+                            }
+                            is CompressionState.Completed -> {
+                                fileToUpload = state.file
+                                b2UploadProgress.value = 0.40f
+                            }
+                            is CompressionState.Error -> {
+                                android.util.Log.e("YouSnapViewModel", "Compression failed, using original: ${state.exception.message}")
+                                compressionFailed = true
+                            }
+                        }
                     }
-                )
+
+                    if (compressionFailed || fileToUpload == null || !fileToUpload!!.exists() || fileToUpload!!.length() <= 0L) {
+                        uploadStatusMessage.value = "Preparing video..."
+                        fileToUpload = withContext(Dispatchers.IO) {
+                            val fallbackFile = File(app.cacheDir, filename)
+                            app.contentResolver.openInputStream(mediaUri)?.use { input ->
+                                fallbackFile.outputStream().use { output -> input.copyTo(output) }
+                            }
+                            fallbackFile
+                        }
+                        b2UploadProgress.value = 0.40f
+                    }
+                } else {
+                    fileToUpload = withContext(Dispatchers.IO) {
+                        val photoFile = File(app.cacheDir, filename)
+                        app.contentResolver.openInputStream(mediaUri)?.use { input ->
+                            photoFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        photoFile
+                    }
+                    b2UploadProgress.value = 0.05f
+                }
+
+                val targetFile = fileToUpload
+                if (targetFile == null || !targetFile.exists() || targetFile.length() <= 0L) {
+                    uploadErrorMessage.value = "Could not read selected media file."
+                    isB2Uploading.value = false
+                    b2UploadProgress.value = 0f
+                    return@launch
+                }
+
+                // Stage 2: Live Byte-by-Byte Supabase Storage Upload via Flow
+                // Videos: 40% -> 95% | Photos: 5% -> 95%
+                val uploadStart = if (isVideo) 0.40f else 0.05f
+                val uploadRange = 0.95f - uploadStart
+                uploadStatusMessage.value = when {
+                    isStory && isVideo -> "Uploading story video..."
+                    isStory -> "Uploading story photo..."
+                    isVideo -> "Uploading reel video..."
+                    else -> "Uploading photo..."
+                }
+
+                var uploadResult: UploadResult? = null
+                supabaseRepository.uploadFileFlow(
+                    file = targetFile,
+                    filename = filename,
+                    contentType = contentType
+                ).collect { transferState ->
+                    when (transferState) {
+                        is UploadTransferState.Progress -> {
+                            b2UploadProgress.value = (uploadStart + (transferState.fraction * uploadRange))
+                                .coerceIn(uploadStart, 0.95f)
+                        }
+                        is UploadTransferState.Completed -> {
+                            uploadResult = transferState.result
+                        }
+                    }
+                }
+
+                val finalResult = uploadResult
+                if (finalResult == null || !finalResult.isSuccess || finalResult.fileUrl.isNullOrEmpty()) {
+                    uploadErrorMessage.value = finalResult?.errorMessage ?: "Media upload failed. Please check internet and retry."
+                    isB2Uploading.value = false
+                    b2UploadProgress.value = 0f
+                    return@launch
+                }
+
+                val finalUrl = finalResult.fileUrl
+                b2UploadProgress.value = 0.95f
+
+                // Stage 3: Save Metadata to Firestore (95% -> 100%)
+                uploadStatusMessage.value = if (isStory) "Publishing story..." else "Publishing post..."
+                val profile = profileState.value
+                val creatorUid = auth.currentUser?.uid ?: ""
+
+                withTimeoutOrNull(15000L) {
+                    if (isStory) {
+                        val storyDoc = mapOf(
+                            "storyId" to timestamp.toString(),
+                            "ownerUsername" to profile.username.ifEmpty { "user" },
+                            "mediaUrl" to finalUrl,
+                            "mediaType" to if (isVideo) "video" else "image",
+                            "caption" to caption,
+                            "timestamp" to timestamp,
+                            "creatorUid" to creatorUid,
+                            "viewerIds" to emptyList<String>(),
+                            "viewsCount" to 0,
+                            "likes" to emptyList<String>(),
+                            "bgGradientStart" to gradientStart,
+                            "bgGradientEnd" to gradientEnd
+                        )
+                        awaitTask(db.collection("stories").document(profile.username.ifEmpty { "user" }).set(storyDoc))
+                    } else if (!isVideo) {
+                        val postDoc = mapOf(
+                            "id" to timestamp.toString(),
+                            "type" to "photo",
+                            "username" to profile.username.ifEmpty { "user" },
+                            "imageUrl" to finalUrl,
+                            "caption" to caption,
+                            "timestamp" to timestamp,
+                            "creatorUid" to creatorUid,
+                            "likesCount" to 0,
+                            "commentsCount" to 0
+                        )
+                        awaitTask(db.collection("posts").add(postDoc))
+
+                        val newPhoto = FullScreenPhotoData(
+                            id = timestamp.toString(),
+                            title = caption,
+                            imageUrl = finalUrl,
+                            creatorName = profile.name.ifEmpty { "User" },
+                            creatorUsername = profile.username.ifEmpty { "user" },
+                            creatorAvatar = profile.profilePic,
+                            creatorUid = creatorUid,
+                            initialLikes = 0,
+                            initialComments = 0,
+                            initialIsLiked = false,
+                            timeAgo = "Just now",
+                            firestoreDocId = null
+                        )
+                        personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
+                        savePersonalPhotosToPrefs()
+                    } else {
+                        val reelDoc = mapOf(
+                            "id" to timestamp.toString(),
+                            "type" to "reel",
+                            "username" to profile.username.ifEmpty { "user" },
+                            "mediaUrl" to finalUrl,
+                            "caption" to caption,
+                            "timestamp" to timestamp,
+                            "creatorUid" to creatorUid,
+                            "likesCount" to 0,
+                            "commentsCount" to 0,
+                            "viewsCount" to 0,
+                            "bgGradientStart" to gradientStart,
+                            "bgGradientEnd" to gradientEnd
+                        )
+                        awaitTask(db.collection("reels").add(reelDoc))
+
+                        val newReel = ReelEntity(
+                            id = timestamp.toInt(),
+                            creatorName = profile.name.ifEmpty { "User" },
+                            creatorUsername = profile.username.ifEmpty { "user" },
+                            creatorProfilePic = profile.profilePic,
+                            mediaUrl = finalUrl,
+                            caption = caption,
+                            likesCount = 0,
+                            commentsCount = 0,
+                            viewsCount = 0,
+                            timestamp = timestamp,
+                            bgGradientStart = gradientStart,
+                            bgGradientEnd = gradientEnd
+                        )
+                        _reelsState.value = listOf(newReel) + _reelsState.value
+                    }
+                }
+
+                b2UploadProgress.value = 1.0f
+                uploadStatusMessage.value = "Upload complete!"
+                delay(250L)
+
+                isB2Uploading.value = false
+                b2UploadProgress.value = 0f
+                refreshHomeFeed()
+                onComplete()
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "Upload pipeline error: ${e.message}")
+                uploadErrorMessage.value = e.localizedMessage ?: "Upload failed"
+                isB2Uploading.value = false
+                b2UploadProgress.value = 0f
+            } finally {
+                try { fileToUpload?.delete() } catch (_: Exception) {}
             }
-            try { tempFile.delete() } catch (e: Exception) {}
-
-            if (result != null && result.isSuccess && !result.fileUrl.isNullOrEmpty()) {
-                result.fileUrl!!
-            } else {
-                com.example.data.CdnConfig.getFullMediaUrl(filename)
-            }
-        } catch (e: Exception) {
-            com.example.data.CdnConfig.getFullMediaUrl(filename)
-        }
-
-        b2UploadProgress.value = 1.0f
-
-        val profile = profileState.value
-        val creatorUid = auth.currentUser?.uid ?: ""
-
-        try {
-            if (isStory) {
-                val storyDoc = mapOf(
-                    "storyId" to timestamp.toString(),
-                    "ownerUsername" to profile.username.ifEmpty { "user" },
-                    "mediaUrl" to finalUrl,
-                    "mediaType" to if (isVideo) "video" else "image",
-                    "caption" to caption,
-                    "timestamp" to timestamp,
-                    "creatorUid" to creatorUid,
-                    "viewerIds" to emptyList<String>(),
-                    "viewsCount" to 0,
-                    "likes" to emptyList<String>(),
-                    "bgGradientStart" to gradientStart,
-                    "bgGradientEnd" to gradientEnd
-                )
-                db.collection("stories").document(profile.username.ifEmpty { "user" }).set(storyDoc)
-            } else if (!isVideo) {
-                val postDoc = mapOf(
-                    "id" to timestamp.toString(),
-                    "type" to "photo",
-                    "username" to profile.username.ifEmpty { "user" },
-                    "imageUrl" to finalUrl,
-                    "caption" to caption,
-                    "timestamp" to timestamp,
-                    "creatorUid" to creatorUid,
-                    "likesCount" to 0,
-                    "commentsCount" to 0
-                )
-                db.collection("posts").add(postDoc)
-                
-                val newPhoto = FullScreenPhotoData(
-                    id = timestamp.toString(),
-                    title = caption,
-                    imageUrl = finalUrl,
-                    creatorName = profile.name.ifEmpty { "User" },
-                    creatorUsername = profile.username.ifEmpty { "user" },
-                    creatorAvatar = profile.profilePic,
-                    creatorUid = creatorUid,
-                    initialLikes = 0,
-                    initialComments = 0,
-                    initialIsLiked = false,
-                    timeAgo = "Just now",
-                    firestoreDocId = null
-                )
-                personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
-                savePersonalPhotosToPrefs()
-            } else {
-                val reelDoc = mapOf(
-                    "id" to timestamp.toString(),
-                    "type" to "reel",
-                    "username" to profile.username.ifEmpty { "user" },
-                    "mediaUrl" to finalUrl,
-                    "caption" to caption,
-                    "timestamp" to timestamp,
-                    "creatorUid" to creatorUid,
-                    "likesCount" to 0,
-                    "commentsCount" to 0,
-                    "viewsCount" to 0,
-                    "bgGradientStart" to gradientStart,
-                    "bgGradientEnd" to gradientEnd
-                )
-                db.collection("reels").add(reelDoc)
-                
-                val newReel = ReelEntity(
-                    id = timestamp.toInt(),
-                    creatorName = profile.name.ifEmpty { "User" },
-                    creatorUsername = profile.username.ifEmpty { "user" },
-                    creatorProfilePic = profile.profilePic,
-                    mediaUrl = finalUrl,
-                    caption = caption,
-                    likesCount = 0,
-                    commentsCount = 0,
-                    viewsCount = 0,
-                    timestamp = timestamp,
-                    bgGradientStart = gradientStart,
-                    bgGradientEnd = gradientEnd
-                )
-                _reelsState.value = listOf(newReel) + _reelsState.value
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("YouSnapViewModel", "Publish error: ${e.message}")
-        } finally {
-            isB2Uploading.value = false
-            b2UploadProgress.value = 0f
-            refreshHomeFeed()
-            onComplete()
         }
     }
+
+    private suspend fun <T> awaitTask(task: com.google.android.gms.tasks.Task<T>): T =
+        suspendCancellableCoroutine { cont ->
+            task.addOnSuccessListener { result ->
+                if (cont.isActive) cont.resume(result)
+            }.addOnFailureListener { exception ->
+                if (cont.isActive) cont.resumeWithException(exception)
+            }
+        }
 
     fun refreshHomeFeed(onComplete: () -> Unit = {}) {
         viewModelScope.launch {

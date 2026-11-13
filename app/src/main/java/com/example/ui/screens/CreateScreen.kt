@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -792,7 +794,23 @@ fun CreateScreen(
                 // -------------------------------------------------------------
                 val isB2Uploading by viewModel.isB2Uploading.collectAsState()
                 val b2UploadProgress by viewModel.b2UploadProgress.collectAsState()
-                val uploadPercent = (b2UploadProgress * 100).toInt().coerceIn(0, 100)
+                val uploadStatusMessage by viewModel.uploadStatusMessage.collectAsState()
+                val uploadErrorMessage by viewModel.uploadErrorMessage.collectAsState()
+
+                val animatedProgress by animateFloatAsState(
+                    targetValue = b2UploadProgress.coerceIn(0f, 1f),
+                    animationSpec = tween(durationMillis = 150),
+                    label = "live_upload_progress"
+                )
+                val uploadPercent = (animatedProgress * 100).toInt().coerceIn(0, 100)
+
+                LaunchedEffect(uploadErrorMessage) {
+                    val err = uploadErrorMessage
+                    if (!err.isNullOrBlank()) {
+                        Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                        viewModel.clearUploadError()
+                    }
+                }
 
                 if (isB2Uploading) {
                     Card(
@@ -802,6 +820,7 @@ fun CreateScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 14.dp)
+                            .testTag("live_upload_progress_card")
                     ) {
                         Column(
                             modifier = Modifier.padding(14.dp),
@@ -812,7 +831,10 @@ fun CreateScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(18.dp),
                                         strokeWidth = 2.dp,
@@ -820,26 +842,29 @@ fun CreateScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Uploading story media...",
+                                        text = uploadStatusMessage.ifBlank { "Uploading media..." },
                                         fontSize = 13.sp,
                                         color = Color(0xFF2E2019),
-                                        fontWeight = FontWeight.SemiBold
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
                                     )
                                 }
                                 Text(
                                     text = "$uploadPercent%",
                                     fontSize = 14.sp,
                                     color = Color(0xFFE59424),
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.testTag("live_upload_percent_text")
                                 )
                             }
                             Spacer(modifier = Modifier.height(10.dp))
                             LinearProgressIndicator(
-                                progress = { b2UploadProgress.coerceIn(0f, 1f) },
+                                progress = { animatedProgress },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(8.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .testTag("live_upload_progress_bar"),
                                 color = Color(0xFFE59424),
                                 trackColor = Color(0xFFE59424).copy(alpha = 0.15f)
                             )
