@@ -12,11 +12,19 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import java.io.File
 import java.io.InputStream
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+
+data class SupabaseStoredObject(
+    val name: String,
+    val publicUrl: String,
+    val timestamp: Long
+)
 
 data class UploadResult(
     val isSuccess: Boolean,
@@ -275,6 +283,62 @@ class SupabaseRepository {
         } catch (e: Exception) {
             android.util.Log.e("SupabaseRepository", "Delete exception: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Lists uploaded objects in the public YouSnap Supabase bucket so all users
+     * can see newly uploaded photos, reels, and stories across refreshes.
+     */
+    suspend fun listMediaFiles(limit: Int = 100): List<SupabaseStoredObject> = withContext(Dispatchers.IO) {
+        if (!SupabaseStorageService.HAS_VALID_SUPABASE_KEY) return@withContext emptyList()
+        try {
+            val apiKey = SupabaseStorageService.API_KEY
+            val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
+            val listUrl = "https://${SupabaseStorageService.PROJECT_ID}.supabase.co/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
+            val payload = """{"prefix":"","limit":$limit,"offset":0,"sortBy":{"column":"created_at","order":"desc"}}"""
+            val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+            val requestBuilder = Request.Builder()
+                .url(listUrl)
+                .addHeader("apikey", apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(body)
+
+            if (!directAuthHeader.isNullOrBlank()) {
+                requestBuilder.addHeader("Authorization", directAuthHeader)
+            }
+
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    android.util.Log.w("SupabaseRepository", "List bucket HTTP ${response.code}")
+                    return@withContext emptyList()
+                }
+                val raw = response.body?.string().orEmpty()
+                if (raw.isBlank() || !raw.trim().startsWith("[")) return@withContext emptyList()
+
+                val array = JSONArray(raw)
+                val items = mutableListOf<SupabaseStoredObject>()
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val name = obj.optString("name", "")
+                    if (name.isBlank() || name.endsWith("/") || name.startsWith(".")) continue
+
+                    val extractedTs = Regex("(\\d{10,15})").find(name)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                        ?: 0L
+                    items.add(
+                        SupabaseStoredObject(
+                            name = name,
+                            publicUrl = CdnConfig.getFullMediaUrl(name),
+                            timestamp = extractedTs
+                        )
+                    )
+                }
+                items
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SupabaseRepository", "List media error: ${e.message}")
+            emptyList()
         }
     }
 }

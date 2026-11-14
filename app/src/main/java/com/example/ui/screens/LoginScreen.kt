@@ -494,10 +494,18 @@ fun LoginScreen(
                         onClick = {
                             isLoading = true
                             try {
-                                val signInIntent = googleSignInClient.signInIntent
-                                googleSignInLauncher.launch(signInIntent)
+                                googleSignInClient.signOut().addOnCompleteListener {
+                                    try {
+                                        val signInIntent = googleSignInClient.signInIntent
+                                        googleSignInLauncher.launch(signInIntent)
+                                    } catch (e: Throwable) {
+                                        android.util.Log.e("LoginScreen", "Google Sign-In launch failed: ${e.message}")
+                                        isLoading = false
+                                        Toast.makeText(context, "Google Sign-In error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             } catch (e: Throwable) {
-                                android.util.Log.e("LoginScreen", "Google Sign-In launch failed: ${e.message}")
+                                android.util.Log.e("LoginScreen", "Google Sign-In signOut/launch failed: ${e.message}")
                                 isLoading = false
                                 Toast.makeText(context, "Google Sign-In error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }

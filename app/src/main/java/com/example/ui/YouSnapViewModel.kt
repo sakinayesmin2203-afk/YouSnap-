@@ -164,6 +164,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             android.util.Log.e("YouSnapViewModel", "Safe init currentUser: ${e.message}")
         }
         try { loadPersonalPhotosFromPrefs() } catch (e: Throwable) {}
+        try { loadReelsFromPrefs() } catch (e: Throwable) {}
+        try { loadStoriesFromPrefs() } catch (e: Throwable) {}
         try { listenToAuthChanges() } catch (e: Throwable) {}
         try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
         try { refreshHomeFeed() } catch (e: Throwable) {}
@@ -252,7 +254,21 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun logout() {
-        auth.signOut()
+        try {
+            auth.signOut()
+        } catch (_: Throwable) {}
+        try {
+            val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(
+                com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN
+            ).requestEmail().build()
+            com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(app, gso).signOut()
+        } catch (e: Throwable) {
+            android.util.Log.w("YouSnapViewModel", "GoogleSignIn signOut notice: ${e.message}")
+        }
+        currentUser.value = null
+        _profileState.value = ProfileEntity(name = "User", username = "user")
+        myFollowersCount.value = 0
+        myFollowingCount.value = 0
         clearAndNavigateTo(Screen.Login)
     }
 
@@ -284,7 +300,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             var fileToUpload: File? = null
             val timestamp = System.currentTimeMillis()
             val extension = if (isVideo) "mp4" else "jpg"
-            val filename = "yousnap_${timestamp}.$extension"
+            val prefix = if (isStory) "story" else "yousnap"
+            val filename = "${prefix}_${timestamp}.$extension"
             val contentType = if (isVideo) "video/mp4" else "image/jpeg"
 
             try {
@@ -397,6 +414,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         timestamp = timestamp
                     )
                     allStories.value = listOf(newStory) + allStories.value.filter { it.ownerUsername != ownerUsername }
+                    saveStoriesToPrefs()
                 } else if (!isVideo) {
                     val newPhoto = FullScreenPhotoData(
                         id = timestamp.toString(),
@@ -430,6 +448,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         bgGradientEnd = gradientEnd
                     )
                     _reelsState.value = listOf(newReel) + _reelsState.value
+                    saveReelsToPrefs()
                 }
 
                 var firestoreSynced = false
@@ -528,53 +547,199 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun refreshHomeFeed(onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             isHomeRefreshing.value = true
-            // Load stories
-            db.collection("stories").get().addOnSuccessListener { snapshot ->
-                val list = snapshot.documents.mapNotNull { it.toObject(StoryModel::class.java) }
-                allStories.value = list
-            }
-            // Load posts and reels
-            db.collection("posts").orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING).limit(50).get().addOnSuccessListener { snapshot ->
-                val photos = snapshot.documents.mapNotNull { doc ->
-                    val id = doc.getString("id") ?: "0"
+            try {
+                val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+
+                val storiesSnapshot = withContext(Dispatchers.IO) {
+                    try {
+                        withTimeoutOrNull(8000L) {
+                            awaitTask(db.collection("stories").limit(100).get())
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("YouSnapViewModel", "Firestore stories fetch notice: ${e.message}")
+                        null
+                    }
+                }
+
+                val postsSnapshot = withContext(Dispatchers.IO) {
+                    try {
+                        withTimeoutOrNull(8000L) {
+                            awaitTask(db.collection("posts").limit(100).get())
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("YouSnapViewModel", "Firestore posts fetch notice: ${e.message}")
+                        null
+                    }
+                }
+
+                val reelsSnapshot = withContext(Dispatchers.IO) {
+                    try {
+                        withTimeoutOrNull(8000L) {
+                            awaitTask(db.collection("reels").limit(100).get())
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("YouSnapViewModel", "Firestore reels fetch notice: ${e.message}")
+                        null
+                    }
+                }
+
+                val supabaseObjects = try {
+                    supabaseRepository.listMediaFiles(limit = 100)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+
+                // 1. Merge Stories (Firestore + Local/Cached + Public Supabase story_* fallback)
+                val remoteStories = storiesSnapshot?.documents?.mapNotNull { doc ->
+                    val story = doc.toObject(StoryModel::class.java) ?: return@mapNotNull null
+                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(story.mediaUrl)
+                    story.copy(mediaUrl = fixedUrl)
+                }?.filter { it.mediaUrl.isBlank() || it.mediaUrl !in deletedUrls }.orEmpty()
+
+                val existingStories = allStories.value.filter { it.mediaUrl.isBlank() || it.mediaUrl !in deletedUrls }
+                val knownStoryUrls = (remoteStories.map { it.mediaUrl } + existingStories.map { it.mediaUrl })
+                    .filter { it.isNotBlank() }.toSet()
+
+                val fallbackStories = supabaseObjects
+                    .filter { it.name.startsWith("story_", ignoreCase = true) && it.publicUrl !in deletedUrls && it.publicUrl !in knownStoryUrls }
+                    .map { obj ->
+                        val lower = obj.name.lowercase()
+                        val isVid = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")
+                        StoryModel(
+                            storyId = obj.timestamp.takeIf { it > 0L }?.toString() ?: obj.name,
+                            ownerUsername = "user_${obj.timestamp % 10000}",
+                            mediaUrl = obj.publicUrl,
+                            mediaType = if (isVid) "video" else "image",
+                            timestamp = obj.timestamp
+                        )
+                    }
+
+                val mergedStories = (remoteStories + existingStories + fallbackStories)
+                    .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
+                    .sortedByDescending { it.timestamp }
+                allStories.value = mergedStories
+                saveStoriesToPrefs()
+
+                // 2. Merge Photos (Firestore + Local/Cached + Public Supabase image fallback)
+                val remotePhotos = postsSnapshot?.documents?.mapNotNull { doc ->
+                    val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
+                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
+                    if (fixedUrl.isNotBlank() && fixedUrl in deletedUrls) return@mapNotNull null
+                    val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
+                    val id = doc.getString("id") ?: ts.takeIf { it > 0L }?.toString() ?: doc.id
                     FullScreenPhotoData(
                         id = id,
-                        title = doc.getString("caption") ?: "",
-                        imageUrl = doc.getString("imageUrl") ?: "",
-                        creatorName = doc.getString("username") ?: "",
-                        creatorUsername = doc.getString("username") ?: "",
+                        title = doc.getString("caption") ?: doc.getString("title") ?: "",
+                        imageUrl = fixedUrl,
+                        creatorName = doc.getString("username") ?: "User",
+                        creatorUsername = doc.getString("username") ?: "user",
                         creatorAvatar = "",
                         creatorUid = doc.getString("creatorUid") ?: "",
                         initialLikes = (doc.getLong("likesCount") ?: 0).toInt(),
                         initialComments = (doc.getLong("commentsCount") ?: 0).toInt(),
                         initialIsLiked = false,
-                        timeAgo = "Recently",
+                        timeAgo = if (ts > 0L) "Recently" else "Just now",
                         firestoreDocId = doc.id
                     )
-                }
-                personalPhotosState.value = photos
-            }
-            db.collection("reels").orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING).limit(50).get().addOnSuccessListener { snapshot ->
-                val reels = snapshot.documents.mapNotNull { doc ->
+                }.orEmpty()
+
+                val existingPhotos = personalPhotosState.value.filter { it.imageUrl.isBlank() || it.imageUrl !in deletedUrls }
+                val knownPhotoUrls = (remotePhotos.map { it.imageUrl } + existingPhotos.map { it.imageUrl })
+                    .filter { it.isNotBlank() }.toSet()
+
+                val fallbackPhotos = supabaseObjects
+                    .filter { obj ->
+                        val lower = obj.name.lowercase()
+                        !lower.startsWith("story_") &&
+                            (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) &&
+                            obj.publicUrl !in deletedUrls &&
+                            obj.publicUrl !in knownPhotoUrls
+                    }
+                    .map { obj ->
+                        FullScreenPhotoData(
+                            id = obj.timestamp.takeIf { it > 0L }?.toString() ?: obj.name,
+                            title = "",
+                            imageUrl = obj.publicUrl,
+                            creatorName = "YouSnap User",
+                            creatorUsername = "user",
+                            creatorAvatar = "",
+                            creatorUid = "",
+                            initialLikes = 0,
+                            initialComments = 0,
+                            initialIsLiked = false,
+                            timeAgo = "Recently",
+                            firestoreDocId = null
+                        )
+                    }
+
+                val mergedPhotos = (remotePhotos + existingPhotos + fallbackPhotos)
+                    .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
+                    .sortedByDescending { it.id.toLongOrNull() ?: 0L }
+                personalPhotosState.value = mergedPhotos
+                savePersonalPhotosToPrefs()
+
+                // 3. Merge Reels (Firestore + Local/Cached + Public Supabase video fallback)
+                val remoteReels = reelsSnapshot?.documents?.mapNotNull { doc ->
+                    val rawUrl = doc.getString("mediaUrl") ?: ""
+                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
+                    if (fixedUrl.isNotBlank() && fixedUrl in deletedUrls) return@mapNotNull null
+                    val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
+                    val reelId = doc.getString("id")?.toLongOrNull()?.toInt()
+                        ?: ts.takeIf { it > 0L }?.toInt()
+                        ?: fixedUrl.hashCode()
                     ReelEntity(
-                        id = doc.getString("id")?.toIntOrNull() ?: 0,
-                        creatorName = doc.getString("username") ?: "",
-                        creatorUsername = doc.getString("username") ?: "",
+                        id = reelId,
+                        creatorName = doc.getString("username") ?: "User",
+                        creatorUsername = doc.getString("username") ?: "user",
                         creatorProfilePic = "",
-                        mediaUrl = doc.getString("mediaUrl") ?: "",
+                        mediaUrl = fixedUrl,
                         caption = doc.getString("caption") ?: "",
                         likesCount = (doc.getLong("likesCount") ?: 0).toInt(),
                         commentsCount = (doc.getLong("commentsCount") ?: 0).toInt(),
                         viewsCount = (doc.getLong("viewsCount") ?: 0).toInt(),
-                        timestamp = doc.getLong("timestamp") ?: 0L,
+                        timestamp = ts,
                         bgGradientStart = doc.getString("bgGradientStart") ?: "#E1306C",
                         bgGradientEnd = doc.getString("bgGradientEnd") ?: "#F56040"
                     )
-                }
-                _reelsState.value = reels
-                isHomeRefreshing.value = false
-                onComplete()
-            }.addOnFailureListener {
+                }.orEmpty()
+
+                val existingReels = _reelsState.value.filter { it.mediaUrl.isBlank() || it.mediaUrl !in deletedUrls }
+                val knownReelUrls = (remoteReels.map { it.mediaUrl } + existingReels.map { it.mediaUrl })
+                    .filter { it.isNotBlank() }.toSet()
+
+                val fallbackReels = supabaseObjects
+                    .filter { obj ->
+                        val lower = obj.name.lowercase()
+                        !lower.startsWith("story_") &&
+                            (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")) &&
+                            obj.publicUrl !in deletedUrls &&
+                            obj.publicUrl !in knownReelUrls
+                    }
+                    .map { obj ->
+                        ReelEntity(
+                            id = obj.timestamp.takeIf { it > 0L }?.toInt() ?: obj.publicUrl.hashCode(),
+                            creatorName = "YouSnap User",
+                            creatorUsername = "user",
+                            creatorProfilePic = "",
+                            mediaUrl = obj.publicUrl,
+                            caption = "",
+                            likesCount = 0,
+                            commentsCount = 0,
+                            viewsCount = 0,
+                            timestamp = obj.timestamp,
+                            bgGradientStart = "#E1306C",
+                            bgGradientEnd = "#F56040"
+                        )
+                    }
+
+                val mergedReels = (remoteReels + existingReels + fallbackReels)
+                    .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
+                    .sortedByDescending { it.timestamp }
+                _reelsState.value = mergedReels
+                saveReelsToPrefs()
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "refreshHomeFeed error: ${e.message}")
+            } finally {
                 isHomeRefreshing.value = false
                 onComplete()
             }
@@ -608,17 +773,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             // Delete from Supabase Storage
             if (imageUrl.isNotEmpty()) {
+                markUrlDeleted(imageUrl)
                 val filename = imageUrl.substringAfterLast("/")
                 supabaseRepository.deleteFile(filename)
             }
 
             // Immediately remove from local state so UI updates instantly
-            personalPhotosState.value = personalPhotosState.value.filter { it.id != postId }
+            val targetDocId = personalPhotosState.value.find { it.id == postId }?.firestoreDocId
+            personalPhotosState.value = personalPhotosState.value.filter { it.id != postId && (imageUrl.isEmpty() || it.imageUrl != imageUrl) }
             savePersonalPhotosToPrefs()
 
             // Delete from Firestore
             val cleanId = postId.replace("photo_", "")
-            val targetDocId = personalPhotosState.value.find { it.id == postId }?.firestoreDocId
 
             if (!targetDocId.isNullOrEmpty()) {
                 db.collection("posts").document(targetDocId).delete().addOnCompleteListener {
@@ -646,11 +812,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             // 1. Delete file from Supabase storage
             if (reel.mediaUrl.isNotEmpty()) {
+                markUrlDeleted(reel.mediaUrl)
                 val filename = reel.mediaUrl.substringAfterLast("/")
                 supabaseRepository.deleteFile(filename)
             }
             // 2. Remove immediately from local state
-            _reelsState.value = _reelsState.value.filter { it.id != reel.id }
+            _reelsState.value = _reelsState.value.filter { it.id != reel.id && (reel.mediaUrl.isEmpty() || it.mediaUrl != reel.mediaUrl) }
+            saveReelsToPrefs()
 
             // 3. Delete from Firestore collection "reels"
             db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { snapshot ->
@@ -1085,6 +1253,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val profile = ProfileEntity(id = uid.hashCode(), name = name, username = username.ifEmpty { "user" }, email = email, profilePic = photoUrl)
                         userDocRef.set(profile).addOnCompleteListener {
                             _profileState.value = profile
+                            refreshHomeFeed()
                             onSuccess()
                         }
                     } else {
@@ -1092,14 +1261,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         if (profile != null) {
                             _profileState.value = profile
                         }
+                        refreshHomeFeed()
                         onSuccess()
                     }
                 }.addOnFailureListener {
                     _profileState.value = ProfileEntity(name = name, username = username.ifEmpty { "user" }, email = email, profilePic = photoUrl)
+                    refreshHomeFeed()
                     onSuccess()
                 }
             } catch (e: Throwable) {
                 _profileState.value = ProfileEntity(name = name, username = username.ifEmpty { "user" }, email = email, profilePic = photoUrl)
+                refreshHomeFeed()
                 onSuccess()
             }
         }
@@ -1150,8 +1322,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun loginWithFirebase(email: String, pass: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
         auth.signInWithEmailAndPassword(email, pass).addOnSuccessListener { 
             fetchAndSyncUserProfile()
+            refreshHomeFeed()
             onSuccess() 
         }.addOnFailureListener { onError(it.message ?: "Login failed") }
+    }
+
+    private fun markUrlDeleted(url: String) {
+        if (url.isBlank()) return
+        val current = prefs.getStringSet("deleted_media_urls", emptySet())?.toMutableSet() ?: mutableSetOf()
+        current.add(url)
+        prefs.edit().putStringSet("deleted_media_urls", current).apply()
     }
 
     fun savePersonalPhotosToPrefs() {
@@ -1165,10 +1345,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("creatorName", photo.creatorName)
             obj.put("creatorUsername", photo.creatorUsername)
             obj.put("creatorAvatar", photo.creatorAvatar)
+            obj.put("creatorUid", photo.creatorUid)
             obj.put("initialLikes", photo.initialLikes)
             obj.put("initialComments", photo.initialComments)
             obj.put("initialIsLiked", photo.initialIsLiked)
             obj.put("timeAgo", photo.timeAgo)
+            obj.put("firestoreDocId", photo.firestoreDocId ?: "")
             array.put(obj)
         }
         prefs.edit().putString("personal_photos", array.toString()).apply()
@@ -1181,23 +1363,117 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val list = mutableListOf<FullScreenPhotoData>()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
+                val docId = obj.optString("firestoreDocId", "").takeIf { it.isNotBlank() }
                 list.add(FullScreenPhotoData(
                     id = obj.getString("id"),
-                    title = obj.getString("title"),
-                    imageUrl = obj.getString("imageUrl"),
-                    creatorName = obj.getString("creatorName"),
-                    creatorUsername = obj.getString("creatorUsername"),
-                    creatorAvatar = obj.getString("creatorAvatar"),
-                    initialLikes = obj.getInt("initialLikes"),
-                    initialComments = obj.getInt("initialComments"),
-                    initialIsLiked = obj.getBoolean("initialIsLiked"),
-                    timeAgo = obj.getString("timeAgo"),
-                    firestoreDocId = null
+                    title = obj.optString("title", ""),
+                    imageUrl = obj.optString("imageUrl", ""),
+                    creatorName = obj.optString("creatorName", "User"),
+                    creatorUsername = obj.optString("creatorUsername", "user"),
+                    creatorAvatar = obj.optString("creatorAvatar", ""),
+                    creatorUid = obj.optString("creatorUid", ""),
+                    initialLikes = obj.optInt("initialLikes", 0),
+                    initialComments = obj.optInt("initialComments", 0),
+                    initialIsLiked = obj.optBoolean("initialIsLiked", false),
+                    timeAgo = obj.optString("timeAgo", "Recently"),
+                    firestoreDocId = docId
                 ))
             }
             personalPhotosState.value = list
         } catch (e: Exception) {
             android.util.Log.e("YouSnapViewModel", "Error loading photos: ${e.message}")
+        }
+    }
+
+    fun saveReelsToPrefs() {
+        val list = _reelsState.value
+        val array = JSONArray()
+        list.forEach { reel ->
+            val obj = JSONObject()
+            obj.put("id", reel.id)
+            obj.put("creatorName", reel.creatorName)
+            obj.put("creatorUsername", reel.creatorUsername)
+            obj.put("creatorProfilePic", reel.creatorProfilePic)
+            obj.put("mediaUrl", reel.mediaUrl)
+            obj.put("caption", reel.caption)
+            obj.put("likesCount", reel.likesCount)
+            obj.put("commentsCount", reel.commentsCount)
+            obj.put("viewsCount", reel.viewsCount)
+            obj.put("timestamp", reel.timestamp)
+            obj.put("bgGradientStart", reel.bgGradientStart)
+            obj.put("bgGradientEnd", reel.bgGradientEnd)
+            array.put(obj)
+        }
+        prefs.edit().putString("cached_reels", array.toString()).apply()
+    }
+
+    fun loadReelsFromPrefs() {
+        val json = prefs.getString("cached_reels", null) ?: return
+        try {
+            val array = JSONArray(json)
+            val list = mutableListOf<ReelEntity>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(ReelEntity(
+                    id = obj.optInt("id", i),
+                    creatorName = obj.optString("creatorName", "User"),
+                    creatorUsername = obj.optString("creatorUsername", "user"),
+                    creatorProfilePic = obj.optString("creatorProfilePic", ""),
+                    mediaUrl = obj.optString("mediaUrl", ""),
+                    caption = obj.optString("caption", ""),
+                    likesCount = obj.optInt("likesCount", 0),
+                    commentsCount = obj.optInt("commentsCount", 0),
+                    viewsCount = obj.optInt("viewsCount", 0),
+                    timestamp = obj.optLong("timestamp", 0L),
+                    bgGradientStart = obj.optString("bgGradientStart", "#E1306C"),
+                    bgGradientEnd = obj.optString("bgGradientEnd", "#F56040")
+                ))
+            }
+            _reelsState.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("YouSnapViewModel", "Error loading reels: ${e.message}")
+        }
+    }
+
+    fun saveStoriesToPrefs() {
+        val list = allStories.value
+        val array = JSONArray()
+        list.forEach { story ->
+            val obj = JSONObject()
+            obj.put("storyId", story.storyId)
+            obj.put("ownerUsername", story.ownerUsername)
+            obj.put("mediaUrl", story.mediaUrl)
+            obj.put("mediaType", story.mediaType)
+            obj.put("caption", story.caption)
+            obj.put("bgGradientStart", story.bgGradientStart)
+            obj.put("bgGradientEnd", story.bgGradientEnd)
+            obj.put("timestamp", story.timestamp)
+            array.put(obj)
+        }
+        prefs.edit().putString("cached_stories", array.toString()).apply()
+    }
+
+    fun loadStoriesFromPrefs() {
+        val json = prefs.getString("cached_stories", null) ?: return
+        try {
+            val array = JSONArray(json)
+            val list = mutableListOf<StoryModel>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(StoryModel(
+                    storyId = obj.optString("storyId", ""),
+                    ownerUsername = obj.optString("ownerUsername", "user"),
+                    mediaUrl = obj.optString("mediaUrl", ""),
+                    mediaType = obj.optString("mediaType", "image"),
+                    caption = obj.optString("caption", ""),
+                    bgGradientStart = obj.optString("bgGradientStart", "#E59424"),
+                    bgGradientEnd = obj.optString("bgGradientEnd", "#C48B5E"),
+                    timestamp = obj.optLong("timestamp", 0L)
+                ))
+            }
+            allStories.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("YouSnapViewModel", "Error loading stories: ${e.message}")
         }
     }
 }
