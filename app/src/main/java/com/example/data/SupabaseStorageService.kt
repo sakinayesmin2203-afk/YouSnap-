@@ -13,18 +13,48 @@ class SupabaseStorageService {
         const val WORKER_ENDPOINT = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/$BUCKET_NAME/"
         const val UPLOAD_ENDPOINT = DIRECT_SUPABASE_ENDPOINT
 
-        val AUTHORIZATION_TOKEN: String
+        private fun rawConfiguredKey(): String {
+            val secret = try {
+                BuildConfig.SUPABASE_API_KEY
+            } catch (_: Throwable) {
+                ""
+            }
+            return secret
+                .trim()
+                .removeSurrounding("\"")
+                .removeSurrounding("'")
+                .removePrefix("Bearer ")
+                .trim()
+        }
+
+        val HAS_VALID_SUPABASE_KEY: Boolean
             get() {
-                val secret = try { BuildConfig.SUPABASE_API_KEY } catch (e: Throwable) { "" }
-                val key = if (secret.isNotBlank() && secret != "MY_SUPABASE_API_KEY") secret else "yousnap_secret_token_9126441937"
-                return if (key.startsWith("Bearer ")) key else "Bearer $key"
+                val key = rawConfiguredKey()
+                return key.isNotBlank() && key != "MY_SUPABASE_API_KEY"
             }
 
         val API_KEY: String
             get() {
-                val secret = try { BuildConfig.SUPABASE_API_KEY } catch (e: Throwable) { "" }
-                val key = if (secret.isNotBlank() && secret != "MY_SUPABASE_API_KEY") secret else "yousnap_secret_token_9126441937"
-                return key.replace("Bearer ", "").trim()
+                val key = rawConfiguredKey()
+                return if (key.isNotBlank() && key != "MY_SUPABASE_API_KEY") key else ""
             }
+
+        /**
+         * Supabase new keys (`sb_publishable_...` / `sb_secret_...`) must be passed in `apikey`
+         * header only. Passing non-JWT keys in `Authorization: Bearer` triggers `Invalid Compact JWS`.
+         * Legacy JWT keys (`eyJ...` with 2 dots) are passed in both `apikey` and `Authorization: Bearer`.
+         */
+        val DIRECT_AUTHORIZATION_HEADER: String?
+            get() {
+                val key = API_KEY
+                if (key.isBlank()) return null
+                val isJwt = key.count { it == '.' } == 2
+                return if (isJwt) "Bearer $key" else null
+            }
+
+        val AUTHORIZATION_TOKEN: String
+            get() = DIRECT_AUTHORIZATION_HEADER ?: "Bearer $API_KEY"
+
+        const val WORKER_AUTHORIZATION_TOKEN = "Bearer yousnap_secret_token_9126441937"
     }
 }

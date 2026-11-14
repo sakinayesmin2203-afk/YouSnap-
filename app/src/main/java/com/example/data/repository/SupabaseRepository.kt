@@ -81,8 +81,8 @@ class SupabaseRepository {
             }
 
             val mediaType = contentType.toMediaTypeOrNull()
-            val authToken = SupabaseStorageService.AUTHORIZATION_TOKEN
             val apiKey = SupabaseStorageService.API_KEY
+            val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8.toString())
 
             // Reserve final 2% until HTTP server confirms upload success
@@ -90,33 +90,43 @@ class SupabaseRepository {
                 onProgress((byteFraction * 0.98f).coerceIn(0f, 0.98f))
             }
 
-            // 1. Direct Supabase Storage REST API Upload (POST method with x-upsert: true)
-            val directUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
-            val directRequestBody = ProgressRequestBody(file, mediaType, byteProgressWrapper)
-            val request = Request.Builder()
-                .url(directUrl)
-                .addHeader("Authorization", authToken)
-                .addHeader("apikey", apiKey)
-                .addHeader("Content-Type", contentType)
-                .addHeader("x-upsert", "true")
-                .post(directRequestBody)
-                .build()
-
             var isSuccess = false
             var responseCode = 0
             var responseBody = ""
 
-            try {
-                client.newCall(request).execute().use { response ->
-                    isSuccess = response.isSuccessful
-                    responseCode = response.code
-                    responseBody = response.body?.string() ?: ""
+            // 1. Direct Supabase Storage REST API Upload
+            if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+                val directUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
+                val directRequestBody = ProgressRequestBody(file, mediaType, byteProgressWrapper)
+                val requestBuilder = Request.Builder()
+                    .url(directUrl)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Content-Type", contentType)
+                    .post(directRequestBody)
+
+                if (!directAuthHeader.isNullOrBlank()) {
+                    requestBuilder.addHeader("Authorization", directAuthHeader)
                 }
-            } catch (directEx: Exception) {
-                android.util.Log.e("SupabaseRepository", "Direct upload failed, trying fallback: ${directEx.message}")
+
+                try {
+                    client.newCall(requestBuilder.build()).execute().use { response ->
+                        isSuccess = response.isSuccessful
+                        responseCode = response.code
+                        responseBody = response.body?.string() ?: ""
+                    }
+                } catch (directEx: Exception) {
+                    android.util.Log.e("SupabaseRepository", "Direct upload failed, trying fallback: ${directEx.message}")
+                    if (responseBody.isBlank()) {
+                        responseBody = directEx.localizedMessage ?: "Direct upload network error"
+                    }
+                }
+            } else {
+                responseCode = 401
+                responseBody = "SUPABASE_API_KEY is not configured in Secrets"
             }
 
-            // 2. If direct fails, try Cloudflare worker fallback endpoint with live progress too
+            // 2. If direct fails (and not an explicit Supabase RLS block where worker also can't bypass unless configured),
+            // try Cloudflare worker fallback endpoint with live progress too
             if (!isSuccess) {
                 try {
                     onProgress(0f)
@@ -124,23 +134,22 @@ class SupabaseRepository {
                     val workerRequestBody = ProgressRequestBody(file, mediaType, byteProgressWrapper)
                     val workerRequest = Request.Builder()
                         .url(workerUrl)
-                        .addHeader("Authorization", authToken)
-                        .addHeader("apikey", apiKey)
+                        .addHeader("User-Agent", "YouSnap-Android/1.0")
+                        .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                        .addHeader("apikey", apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") })
                         .addHeader("Content-Type", contentType)
-                        .addHeader("x-upsert", "true")
                         .post(workerRequestBody)
                         .build()
 
                     client.newCall(workerRequest).execute().use { workerResponse ->
-                        isSuccess = workerResponse.isSuccessful
-                        responseCode = workerResponse.code
-                        responseBody = workerResponse.body?.string() ?: ""
+                        if (workerResponse.isSuccessful) {
+                            isSuccess = true
+                            responseCode = workerResponse.code
+                            responseBody = workerResponse.body?.string() ?: ""
+                        }
                     }
                 } catch (we: Exception) {
                     android.util.Log.e("SupabaseRepository", "Worker fallback failed: ${we.message}")
-                    if (responseBody.isBlank()) {
-                        responseBody = we.localizedMessage ?: "Worker upload error"
-                    }
                 }
             }
 
@@ -156,9 +165,18 @@ class SupabaseRepository {
                 )
             } else {
                 android.util.Log.e("SupabaseRepository", "Upload failed with code: $responseCode, details: $responseBody")
+                val friendlyError = when {
+                    responseBody.contains("row-level security policy", ignoreCase = true) ->
+                        "Supabase Storage 'YouSnap' bucket RLS policy is blocking uploads. Please allow INSERT/SELECT on 'YouSnap' bucket in Supabase."
+                    responseBody.contains("Bucket not found", ignoreCase = true) ->
+                        "Supabase Storage bucket 'YouSnap' not found."
+                    responseBody.contains("Invalid Compact JWS", ignoreCase = true) || responseCode == 401 ->
+                        "Invalid Supabase API key. Check SUPABASE_API_KEY in Secrets."
+                    else -> "Supabase Storage upload failed (HTTP $responseCode: $responseBody)"
+                }
                 UploadResult(
                     isSuccess = false,
-                    errorMessage = "Supabase Storage upload failed (HTTP $responseCode: $responseBody)",
+                    errorMessage = friendlyError,
                     responseCode = responseCode
                 )
             }
@@ -184,19 +202,21 @@ class SupabaseRepository {
                 onProgress((fraction * 0.98f).coerceIn(0f, 0.98f))
             }
 
-            val authToken = SupabaseStorageService.AUTHORIZATION_TOKEN
+            val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val apiKey = SupabaseStorageService.API_KEY
             val encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8.toString())
 
             val directUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url(directUrl)
-                .addHeader("Authorization", authToken)
                 .addHeader("apikey", apiKey)
                 .addHeader("Content-Type", contentType)
-                .addHeader("x-upsert", "true")
                 .post(requestBody)
-                .build()
+
+            if (!directAuthHeader.isNullOrBlank()) {
+                requestBuilder.addHeader("Authorization", directAuthHeader)
+            }
+            val request = requestBuilder.build()
 
             var isSuccess = false
             var responseCode = 0
@@ -234,19 +254,21 @@ class SupabaseRepository {
     suspend fun deleteFile(filename: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val cleanName = filename.substringAfterLast("/")
-            val authToken = SupabaseStorageService.AUTHORIZATION_TOKEN
+            val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val apiKey = SupabaseStorageService.API_KEY
             val encodedFilename = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString())
             val deleteUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
 
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url(deleteUrl)
-                .addHeader("Authorization", authToken)
                 .addHeader("apikey", apiKey)
                 .delete()
-                .build()
 
-            client.newCall(request).execute().use { response ->
+            if (!directAuthHeader.isNullOrBlank()) {
+                requestBuilder.addHeader("Authorization", directAuthHeader)
+            }
+
+            client.newCall(requestBuilder.build()).execute().use { response ->
                 android.util.Log.d("SupabaseRepository", "Delete response: ${response.code}")
                 response.isSuccessful
             }
