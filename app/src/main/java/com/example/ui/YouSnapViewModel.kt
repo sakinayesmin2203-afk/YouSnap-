@@ -379,90 +379,119 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val finalUrl = finalResult.fileUrl
                 b2UploadProgress.value = 0.95f
 
-                // Stage 3: Save Metadata to Firestore (95% -> 100%)
+                // Stage 3: Save Metadata Locally & Sync to Firestore (95% -> 100%)
                 uploadStatusMessage.value = if (isStory) "Publishing story..." else "Publishing post..."
                 val profile = profileState.value
+                val ownerUsername = profile.username.ifEmpty { "user" }
                 val creatorUid = auth.currentUser?.uid ?: ""
 
-                withTimeoutOrNull(15000L) {
-                    if (isStory) {
-                        val storyDoc = mapOf(
-                            "storyId" to timestamp.toString(),
-                            "ownerUsername" to profile.username.ifEmpty { "user" },
-                            "mediaUrl" to finalUrl,
-                            "mediaType" to if (isVideo) "video" else "image",
-                            "caption" to caption,
-                            "timestamp" to timestamp,
-                            "creatorUid" to creatorUid,
-                            "viewerIds" to emptyList<String>(),
-                            "viewsCount" to 0,
-                            "likes" to emptyList<String>(),
-                            "bgGradientStart" to gradientStart,
-                            "bgGradientEnd" to gradientEnd
-                        )
-                        awaitTask(db.collection("stories").document(profile.username.ifEmpty { "user" }).set(storyDoc))
-                    } else if (!isVideo) {
-                        val postDoc = mapOf(
-                            "id" to timestamp.toString(),
-                            "type" to "photo",
-                            "username" to profile.username.ifEmpty { "user" },
-                            "imageUrl" to finalUrl,
-                            "caption" to caption,
-                            "timestamp" to timestamp,
-                            "creatorUid" to creatorUid,
-                            "likesCount" to 0,
-                            "commentsCount" to 0
-                        )
-                        awaitTask(db.collection("posts").add(postDoc))
+                if (isStory) {
+                    val newStory = StoryModel(
+                        storyId = timestamp.toString(),
+                        ownerUsername = ownerUsername,
+                        mediaUrl = finalUrl,
+                        mediaType = if (isVideo) "video" else "image",
+                        caption = caption,
+                        bgGradientStart = gradientStart,
+                        bgGradientEnd = gradientEnd,
+                        timestamp = timestamp
+                    )
+                    allStories.value = listOf(newStory) + allStories.value.filter { it.ownerUsername != ownerUsername }
+                } else if (!isVideo) {
+                    val newPhoto = FullScreenPhotoData(
+                        id = timestamp.toString(),
+                        title = caption,
+                        imageUrl = finalUrl,
+                        creatorName = profile.name.ifEmpty { "User" },
+                        creatorUsername = ownerUsername,
+                        creatorAvatar = profile.profilePic,
+                        creatorUid = creatorUid,
+                        initialLikes = 0,
+                        initialComments = 0,
+                        initialIsLiked = false,
+                        timeAgo = "Just now",
+                        firestoreDocId = null
+                    )
+                    personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
+                    savePersonalPhotosToPrefs()
+                } else {
+                    val newReel = ReelEntity(
+                        id = timestamp.toInt(),
+                        creatorName = profile.name.ifEmpty { "User" },
+                        creatorUsername = ownerUsername,
+                        creatorProfilePic = profile.profilePic,
+                        mediaUrl = finalUrl,
+                        caption = caption,
+                        likesCount = 0,
+                        commentsCount = 0,
+                        viewsCount = 0,
+                        timestamp = timestamp,
+                        bgGradientStart = gradientStart,
+                        bgGradientEnd = gradientEnd
+                    )
+                    _reelsState.value = listOf(newReel) + _reelsState.value
+                }
 
-                        val newPhoto = FullScreenPhotoData(
-                            id = timestamp.toString(),
-                            title = caption,
-                            imageUrl = finalUrl,
-                            creatorName = profile.name.ifEmpty { "User" },
-                            creatorUsername = profile.username.ifEmpty { "user" },
-                            creatorAvatar = profile.profilePic,
-                            creatorUid = creatorUid,
-                            initialLikes = 0,
-                            initialComments = 0,
-                            initialIsLiked = false,
-                            timeAgo = "Just now",
-                            firestoreDocId = null
-                        )
-                        personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
-                        savePersonalPhotosToPrefs()
+                var firestoreSynced = false
+                try {
+                    withTimeoutOrNull(15000L) {
+                        if (isStory) {
+                            val storyDoc = mapOf(
+                                "storyId" to timestamp.toString(),
+                                "ownerUsername" to ownerUsername,
+                                "mediaUrl" to finalUrl,
+                                "mediaType" to if (isVideo) "video" else "image",
+                                "caption" to caption,
+                                "timestamp" to timestamp,
+                                "creatorUid" to creatorUid,
+                                "viewerIds" to emptyList<String>(),
+                                "viewsCount" to 0,
+                                "likes" to emptyList<String>(),
+                                "bgGradientStart" to gradientStart,
+                                "bgGradientEnd" to gradientEnd
+                            )
+                            awaitTask(db.collection("stories").document(ownerUsername).set(storyDoc))
+                        } else if (!isVideo) {
+                            val postDoc = mapOf(
+                                "id" to timestamp.toString(),
+                                "type" to "photo",
+                                "username" to ownerUsername,
+                                "imageUrl" to finalUrl,
+                                "caption" to caption,
+                                "timestamp" to timestamp,
+                                "creatorUid" to creatorUid,
+                                "likesCount" to 0,
+                                "commentsCount" to 0
+                            )
+                            awaitTask(db.collection("posts").add(postDoc))
+                        } else {
+                            val reelDoc = mapOf(
+                                "id" to timestamp.toString(),
+                                "type" to "reel",
+                                "username" to ownerUsername,
+                                "mediaUrl" to finalUrl,
+                                "caption" to caption,
+                                "timestamp" to timestamp,
+                                "creatorUid" to creatorUid,
+                                "likesCount" to 0,
+                                "commentsCount" to 0,
+                                "viewsCount" to 0,
+                                "bgGradientStart" to gradientStart,
+                                "bgGradientEnd" to gradientEnd
+                            )
+                            awaitTask(db.collection("reels").add(reelDoc))
+                        }
+                        firestoreSynced = true
+                    }
+                } catch (firestoreEx: Exception) {
+                    android.util.Log.e("YouSnapViewModel", "Firestore sync warning: ${firestoreEx.message}")
+                    val syncNote = if (auth.currentUser == null) {
+                        "Uploaded! Sign in with Google & allow Firestore Rules for cloud sync."
                     } else {
-                        val reelDoc = mapOf(
-                            "id" to timestamp.toString(),
-                            "type" to "reel",
-                            "username" to profile.username.ifEmpty { "user" },
-                            "mediaUrl" to finalUrl,
-                            "caption" to caption,
-                            "timestamp" to timestamp,
-                            "creatorUid" to creatorUid,
-                            "likesCount" to 0,
-                            "commentsCount" to 0,
-                            "viewsCount" to 0,
-                            "bgGradientStart" to gradientStart,
-                            "bgGradientEnd" to gradientEnd
-                        )
-                        awaitTask(db.collection("reels").add(reelDoc))
-
-                        val newReel = ReelEntity(
-                            id = timestamp.toInt(),
-                            creatorName = profile.name.ifEmpty { "User" },
-                            creatorUsername = profile.username.ifEmpty { "user" },
-                            creatorProfilePic = profile.profilePic,
-                            mediaUrl = finalUrl,
-                            caption = caption,
-                            likesCount = 0,
-                            commentsCount = 0,
-                            viewsCount = 0,
-                            timestamp = timestamp,
-                            bgGradientStart = gradientStart,
-                            bgGradientEnd = gradientEnd
-                        )
-                        _reelsState.value = listOf(newReel) + _reelsState.value
+                        "Uploaded! Allow write access in Firebase Console Firestore Rules for cloud sync."
+                    }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(app, syncNote, android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
 
@@ -472,7 +501,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 isB2Uploading.value = false
                 b2UploadProgress.value = 0f
-                refreshHomeFeed()
+                if (firestoreSynced) {
+                    refreshHomeFeed()
+                }
                 onComplete()
             } catch (e: Exception) {
                 android.util.Log.e("YouSnapViewModel", "Upload pipeline error: ${e.message}")
