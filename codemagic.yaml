@@ -44,14 +44,41 @@ workflows:
             cp .env.example .env
           fi
 
-          # Ensure debug.keystore exists for signing (as .keystore files are gitignored)
-          if [ ! -f debug.keystore ]; then
+          # Ensure debug.keystore is decoded consistently from debug.keystore.base64 (macOS + Linux safe)
+          # Never leave a 0-byte file or regenerate a random keystore if debug.keystore.base64 exists
+          if [ -f debug.keystore ] && [ ! -s debug.keystore ]; then
+            rm -f debug.keystore
+          fi
+          if [ ! -s debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
-              base64 --decode debug.keystore.base64 > debug.keystore
+              if command -v python3 >/dev/null 2>&1; then
+                python3 -c "import base64, pathlib; pathlib.Path('debug.keystore').write_bytes(base64.b64decode(pathlib.Path('debug.keystore.base64').read_text().strip()))"
+              elif base64 --help 2>&1 | grep -q -- "--decode"; then
+                base64 --decode debug.keystore.base64 > debug.keystore
+              else
+                base64 -D -i debug.keystore.base64 -o debug.keystore 2>/dev/null || base64 -d debug.keystore.base64 > debug.keystore
+              fi
+              if [ ! -s debug.keystore ]; then
+                echo "ERROR: Failed to decode debug.keystore.base64!"
+                exit 1
+              fi
             else
+              echo "WARNING: debug.keystore.base64 not found; generating a temporary debug.keystore"
               keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
             fi
           fi
+
+          # Optional: if KEYSTORE_BASE64 is configured in Codemagic secrets, decode it for release builds
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            TARGET_KEYSTORE="${KEYSTORE_PATH:-$CM_BUILD_DIR/release-keystore.jks}"
+            TARGET_PATH="$TARGET_KEYSTORE" python3 -c "import base64, os, pathlib; pathlib.Path(os.environ['TARGET_PATH']).write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'].strip()))" 2>/dev/null || true
+            if [ -s "$TARGET_KEYSTORE" ] && [ -n "$CM_ENV" ]; then
+              echo "KEYSTORE_PATH=$TARGET_KEYSTORE" >> "$CM_ENV"
+            fi
+          fi
+
+          echo "Active signing keystore SHA-1 / SHA-256:"
+          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
 
       - name: Prepare Gradle wrapper
         script: |
@@ -107,13 +134,29 @@ workflows:
           elif [ -f .env.example ] && [ ! -f .env ]; then
             cp .env.example .env
           fi
-          if [ ! -f debug.keystore ]; then
+          if [ -f debug.keystore ] && [ ! -s debug.keystore ]; then
+            rm -f debug.keystore
+          fi
+          if [ ! -s debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
-              base64 --decode debug.keystore.base64 > debug.keystore
+              if command -v python3 >/dev/null 2>&1; then
+                python3 -c "import base64, pathlib; pathlib.Path('debug.keystore').write_bytes(base64.b64decode(pathlib.Path('debug.keystore.base64').read_text().strip()))"
+              elif base64 --help 2>&1 | grep -q -- "--decode"; then
+                base64 --decode debug.keystore.base64 > debug.keystore
+              else
+                base64 -D -i debug.keystore.base64 -o debug.keystore 2>/dev/null || base64 -d debug.keystore.base64 > debug.keystore
+              fi
+              if [ ! -s debug.keystore ]; then
+                echo "ERROR: Failed to decode debug.keystore.base64!"
+                exit 1
+              fi
             else
+              echo "WARNING: debug.keystore.base64 not found; generating a temporary debug.keystore"
               keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
             fi
           fi
+          echo "Active signing keystore SHA-1 / SHA-256:"
+          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
       - name: Prepare Gradle wrapper
         script: |
           chmod +x gradlew

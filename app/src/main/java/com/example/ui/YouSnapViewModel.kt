@@ -17,6 +17,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FieldValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -106,6 +109,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val uploadErrorMessage = MutableStateFlow<String?>(null)
     val activeReelComments = MutableStateFlow<List<CommentEntity>>(emptyList())
     val currentCommentText = MutableStateFlow("")
+    private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -512,6 +516,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 val finalUrl = finalResult.fileUrl
+                recentlyUploadedUrls[finalUrl] = System.currentTimeMillis()
                 b2UploadProgress.value = 0.95f
 
                 // Stage 3: Save Metadata Locally & Sync to Firestore (95% -> 100%)
@@ -747,18 +752,69 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     null
                 }
 
-                // Authoritative Supabase bucket snapshot (only prune missing files if list succeeded & not truncated)
-                val hasAuthoritativeBucketList = supabaseObjects != null && supabaseObjects.size < 1000
-                val activeSupabaseNames = supabaseObjects?.map { it.name }?.toSet()
+                val activeSupabaseNames = supabaseObjects?.map { it.name }?.toSet().orEmpty()
                 val supabaseOwnerByUrl = supabaseObjects
                     ?.filter { !it.ownerUsername.isNullOrBlank() }
                     ?.associate { it.publicUrl to it.ownerUsername!! }
                     .orEmpty()
 
+                val nowMs = System.currentTimeMillis()
+                // Collect every Supabase media URL across Firestore + local caches that wasn't already returned by listMediaFiles
+                val candidateUrls = buildSet {
+                    storiesSnapshot?.documents?.forEach { doc ->
+                        val url = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("mediaUrl") ?: "")
+                        if (url.isNotBlank()) add(url)
+                    }
+                    postsSnapshot?.documents?.forEach { doc ->
+                        val url = com.example.data.CdnConfig.getFullMediaUrl(
+                            doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
+                        )
+                        if (url.isNotBlank()) add(url)
+                    }
+                    reelsSnapshot?.documents?.forEach { doc ->
+                        val url = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("mediaUrl") ?: "")
+                        if (url.isNotBlank()) add(url)
+                    }
+                    allStories.value.forEach { if (it.mediaUrl.isNotBlank()) add(it.mediaUrl) }
+                    personalPhotosState.value.forEach { if (it.imageUrl.isNotBlank()) add(it.imageUrl) }
+                    _reelsState.value.forEach { if (it.mediaUrl.isNotBlank()) add(it.mediaUrl) }
+                }.filter { url ->
+                    val fname = extractSupabaseFilename(url)
+                    val recentTs = recentlyUploadedUrls[url]
+                    val isJustUploaded = recentTs != null && (nowMs - recentTs) < 30_000L
+                    fname != null &&
+                        url !in deletedUrls &&
+                        fname !in activeSupabaseNames &&
+                        !isJustUploaded
+                }
+
+                // Verify directly against Supabase public URLs so RLS-restricted `list` returning []
+                // NEVER deletes uploaded media, while files actually deleted in Supabase Storage ARE removed.
+                val existenceByUrl: Map<String, Boolean?> = if (candidateUrls.isEmpty()) {
+                    emptyMap()
+                } else {
+                    withContext(Dispatchers.IO) {
+                        withTimeoutOrNull(12000L) {
+                            coroutineScope {
+                                candidateUrls.map { url ->
+                                    async {
+                                        url to supabaseRepository.checkPublicFileExists(url)
+                                    }
+                                }.awaitAll().toMap()
+                            }
+                        }.orEmpty()
+                    }
+                }
+
                 fun isMissingFromSupabase(url: String): Boolean {
-                    if (!hasAuthoritativeBucketList || activeSupabaseNames == null) return false
+                    if (url.isBlank()) return false
                     val fname = extractSupabaseFilename(url) ?: return false
-                    return fname !in activeSupabaseNames
+                    if (fname in activeSupabaseNames) return false
+                    val recentTs = recentlyUploadedUrls[url]
+                    if (recentTs != null && (System.currentTimeMillis() - recentTs) < 30_000L) {
+                        return false
+                    }
+                    return existenceByUrl[url] == false
                 }
 
                 // 1. Merge Stories (Firestore + Local/Cached + Public Supabase story_* fallback)
@@ -777,9 +833,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val knownStoryUrls = (remoteStories.map { it.mediaUrl } + existingStories.map { it.mediaUrl })
                     .filter { it.isNotBlank() }.toSet()
+                val knownStoryNames = knownStoryUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
 
                 val fallbackStories = supabaseObjects.orEmpty()
-                    .filter { it.name.startsWith("story", ignoreCase = true) && it.publicUrl !in deletedUrls && it.publicUrl !in knownStoryUrls }
+                    .filter {
+                        it.name.startsWith("story", ignoreCase = true) &&
+                            it.publicUrl !in deletedUrls &&
+                            it.publicUrl !in knownStoryUrls &&
+                            it.name !in knownStoryNames
+                    }
                     .map { obj ->
                         val lower = obj.name.lowercase()
                         val isVid = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")
@@ -839,6 +901,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                 val knownPhotoUrls = (remotePhotos.map { it.imageUrl } + existingPhotos.map { it.imageUrl })
                     .filter { it.isNotBlank() }.toSet()
+                val knownPhotoNames = knownPhotoUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
 
                 val fallbackPhotos = supabaseObjects.orEmpty()
                     .filter { obj ->
@@ -846,7 +909,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         !lower.startsWith("story") &&
                             (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) &&
                             obj.publicUrl !in deletedUrls &&
-                            obj.publicUrl !in knownPhotoUrls
+                            obj.publicUrl !in knownPhotoUrls &&
+                            obj.name !in knownPhotoNames
                     }
                     .map { obj ->
                         val owner = obj.ownerUsername?.takeIf { it.isNotBlank() } ?: "user"
@@ -923,6 +987,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 val knownReelUrls = (remoteReels.map { it.mediaUrl } + existingReels.map { it.mediaUrl })
                     .filter { it.isNotBlank() }.toSet()
+                val knownReelNames = knownReelUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
 
                 val fallbackReels = supabaseObjects.orEmpty()
                     .filter { obj ->
@@ -930,7 +995,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         !lower.startsWith("story") &&
                             (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")) &&
                             obj.publicUrl !in deletedUrls &&
-                            obj.publicUrl !in knownReelUrls
+                            obj.publicUrl !in knownReelUrls &&
+                            obj.name !in knownReelNames
                     }
                     .map { obj ->
                         val owner = obj.ownerUsername?.takeIf { it.isNotBlank() } ?: "user"

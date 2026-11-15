@@ -289,7 +289,10 @@ class SupabaseRepository {
                     client.newCall(requestBuilder.build()).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         android.util.Log.d("SupabaseRepository", "Direct delete ($cleanName): ${response.code} $body")
-                        if (response.isSuccessful || response.code == 404) {
+                        if (response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) {
+                            return@withContext true
+                        }
+                        if (response.code == 404 && checkPublicFileExists(cleanName) != true) {
                             return@withContext true
                         }
                     }
@@ -315,7 +318,10 @@ class SupabaseRepository {
                     client.newCall(batchBuilder.build()).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         android.util.Log.d("SupabaseRepository", "Batch delete ($cleanName): ${response.code} $body")
-                        if (response.isSuccessful || response.code == 404) {
+                        if (response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) {
+                            return@withContext true
+                        }
+                        if (response.code == 404 && checkPublicFileExists(cleanName) != true) {
                             return@withContext true
                         }
                     }
@@ -350,65 +356,180 @@ class SupabaseRepository {
     }
 
     /**
-     * Lists uploaded objects in the public YouSnap Supabase bucket so all users
-     * can see newly uploaded photos, reels, and stories across refreshes, and so
-     * files deleted from Supabase Storage are removed from the app on refresh.
+     * Verifies directly against the public Supabase Storage object endpoint whether a media file
+     * still exists in the bucket (independent of Postgres `storage.objects` SELECT RLS on list).
      *
-     * Returns null when the bucket cannot be reached (so offline caches stay intact),
-     * or a non-null list (possibly empty) when Supabase Storage responded authoritatively.
+     * Returns:
+     * - `true` when the object is reachable (HTTP 200/206/416)
+     * - `false` ONLY when Supabase Storage confirms the object does not exist (HTTP 404 or 400 not_found)
+     * - `null` when offline, timed out, or server returned an indeterminate error (never delete local data)
      */
-    suspend fun listMediaFiles(limit: Int = 1000): List<SupabaseStoredObject>? = withContext(Dispatchers.IO) {
-        if (!SupabaseStorageService.HAS_VALID_SUPABASE_KEY) return@withContext null
+    suspend fun checkPublicFileExists(mediaUrlOrName: String): Boolean? = withContext(Dispatchers.IO) {
+        if (mediaUrlOrName.isBlank()) return@withContext null
         try {
-            val apiKey = SupabaseStorageService.API_KEY
-            val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
-            val listUrl = "https://${SupabaseStorageService.PROJECT_ID}.supabase.co/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
-            val payload = """{"prefix":"","limit":$limit,"offset":0,"sortBy":{"column":"created_at","order":"desc"}}"""
-            val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-
-            val requestBuilder = Request.Builder()
-                .url(listUrl)
-                .addHeader("apikey", apiKey)
-                .addHeader("Content-Type", "application/json")
-                .post(body)
-
-            if (!directAuthHeader.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", directAuthHeader)
+            val trimmed = mediaUrlOrName.trim()
+            val rawName = when {
+                trimmed.startsWith("http://") || trimmed.startsWith("https://") -> {
+                    val isKnownStorageHost =
+                        trimmed.contains(CdnConfig.PROJECT_ID, ignoreCase = true) ||
+                            trimmed.contains("/storage/v1/object/public/${CdnConfig.BUCKET_NAME}/", ignoreCase = true) ||
+                            trimmed.contains("yousnap-cdn.sakinayesmin2203.workers.dev", ignoreCase = true)
+                    if (!isKnownStorageHost) return@withContext null
+                    trimmed.substringBefore("?").substringAfterLast("/")
+                }
+                trimmed.startsWith("/") -> return@withContext null
+                else -> trimmed.substringBefore("?").substringAfterLast("/")
             }
 
-            client.newCall(requestBuilder.build()).execute().use { response ->
-                if (!response.isSuccessful) {
-                    android.util.Log.w("SupabaseRepository", "List bucket HTTP ${response.code}")
+            val cleanName = try {
+                URLDecoder.decode(rawName, StandardCharsets.UTF_8.toString())
+            } catch (_: Exception) {
+                rawName
+            }
+            if (cleanName.isBlank()) return@withContext null
+
+            val encodedName = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString()).replace("+", "%20")
+            val publicUrl = CdnConfig.STORAGE_BASE_URL + encodedName
+
+            val headBuilder = Request.Builder().url(publicUrl).head()
+            if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+                headBuilder.addHeader("apikey", SupabaseStorageService.API_KEY)
+            }
+
+            client.newCall(headBuilder.build()).execute().use { headResp ->
+                if (headResp.isSuccessful) return@withContext true
+                val code = headResp.code
+                if (code != 400 && code != 404 && code != 405) {
                     return@withContext null
                 }
-                val raw = response.body?.string().orEmpty()
-                if (raw.isBlank() || !raw.trim().startsWith("[")) return@withContext null
+            }
 
-                val array = JSONArray(raw)
-                val items = mutableListOf<SupabaseStoredObject>()
-                val ownerRegex = Regex("^(?:yousnap|story)__([a-zA-Z0-9_]+)__\\d{10,15}\\.")
-                for (i in 0 until array.length()) {
-                    val obj = array.optJSONObject(i) ?: continue
-                    val name = obj.optString("name", "")
-                    if (name.isBlank() || name.endsWith("/") || name.startsWith(".")) continue
+            // Confirm 400/404/405 with a 1-byte Range GET so we can inspect Supabase JSON error payload
+            val rangeBuilder = Request.Builder()
+                .url(publicUrl)
+                .addHeader("Range", "bytes=0-0")
+                .get()
+            if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+                rangeBuilder.addHeader("apikey", SupabaseStorageService.API_KEY)
+            }
 
-                    val extractedTs = Regex("(\\d{10,15})").find(name)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                        ?: 0L
-                    val extractedOwner = ownerRegex.find(name)?.groupValues?.getOrNull(1)
-                    items.add(
-                        SupabaseStoredObject(
-                            name = name,
-                            publicUrl = CdnConfig.getFullMediaUrl(name),
-                            timestamp = extractedTs,
-                            ownerUsername = extractedOwner
-                        )
-                    )
+            client.newCall(rangeBuilder.build()).execute().use { getResp ->
+                if (getResp.isSuccessful || getResp.code == 416) return@withContext true
+                if (getResp.code == 404) return@withContext false
+                if (getResp.code == 400) {
+                    val body = getResp.body?.string().orEmpty()
+                    if (body.contains("not_found", ignoreCase = true) ||
+                        body.contains("Object not found", ignoreCase = true) ||
+                        body.contains("NoSuchKey", ignoreCase = true) ||
+                        body.contains("\"statusCode\":\"404\"", ignoreCase = true)
+                    ) {
+                        return@withContext false
+                    }
                 }
-                items
+                null
             }
         } catch (e: Exception) {
-            android.util.Log.e("SupabaseRepository", "List media error: ${e.message}")
+            android.util.Log.w("SupabaseRepository", "checkPublicFileExists notice ($mediaUrlOrName): ${e.message}")
             null
         }
+    }
+
+    private fun parseObjectList(raw: String): List<SupabaseStoredObject>? {
+        if (raw.isBlank() || !raw.trim().startsWith("[")) return null
+        val array = JSONArray(raw)
+        val items = mutableListOf<SupabaseStoredObject>()
+        val ownerRegex = Regex("^(?:yousnap|story)__([a-zA-Z0-9_]+)__\\d{10,15}\\.")
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val name = obj.optString("name", "")
+            if (name.isBlank() || name.endsWith("/") || name.startsWith(".")) continue
+
+            val extractedTs = Regex("(\\d{10,15})").find(name)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                ?: 0L
+            val extractedOwner = ownerRegex.find(name)?.groupValues?.getOrNull(1)
+            items.add(
+                SupabaseStoredObject(
+                    name = name,
+                    publicUrl = CdnConfig.getFullMediaUrl(name),
+                    timestamp = extractedTs,
+                    ownerUsername = extractedOwner
+                )
+            )
+        }
+        return items
+    }
+
+    /**
+     * Lists uploaded objects in the public YouSnap Supabase bucket so all users
+     * can see newly uploaded photos, reels, and stories across refreshes.
+     *
+     * Note: Supabase Storage `/object/list` can return `[]` when `storage.objects` SELECT RLS
+     * is not granted to anon; callers must NOT treat an empty list as proof of deletion without
+     * verifying individual public URLs via [checkPublicFileExists].
+     */
+    suspend fun listMediaFiles(limit: Int = 1000): List<SupabaseStoredObject>? = withContext(Dispatchers.IO) {
+        val apiKey = SupabaseStorageService.API_KEY
+        val payload = """{"prefix":"","limit":$limit,"offset":0,"sortBy":{"column":"created_at","order":"desc"}}"""
+        var directResult: List<SupabaseStoredObject>? = null
+
+        if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+            try {
+                val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
+                val listUrl = "https://${SupabaseStorageService.PROJECT_ID}.supabase.co/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
+                val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+                val requestBuilder = Request.Builder()
+                    .url(listUrl)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Content-Type", "application/json")
+                    .post(body)
+
+                if (!directAuthHeader.isNullOrBlank()) {
+                    requestBuilder.addHeader("Authorization", directAuthHeader)
+                }
+
+                client.newCall(requestBuilder.build()).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val raw = response.body?.string().orEmpty()
+                        directResult = parseObjectList(raw)
+                    } else {
+                        android.util.Log.w("SupabaseRepository", "List bucket HTTP ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SupabaseRepository", "Direct list media error: ${e.message}")
+            }
+        }
+
+        if (!directResult.isNullOrEmpty()) {
+            return@withContext directResult
+        }
+
+        // Fallback to Cloudflare Worker list endpoint in case direct SELECT RLS returned [] or failed
+        try {
+            val workerListUrl = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
+            val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            val workerReq = Request.Builder()
+                .url(workerListUrl)
+                .addHeader("User-Agent", "YouSnap-Android/1.0")
+                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                .addHeader("apikey", apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") })
+                .addHeader("Content-Type", "application/json")
+                .post(body)
+                .build()
+
+            client.newCall(workerReq).execute().use { response ->
+                if (response.isSuccessful) {
+                    val workerItems = parseObjectList(response.body?.string().orEmpty())
+                    if (!workerItems.isNullOrEmpty()) {
+                        return@withContext workerItems
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("SupabaseRepository", "Worker list fallback notice: ${e.message}")
+        }
+
+        directResult
     }
 }
