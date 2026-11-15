@@ -116,15 +116,27 @@ fun LoginScreen(
             val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
             val account = try {
                 task.getResult(ApiException::class.java)
+            } catch (e: ApiException) {
+                android.util.Log.e("LoginScreen", "ApiException in GoogleSignIn (${e.statusCode}): ${e.message}")
+                isLoading = false
+                errorDialogText = "Google Sign-In failed (code ${e.statusCode}). Please try again."
+                return@rememberLauncherForActivityResult
             } catch (e: Throwable) {
-                android.util.Log.w("LoginScreen", "ApiException in getSignedInAccountFromIntent: ${e.message}")
-                null
+                android.util.Log.e("LoginScreen", "Error in getSignedInAccountFromIntent: ${e.message}")
+                isLoading = false
+                errorDialogText = "Google Sign-In failed: ${e.localizedMessage ?: "Please try again."}"
+                return@rememberLauncherForActivityResult
             }
 
-            val email = account?.email ?: "google_user_${System.currentTimeMillis()}@gmail.com"
-            val idToken = account?.idToken
-            val displayName = account?.displayName ?: email.split("@").firstOrNull() ?: "Google User"
-            val photoUrl = account?.photoUrl?.toString() ?: ""
+            val email = account?.email
+            if (email.isNullOrBlank()) {
+                isLoading = false
+                errorDialogText = "Could not read your Google email. Please select a Google account again."
+                return@rememberLauncherForActivityResult
+            }
+            val idToken = account.idToken
+            val displayName = account.displayName ?: email.split("@").firstOrNull() ?: "Google User"
+            val photoUrl = account.photoUrl?.toString() ?: ""
 
             viewModel.handleGoogleSignInSuccess(
                 email = email,
@@ -135,27 +147,15 @@ fun LoginScreen(
                     isLoading = false
                     onLoginSuccess()
                 },
-                onError = {
+                onError = { err ->
                     isLoading = false
-                    onLoginSuccess()
+                    errorDialogText = err
                 }
             )
         } catch (e: Throwable) {
             android.util.Log.e("LoginScreen", "Google Sign-In General Error: ${e.message}")
-            viewModel.handleGoogleSignInSuccess(
-                email = "user_${System.currentTimeMillis()}@gmail.com",
-                name = "Google User",
-                idToken = null,
-                photoUrl = "",
-                onSuccess = {
-                    isLoading = false
-                    onLoginSuccess()
-                },
-                onError = {
-                    isLoading = false
-                    onLoginSuccess()
-                }
-            )
+            isLoading = false
+            errorDialogText = "Google Sign-In failed: ${e.localizedMessage ?: "Please try again."}"
         }
     }
 

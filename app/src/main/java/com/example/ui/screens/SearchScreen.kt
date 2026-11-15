@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -28,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.example.data.model.ProfileEntity
 import com.example.data.model.ReelEntity
 import com.example.ui.Screen
@@ -275,23 +280,44 @@ fun SearchScreen(
 
 @Composable
 fun SearchGridItem(reel: ReelEntity, onPreview: (ReelEntity) -> Unit) {
-    val startColor = remember(reel.bgGradientStart) {
-        try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) } 
-        catch (e: Exception) { Color(0xFFE1306C) }
+    val context = LocalContext.current
+    val localThumbExists = remember(reel.thumbnailUrl) {
+        reel.thumbnailUrl.isNotBlank() && (
+            (!reel.thumbnailUrl.startsWith("/") && !reel.thumbnailUrl.startsWith("file:")) ||
+                java.io.File(reel.thumbnailUrl.removePrefix("file://")).exists()
+        )
     }
-    val endColor = remember(reel.bgGradientEnd) {
-        try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) } 
-        catch (e: Exception) { Color(0xFF833AB4) }
+    val thumbnailToLoad = if (localThumbExists) reel.thumbnailUrl else reel.mediaUrl
+    val thumbModel = remember(thumbnailToLoad) {
+        if (thumbnailToLoad.isBlank()) {
+            null
+        } else if (thumbnailToLoad.startsWith("/")) {
+            java.io.File(thumbnailToLoad)
+        } else {
+            ImageRequest.Builder(context)
+                .data(thumbnailToLoad)
+                .videoFrameMillis(500L)
+                .crossfade(true)
+                .build()
+        }
     }
 
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(0.dp))
-            .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
+            .background(Color(0xFF161616))
             .clickable { onPreview(reel) },
         contentAlignment = Alignment.Center
     ) {
+        if (thumbModel != null) {
+            AsyncImage(
+                model = thumbModel,
+                contentDescription = reel.caption,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -300,7 +326,7 @@ fun SearchGridItem(reel: ReelEntity, onPreview: (ReelEntity) -> Unit) {
         Icon(
             imageVector = Icons.Default.PlayArrow,
             contentDescription = "Play Reel",
-            tint = Color.White.copy(alpha = 0.8f),
+            tint = Color.White.copy(alpha = 0.85f),
             modifier = Modifier.size(28.dp)
         )
         Box(

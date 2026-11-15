@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.request.videoFrameMillis
 import com.example.R
 import com.example.data.model.HomePostItem
 import com.example.data.model.ReelEntity
@@ -1432,16 +1433,28 @@ fun InstagramFeedPost(
             }
         }
 
-        // Post Image Box
+        // Post Video/Thumbnail Box
+        val mediaToDisplay = reel.thumbnailUrl.takeIf {
+            it.isNotBlank() && ((!it.startsWith("/") && !it.startsWith("file:")) || java.io.File(it.removePrefix("file://")).exists())
+        } ?: reel.mediaUrl
+        val mediaRequestModel = remember(mediaToDisplay) {
+            if (mediaToDisplay.isBlank()) {
+                null
+            } else if (mediaToDisplay.startsWith("/")) {
+                java.io.File(mediaToDisplay)
+            } else {
+                coil.request.ImageRequest.Builder(context)
+                    .data(mediaToDisplay)
+                    .videoFrameMillis(500L)
+                    .crossfade(true)
+                    .build()
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(380.dp)
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(presetStart, presetEnd)
-                    )
-                )
+                .background(Color(0xFF161616))
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
@@ -1459,10 +1472,9 @@ fun InstagramFeedPost(
                 },
             contentAlignment = Alignment.Center
         ) {
-            val mediaToDisplay = reel.mediaUrl.ifEmpty { reel.thumbnailUrl }
-            if (mediaToDisplay.isNotEmpty()) {
+            if (mediaRequestModel != null) {
                 AsyncImage(
-                    model = mediaToDisplay,
+                    model = mediaRequestModel,
                     contentDescription = reel.caption,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()

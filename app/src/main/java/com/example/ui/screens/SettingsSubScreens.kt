@@ -38,6 +38,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -1017,9 +1019,28 @@ fun WatchHistoryScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(watchHistory) { reel ->
-                        val startColor = try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) } catch (e: Exception) { Color(0xFFFF1A75) }
-                        val endColor = try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) } catch (e: Exception) { Color(0xFF8A3AB9) }
-                        
+                        val ctx = LocalContext.current
+                        val localThumbExists = remember(reel.thumbnailUrl) {
+                            reel.thumbnailUrl.isNotBlank() && (
+                                (!reel.thumbnailUrl.startsWith("/") && !reel.thumbnailUrl.startsWith("file:")) ||
+                                    java.io.File(reel.thumbnailUrl.removePrefix("file://")).exists()
+                            )
+                        }
+                        val thumbnailToLoad = if (localThumbExists) reel.thumbnailUrl else reel.mediaUrl
+                        val thumbModel = remember(thumbnailToLoad) {
+                            if (thumbnailToLoad.isBlank()) {
+                                null
+                            } else if (thumbnailToLoad.startsWith("/")) {
+                                java.io.File(thumbnailToLoad)
+                            } else {
+                                ImageRequest.Builder(ctx)
+                                    .data(thumbnailToLoad)
+                                    .videoFrameMillis(500L)
+                                    .crossfade(true)
+                                    .build()
+                            }
+                        }
+
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1033,12 +1054,11 @@ fun WatchHistoryScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .background(Brush.verticalGradient(listOf(startColor, endColor)))
+                                    .background(Color(0xFF161616))
                             ) {
-                                val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
-                                if (thumbnailToLoad.isNotEmpty()) {
+                                if (thumbModel != null) {
                                     AsyncImage(
-                                        model = thumbnailToLoad,
+                                        model = thumbModel,
                                         contentDescription = reel.caption,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()

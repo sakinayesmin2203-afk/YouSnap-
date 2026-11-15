@@ -16,6 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import java.io.File
 import java.io.InputStream
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -23,7 +24,8 @@ import java.util.concurrent.TimeUnit
 data class SupabaseStoredObject(
     val name: String,
     val publicUrl: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val ownerUsername: String? = null
 )
 
 data class UploadResult(
@@ -261,25 +263,86 @@ class SupabaseRepository {
 
     suspend fun deleteFile(filename: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val cleanName = filename.substringAfterLast("/")
+            val rawName = filename.substringBefore("?").substringAfterLast("/")
+            val cleanName = try {
+                URLDecoder.decode(rawName, StandardCharsets.UTF_8.toString())
+            } catch (_: Exception) {
+                rawName
+            }
+            if (cleanName.isBlank()) return@withContext false
+
             val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val apiKey = SupabaseStorageService.API_KEY
-            val encodedFilename = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString())
-            val deleteUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
+            val encodedFilename = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString()).replace("+", "%20")
 
-            val requestBuilder = Request.Builder()
-                .url(deleteUrl)
-                .addHeader("apikey", apiKey)
-                .delete()
+            // 1. Direct Supabase Storage REST API DELETE /object/{bucket}/{file}
+            if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+                val deleteUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
+                val requestBuilder = Request.Builder()
+                    .url(deleteUrl)
+                    .addHeader("apikey", apiKey)
+                    .delete()
+                if (!directAuthHeader.isNullOrBlank()) {
+                    requestBuilder.addHeader("Authorization", directAuthHeader)
+                }
+                try {
+                    client.newCall(requestBuilder.build()).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        android.util.Log.d("SupabaseRepository", "Direct delete ($cleanName): ${response.code} $body")
+                        if (response.isSuccessful || response.code == 404) {
+                            return@withContext true
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("SupabaseRepository", "Direct delete error: ${e.message}")
+                }
 
-            if (!directAuthHeader.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", directAuthHeader)
+                // 2. Supabase Storage Batch Delete DELETE /object/{bucket} with {"prefixes":[cleanName]}
+                try {
+                    val batchUrl = "https://${SupabaseStorageService.PROJECT_ID}.supabase.co/storage/v1/object/${SupabaseStorageService.BUCKET_NAME}"
+                    val jsonPayload = org.json.JSONObject().apply {
+                        put("prefixes", JSONArray().apply { put(cleanName) })
+                    }.toString()
+                    val batchBody = jsonPayload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                    val batchBuilder = Request.Builder()
+                        .url(batchUrl)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Content-Type", "application/json")
+                        .delete(batchBody)
+                    if (!directAuthHeader.isNullOrBlank()) {
+                        batchBuilder.addHeader("Authorization", directAuthHeader)
+                    }
+                    client.newCall(batchBuilder.build()).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        android.util.Log.d("SupabaseRepository", "Batch delete ($cleanName): ${response.code} $body")
+                        if (response.isSuccessful || response.code == 404) {
+                            return@withContext true
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("SupabaseRepository", "Batch delete error: ${e.message}")
+                }
             }
 
-            client.newCall(requestBuilder.build()).execute().use { response ->
-                android.util.Log.d("SupabaseRepository", "Delete response: ${response.code}")
-                response.isSuccessful
+            // 3. Cloudflare Worker DELETE fallback
+            try {
+                val workerDeleteUrl = SupabaseStorageService.WORKER_ENDPOINT + encodedFilename
+                val workerReq = Request.Builder()
+                    .url(workerDeleteUrl)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                    .addHeader("apikey", apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") })
+                    .delete()
+                    .build()
+                client.newCall(workerReq).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    android.util.Log.d("SupabaseRepository", "Worker delete ($cleanName): ${response.code} $body")
+                    return@withContext response.isSuccessful || response.code == 404
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SupabaseRepository", "Worker delete error: ${e.message}")
             }
+            false
         } catch (e: Exception) {
             android.util.Log.e("SupabaseRepository", "Delete exception: ${e.message}")
             false
@@ -288,10 +351,14 @@ class SupabaseRepository {
 
     /**
      * Lists uploaded objects in the public YouSnap Supabase bucket so all users
-     * can see newly uploaded photos, reels, and stories across refreshes.
+     * can see newly uploaded photos, reels, and stories across refreshes, and so
+     * files deleted from Supabase Storage are removed from the app on refresh.
+     *
+     * Returns null when the bucket cannot be reached (so offline caches stay intact),
+     * or a non-null list (possibly empty) when Supabase Storage responded authoritatively.
      */
-    suspend fun listMediaFiles(limit: Int = 100): List<SupabaseStoredObject> = withContext(Dispatchers.IO) {
-        if (!SupabaseStorageService.HAS_VALID_SUPABASE_KEY) return@withContext emptyList()
+    suspend fun listMediaFiles(limit: Int = 1000): List<SupabaseStoredObject>? = withContext(Dispatchers.IO) {
+        if (!SupabaseStorageService.HAS_VALID_SUPABASE_KEY) return@withContext null
         try {
             val apiKey = SupabaseStorageService.API_KEY
             val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
@@ -312,13 +379,14 @@ class SupabaseRepository {
             client.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
                     android.util.Log.w("SupabaseRepository", "List bucket HTTP ${response.code}")
-                    return@withContext emptyList()
+                    return@withContext null
                 }
                 val raw = response.body?.string().orEmpty()
-                if (raw.isBlank() || !raw.trim().startsWith("[")) return@withContext emptyList()
+                if (raw.isBlank() || !raw.trim().startsWith("[")) return@withContext null
 
                 val array = JSONArray(raw)
                 val items = mutableListOf<SupabaseStoredObject>()
+                val ownerRegex = Regex("^(?:yousnap|story)__([a-zA-Z0-9_]+)__\\d{10,15}\\.")
                 for (i in 0 until array.length()) {
                     val obj = array.optJSONObject(i) ?: continue
                     val name = obj.optString("name", "")
@@ -326,11 +394,13 @@ class SupabaseRepository {
 
                     val extractedTs = Regex("(\\d{10,15})").find(name)?.groupValues?.getOrNull(1)?.toLongOrNull()
                         ?: 0L
+                    val extractedOwner = ownerRegex.find(name)?.groupValues?.getOrNull(1)
                     items.add(
                         SupabaseStoredObject(
                             name = name,
                             publicUrl = CdnConfig.getFullMediaUrl(name),
-                            timestamp = extractedTs
+                            timestamp = extractedTs,
+                            ownerUsername = extractedOwner
                         )
                     )
                 }
@@ -338,7 +408,7 @@ class SupabaseRepository {
             }
         } catch (e: Exception) {
             android.util.Log.e("SupabaseRepository", "List media error: ${e.message}")
-            emptyList()
+            null
         }
     }
 }

@@ -41,6 +41,8 @@ import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.components.FullScreenPhotoViewer
 import com.example.ui.components.ReelItem
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -55,18 +57,32 @@ fun ProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val currentUid = remember(profile.email, profile.username) { viewModel.activeUserUid() }
+
+    LaunchedEffect(Unit) {
+        if (!viewModel.isHomeRefreshing.value) {
+            viewModel.refreshHomeFeed()
+        }
+    }
+
     // Filter reels to only show the user's uploaded ones, deduplicated
-    val personalReels = remember(userReels, profile.username) {
+    val personalReels = remember(userReels, profile.username, currentUid) {
         userReels
-            .filter { it.creatorUsername.equals(profile.username, ignoreCase = true) }
+            .filter {
+                it.creatorUsername.equals(profile.username, ignoreCase = true) ||
+                    (!currentUid.isNullOrBlank() && it.creatorUid == currentUid)
+            }
             .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
     }
     
     // Dynamic Personal Photos (Only current user's photos, deduplicated)
     val rawPersonalPhotos by viewModel.personalPhotosState.collectAsState()
-    val personalPhotos = remember(rawPersonalPhotos, profile.username) {
+    val personalPhotos = remember(rawPersonalPhotos, profile.username, currentUid) {
         rawPersonalPhotos
-            .filter { it.creatorUsername.equals(profile.username, ignoreCase = true) }
+            .filter {
+                it.creatorUsername.equals(profile.username, ignoreCase = true) ||
+                    (!currentUid.isNullOrBlank() && it.creatorUid == currentUid)
+            }
             .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else "${it.id}" }
     }
     
@@ -473,29 +489,49 @@ fun ProfileScreen(
                                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                                 verticalArrangement = Arrangement.spacedBy(1.dp)
                             ) {
-                                items(personalReels) { reel ->
-                                    val startColor = remember(reel.bgGradientStart) {
-                                        try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) }
-                                        catch (e: Exception) { Color(0xFFE1306C) }
+                                items(
+                                    items = personalReels,
+                                    key = { it.mediaUrl.ifEmpty { "${it.id}_${it.timestamp}" } }
+                                ) { reel ->
+                                    val localThumbExists = remember(reel.thumbnailUrl) {
+                                        reel.thumbnailUrl.isNotBlank() && (
+                                            (!reel.thumbnailUrl.startsWith("/") && !reel.thumbnailUrl.startsWith("file:")) ||
+                                                java.io.File(reel.thumbnailUrl.removePrefix("file://")).exists()
+                                        )
                                     }
-                                    val endColor = remember(reel.bgGradientEnd) {
-                                        try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) }
-                                        catch (e: Exception) { Color(0xFF833AB4) }
+                                    val thumbnailToLoad = if (localThumbExists) reel.thumbnailUrl else reel.mediaUrl
+                                    val thumbModel = remember(thumbnailToLoad) {
+                                        if (thumbnailToLoad.isBlank()) {
+                                            null
+                                        } else if (thumbnailToLoad.startsWith("/")) {
+                                            java.io.File(thumbnailToLoad)
+                                        } else {
+                                            ImageRequest.Builder(context)
+                                                .data(thumbnailToLoad)
+                                                .videoFrameMillis(500L)
+                                                .crossfade(true)
+                                                .build()
+                                        }
                                     }
 
                                     Box(
                                         modifier = Modifier
                                             .aspectRatio(9f / 16f)
                                             .clip(RoundedCornerShape(2.dp))
-                                            .background(Brush.linearGradient(colors = listOf(startColor, endColor)))
+                                            .background(Color(0xFF161616))
                                             .clickable { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
                                             .testTag("profile_item_${reel.id}"),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        val thumbnailToLoad = reel.thumbnailUrl.ifEmpty { reel.mediaUrl }
-                                        if (thumbnailToLoad.isNotEmpty()) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.45f),
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        if (thumbModel != null) {
                                             AsyncImage(
-                                                model = thumbnailToLoad,
+                                                model = thumbModel,
                                                 contentDescription = reel.caption,
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier.fillMaxSize()
