@@ -60,6 +60,20 @@ import com.example.ui.theme.YouSnapTheme
 class MainActivity : ComponentActivity() {
 
     private val viewModel: YouSnapViewModel by viewModels()
+    private var hasPausedOnce = false
+
+    override fun onPause() {
+        super.onPause()
+        hasPausedOnce = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (hasPausedOnce) {
+            hasPausedOnce = false
+            viewModel.refreshHomeFeed(showIndicator = false)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

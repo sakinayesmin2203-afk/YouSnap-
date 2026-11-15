@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import okhttp3.CacheControl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -289,11 +290,10 @@ class SupabaseRepository {
                     client.newCall(requestBuilder.build()).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         android.util.Log.d("SupabaseRepository", "Direct delete ($cleanName): ${response.code} $body")
-                        if (response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) {
-                            return@withContext true
-                        }
-                        if (response.code == 404 && checkPublicFileExists(cleanName) != true) {
-                            return@withContext true
+                        if ((response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) || response.code == 404) {
+                            if (checkPublicFileExists(cleanName) != true) {
+                                return@withContext true
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -318,11 +318,10 @@ class SupabaseRepository {
                     client.newCall(batchBuilder.build()).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         android.util.Log.d("SupabaseRepository", "Batch delete ($cleanName): ${response.code} $body")
-                        if (response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) {
-                            return@withContext true
-                        }
-                        if (response.code == 404 && checkPublicFileExists(cleanName) != true) {
-                            return@withContext true
+                        if ((response.isSuccessful && body.trim() != "[]" && !body.contains("\"error\"", ignoreCase = true)) || response.code == 404) {
+                            if (checkPublicFileExists(cleanName) != true) {
+                                return@withContext true
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -389,9 +388,15 @@ class SupabaseRepository {
             if (cleanName.isBlank()) return@withContext null
 
             val encodedName = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString()).replace("+", "%20")
-            val publicUrl = CdnConfig.STORAGE_BASE_URL + encodedName
+            val cacheBuster = System.currentTimeMillis()
+            val uncachedPublicUrl = "${CdnConfig.STORAGE_BASE_URL}$encodedName?cb=$cacheBuster"
 
-            val headBuilder = Request.Builder().url(publicUrl).head()
+            val headBuilder = Request.Builder()
+                .url(uncachedPublicUrl)
+                .cacheControl(CacheControl.FORCE_NETWORK)
+                .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                .addHeader("Pragma", "no-cache")
+                .head()
             if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
                 headBuilder.addHeader("apikey", SupabaseStorageService.API_KEY)
             }
@@ -404,9 +409,13 @@ class SupabaseRepository {
                 }
             }
 
-            // Confirm 400/404/405 with a 1-byte Range GET so we can inspect Supabase JSON error payload
+            // Confirm 400/404/405 with a 1-byte cache-busted Range GET so we can inspect Supabase JSON error payload
+            val rangeUrl = "${CdnConfig.STORAGE_BASE_URL}$encodedName?cb=${cacheBuster + 1}"
             val rangeBuilder = Request.Builder()
-                .url(publicUrl)
+                .url(rangeUrl)
+                .cacheControl(CacheControl.FORCE_NETWORK)
+                .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                .addHeader("Pragma", "no-cache")
                 .addHeader("Range", "bytes=0-0")
                 .get()
             if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {

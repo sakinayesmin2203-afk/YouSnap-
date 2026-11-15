@@ -38,10 +38,6 @@ fun CommentBottomSheet(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
-    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val bottomInsetPadding = maxOf(imeBottom, navBottom)
-
     ModalBottomSheet(
         onDismissRequest = {
             keyboardController?.hide()
@@ -74,7 +70,6 @@ fun CommentBottomSheet(
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f)
                 .background(Color.White)
-                .padding(bottom = bottomInsetPadding)
         ) {
             // Header: Title and Close button
             Row(
@@ -212,10 +207,12 @@ fun CommentBottomSheet(
 
             HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
 
-            // Post Comment Input Bar - Fixed neatly on top of the keyboard
+            // Post Comment Input Bar - Fixed neatly directly on top of the keyboard (or nav bar when closed)
             Surface(
                 color = Color.White,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.navigationBars.exclude(WindowInsets.ime))
             ) {
                 Row(
                     modifier = Modifier

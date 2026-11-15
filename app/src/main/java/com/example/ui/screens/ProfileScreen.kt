@@ -60,9 +60,7 @@ fun ProfileScreen(
     val currentUid = remember(profile.email, profile.username) { viewModel.activeUserUid() }
 
     LaunchedEffect(Unit) {
-        if (!viewModel.isHomeRefreshing.value) {
-            viewModel.refreshHomeFeed()
-        }
+        viewModel.refreshHomeFeed(showIndicator = false)
     }
 
     // Filter reels to only show the user's uploaded ones, deduplicated

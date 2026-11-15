@@ -141,6 +141,11 @@ fun HomeScreen(
     }
 
 
+    // Sync with Supabase Storage when Home is displayed
+    LaunchedEffect(Unit) {
+        viewModel.refreshHomeFeed(showIndicator = false)
+    }
+
     // Trigger loading comments when a reel is selected
     LaunchedEffect(selectedReelForComments) {
         selectedReelForComments?.let {

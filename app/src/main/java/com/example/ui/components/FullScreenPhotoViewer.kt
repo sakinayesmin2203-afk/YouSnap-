@@ -65,6 +65,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.ui.components.ReportPostBottomSheet
+import com.example.ui.theme.LightSurfaceVariant
+import com.example.ui.theme.WarmCreamBackground
+import com.example.ui.theme.WarmCreamButtonBg
+import com.example.ui.theme.WarmCreamTextPrimary
+import com.example.ui.theme.WarmCreamTextSecondary
 
 data class FullScreenPhotoData(
     val id: String,
@@ -144,20 +149,21 @@ fun FullScreenPhotoViewer(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = Color(0xFF0D0D0D)
+            color = WarmCreamBackground
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(WarmCreamBackground)
                     .statusBarsPadding()
                     .navigationBarsPadding()
             ) {
-                // 1. TOP APP BAR (Instagram Posts Detail Header)
+                // 1. TOP APP BAR (Posts Detail Header matching app white theme)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
-                        .background(Color(0xFF0D0D0D))
+                        .background(WarmCreamBackground)
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -168,7 +174,7 @@ fun FullScreenPhotoViewer(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = Color.White,
+                            tint = WarmCreamTextPrimary,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -177,14 +183,14 @@ fun FullScreenPhotoViewer(
 
                     Text(
                         text = "Posts",
-                        color = Color.White,
+                        color = WarmCreamTextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
                         modifier = Modifier.weight(1f)
                     )
                 }
 
-                HorizontalDivider(color = Color(0xFF1E1E1E), thickness = 0.5.dp)
+                HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
 
                 // 2. SCROLLABLE POSTS FEED (LazyColumn allowing vertical scrolling through profile photos/videos)
                 LazyColumn(
@@ -320,7 +326,7 @@ fun InstagramPostCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF000000))
+            .background(WarmCreamBackground)
             .padding(bottom = 16.dp)
     ) {
         // A) HEADER: Creator Profile Ring + Dynamic Username + Audio Title + 3-dots Menu
@@ -337,7 +343,7 @@ fun InstagramPostCard(
                     .border(2.dp, instagramGradient, CircleShape)
                     .padding(2.5.dp)
                     .clip(CircleShape)
-                    .background(Color.DarkGray),
+                    .background(WarmCreamButtonBg),
                 contentAlignment = Alignment.Center
             ) {
                 if (photoData.creatorAvatar.isNotEmpty() && (photoData.creatorAvatar.startsWith("http") || photoData.creatorAvatar.startsWith("content://"))) {
@@ -353,7 +359,7 @@ fun InstagramPostCard(
                                    else "Y"
                     Text(
                         text = initials,
-                        color = Color.White,
+                        color = WarmCreamTextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
                     )
@@ -366,7 +372,7 @@ fun InstagramPostCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = displayUsername,
-                    color = Color.White,
+                    color = WarmCreamTextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.5.sp,
                     maxLines = 1,
@@ -377,13 +383,13 @@ fun InstagramPostCard(
                     Icon(
                         imageVector = Icons.Default.MusicNote,
                         contentDescription = null,
-                        tint = Color(0xFFF1F1F1),
+                        tint = WarmCreamTextSecondary,
                         modifier = Modifier.size(11.dp)
                     )
                     Spacer(modifier = Modifier.width(3.dp))
                     Text(
                         text = "Original Audio - @$displayUsername",
-                        color = Color(0xFFE1E1E1),
+                        color = WarmCreamTextSecondary,
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -402,7 +408,7 @@ fun InstagramPostCard(
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "Options",
-                        tint = Color.White,
+                        tint = WarmCreamTextPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -410,7 +416,7 @@ fun InstagramPostCard(
                 DropdownMenu(
                     expanded = showOptionsMenu,
                     onDismissRequest = { showOptionsMenu = false },
-                    modifier = Modifier.background(Color(0xFF1E1E1E))
+                    modifier = Modifier.background(WarmCreamBackground)
                 ) {
                     if (isAccountOwner) {
                         // 1. ACCOUNT OWNER OPTIONS: Delete ONLY
@@ -443,7 +449,7 @@ fun InstagramPostCard(
                             text = {
                                 Text(
                                     text = "Save photo",
-                                    color = Color.White,
+                                    color = WarmCreamTextPrimary,
                                     fontSize = 14.sp
                                 )
                             },
@@ -451,7 +457,7 @@ fun InstagramPostCard(
                                 Icon(
                                     imageVector = Icons.Outlined.FileDownload,
                                     contentDescription = "Save photo",
-                                    tint = Color.White,
+                                    tint = WarmCreamTextPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             },
@@ -466,7 +472,7 @@ fun InstagramPostCard(
                             text = {
                                 Text(
                                     text = "Share profile",
-                                    color = Color.White,
+                                    color = WarmCreamTextPrimary,
                                     fontSize = 14.sp
                                 )
                             },
@@ -474,7 +480,7 @@ fun InstagramPostCard(
                                 Icon(
                                     imageVector = Icons.Outlined.Share,
                                     contentDescription = "Share profile",
-                                    tint = Color.White,
+                                    tint = WarmCreamTextPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             },
@@ -526,7 +532,7 @@ fun InstagramPostCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f) // Square/Full-Width Instagram ratio
-                .background(Color(0xFF121212))
+                .background(LightSurfaceVariant)
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
@@ -614,7 +620,7 @@ fun InstagramPostCard(
                     Icon(
                         imageVector = if (isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
                         contentDescription = "Like",
-                        tint = if (isLiked) Color(0xFFFF2A6D) else Color.White,
+                        tint = if (isLiked) Color(0xFFFF2A6D) else WarmCreamTextPrimary,
                         modifier = Modifier
                             .size(26.dp)
                             .scale(likeScale)
@@ -631,14 +637,14 @@ fun InstagramPostCard(
                     Icon(
                         imageVector = Icons.Outlined.ChatBubbleOutline,
                         contentDescription = "Comment",
-                        tint = Color.White,
+                        tint = WarmCreamTextPrimary,
                         modifier = Modifier.size(24.dp)
                     )
                     if (commentsList.isNotEmpty()) {
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = "${commentsList.size}",
-                            color = Color.White,
+                            color = WarmCreamTextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.5.sp
                         )
@@ -655,7 +661,7 @@ fun InstagramPostCard(
                     Icon(
                         imageVector = Icons.AutoMirrored.Outlined.Send,
                         contentDescription = "Share",
-                        tint = Color.White,
+                        tint = WarmCreamTextPrimary,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -673,7 +679,7 @@ fun InstagramPostCard(
                 Icon(
                     imageVector = if (isSaved) Icons.Default.Bookmark else Icons.Outlined.BookmarkBorder,
                     contentDescription = "Save",
-                    tint = Color.White,
+                    tint = WarmCreamTextPrimary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -688,14 +694,14 @@ fun InstagramPostCard(
             if (likesCount > 0) {
                 Text(
                     text = "%,d likes".format(likesCount),
-                    color = Color.White,
+                    color = WarmCreamTextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.5.sp
                 )
             } else {
                 Text(
                     text = "Be the first to like this",
-                    color = Color(0xFFA8A8A8),
+                    color = WarmCreamTextSecondary,
                     fontSize = 12.5.sp
                 )
             }
@@ -713,13 +719,13 @@ fun InstagramPostCard(
                             append(displayUsername)
                             append(" ")
                         },
-                        color = Color.White,
+                        color = WarmCreamTextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.5.sp
                     )
                     Text(
                         text = photoData.title,
-                        color = Color.White,
+                        color = WarmCreamTextPrimary,
                         fontSize = 13.5.sp,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis
@@ -744,14 +750,14 @@ fun InstagramPostCard(
                         ) {
                             Text(
                                 text = comment.authorUsername,
-                                color = Color.White,
+                                color = WarmCreamTextPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = comment.text,
-                                color = Color.White,
+                                color = WarmCreamTextPrimary,
                                 fontSize = 13.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -761,7 +767,7 @@ fun InstagramPostCard(
                         Icon(
                             imageVector = if (comment.isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
                             contentDescription = "Comment like",
-                            tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF888888),
+                            tint = if (comment.isLiked) Color(0xFFFF2A6D) else WarmCreamTextSecondary,
                             modifier = Modifier.size(12.dp)
                         )
                     }
@@ -771,7 +777,7 @@ fun InstagramPostCard(
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = "View all ${commentsList.size} comments",
-                        color = Color(0xFFA8A8A8),
+                        color = WarmCreamTextSecondary,
                         fontSize = 13.sp,
                         modifier = Modifier.clickable { showCommentSheet = true }
                     )
@@ -779,7 +785,7 @@ fun InstagramPostCard(
             } else {
                 Text(
                     text = "Add a comment...",
-                    color = Color(0xFF8E8E8E),
+                    color = WarmCreamTextSecondary,
                     fontSize = 12.5.sp,
                     modifier = Modifier.clickable { showCommentSheet = true }
                 )
@@ -791,7 +797,7 @@ fun InstagramPostCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = photoData.timeAgo,
-                    color = Color(0xFF8E8E8E),
+                    color = WarmCreamTextSecondary,
                     fontSize = 11.5.sp
                 )
             }
@@ -802,8 +808,8 @@ fun InstagramPostCard(
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Delete Photo", color = Color.White, fontWeight = FontWeight.Bold) },
-            text = { Text("Are you sure you want to delete this photo? This action cannot be undone.", color = Color.LightGray) },
+            title = { Text("Delete Photo", color = WarmCreamTextPrimary, fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete this photo? This action cannot be undone.", color = WarmCreamTextSecondary) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -817,10 +823,10 @@ fun InstagramPostCard(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Cancel", color = Color.White)
+                    Text("Cancel", color = WarmCreamTextPrimary)
                 }
             },
-            containerColor = Color(0xFF1E1E1E)
+            containerColor = WarmCreamBackground
         )
     }
 
@@ -861,16 +867,11 @@ fun InstagramPostCard(
             contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
             modifier = Modifier.fillMaxWidth()
         ) {
-            val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            val bottomInsetPadding = maxOf(imeBottom, navBottom)
-
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.85f)
                     .background(Color.White)
-                    .padding(bottom = bottomInsetPadding)
             ) {
                 // Comments Title Header
                 Row(
@@ -1007,10 +1008,12 @@ fun InstagramPostCard(
                     }
                 }
 
-                // Comment Input Box
+                // Comment Input Box - pinned directly above keyboard or navigation bar
                 Surface(
                     color = Color.White,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.navigationBars.exclude(WindowInsets.ime))
                 ) {
                     Column {
                         HorizontalDivider(color = Color(0xFFEEEEEE), thickness = 0.5.dp)
@@ -1076,7 +1079,7 @@ fun InstagramPostCard(
                                 ),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(46.dp)
+                                    .heightIn(min = 46.dp)
                                     .testTag("instagram_comment_input_field")
                             )
 

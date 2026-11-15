@@ -136,6 +136,11 @@ fun ReelsScreen(
         }
     }
 
+    // Sync with Supabase Storage when Reels screen is displayed
+    LaunchedEffect(Unit) {
+        viewModel.refreshHomeFeed(showIndicator = false)
+    }
+
     // Load comments when a reel is clicked
     LaunchedEffect(selectedReelForComments) {
         selectedReelForComments?.let {

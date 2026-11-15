@@ -110,6 +110,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val activeReelComments = MutableStateFlow<List<CommentEntity>>(emptyList())
     val currentCommentText = MutableStateFlow("")
     private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private var refreshFeedJob: kotlinx.coroutines.Job? = null
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -707,9 +708,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun refreshHomeFeed(onComplete: () -> Unit = {}) {
-        viewModelScope.launch {
-            isHomeRefreshing.value = true
+    fun refreshHomeFeed(showIndicator: Boolean = true, onComplete: () -> Unit = {}) {
+        refreshFeedJob?.cancel()
+        val launchedJob = viewModelScope.launch {
+            if (showIndicator) {
+                isHomeRefreshing.value = true
+            }
             try {
                 val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
 
@@ -758,8 +762,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     ?.associate { it.publicUrl to it.ownerUsername!! }
                     .orEmpty()
 
-                val nowMs = System.currentTimeMillis()
-                // Collect every Supabase media URL across Firestore + local caches that wasn't already returned by listMediaFiles
+                // Collect every Supabase media URL across Firestore + local caches to verify real-time existence
                 val candidateUrls = buildSet {
                     storiesSnapshot?.documents?.forEach { doc ->
                         val url = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("mediaUrl") ?: "")
@@ -780,16 +783,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     _reelsState.value.forEach { if (it.mediaUrl.isNotBlank()) add(it.mediaUrl) }
                 }.filter { url ->
                     val fname = extractSupabaseFilename(url)
-                    val recentTs = recentlyUploadedUrls[url]
-                    val isJustUploaded = recentTs != null && (nowMs - recentTs) < 30_000L
                     fname != null &&
                         url !in deletedUrls &&
-                        fname !in activeSupabaseNames &&
-                        !isJustUploaded
+                        fname !in activeSupabaseNames
                 }
 
-                // Verify directly against Supabase public URLs so RLS-restricted `list` returning []
-                // NEVER deletes uploaded media, while files actually deleted in Supabase Storage ARE removed.
+                // Verify directly against uncached Supabase URLs so RLS-restricted `list` returning []
+                // NEVER deletes uploaded media, while files actually deleted in Supabase Storage ARE removed immediately.
                 val existenceByUrl: Map<String, Boolean?> = if (candidateUrls.isEmpty()) {
                     emptyMap()
                 } else {
@@ -810,10 +810,6 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     if (url.isBlank()) return false
                     val fname = extractSupabaseFilename(url) ?: return false
                     if (fname in activeSupabaseNames) return false
-                    val recentTs = recentlyUploadedUrls[url]
-                    if (recentTs != null && (System.currentTimeMillis() - recentTs) < 30_000L) {
-                        return false
-                    }
                     return existenceByUrl[url] == false
                 }
 
@@ -1023,13 +1019,28 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     .sortedByDescending { it.timestamp }
                 _reelsState.value = mergedReels
                 saveReelsToPrefs()
+
+                watchHistory.value = watchHistory.value.filter {
+                    it.mediaUrl.isBlank() || (it.mediaUrl !in deletedUrls && !isMissingFromSupabase(it.mediaUrl))
+                }
+                if (searchQuery.value.isNotBlank()) {
+                    searchResultPosts.value = mergedReels.filter {
+                        it.caption.contains(searchQuery.value, ignoreCase = true) ||
+                            it.creatorUsername.contains(searchQuery.value, ignoreCase = true)
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("YouSnapViewModel", "refreshHomeFeed error: ${e.message}")
             } finally {
-                isHomeRefreshing.value = false
+                if (refreshFeedJob === kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]) {
+                    isHomeRefreshing.value = false
+                }
                 onComplete()
             }
         }
+        refreshFeedJob = launchedJob
     }
 
     fun loadCommentsForReel(id: Int) {
