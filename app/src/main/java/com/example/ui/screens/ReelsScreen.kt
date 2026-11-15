@@ -686,8 +686,7 @@ fun ReelViewportItem(
                     expanded = showMoreMenu,
                     onDismissRequest = { showMoreMenu = false }
                 ) {
-                    val isReelOwner = currentUserProfile.username.lowercase() == reel.creatorUsername.lowercase() ||
-                                      (currentUserProfile.username.lowercase() == "sakinay_esmin" && reel.creatorUsername.lowercase() == "sakinay_esmin")
+                    val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
 
                     if (isReelOwner) {
                         DropdownMenuItem(

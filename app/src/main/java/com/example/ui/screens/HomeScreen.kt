@@ -585,18 +585,7 @@ fun HomeScreen(
                                 }
                             },
                             onPhotoClick = {
-                                selectedPhotoForViewer = FullScreenPhotoData(
-                                    id = photo.id,
-                                    title = photo.title,
-                                    imageUrl = photo.imageUrl,
-                                    creatorName = photo.creatorName,
-                                    creatorUsername = photo.creatorUsername,
-                                    creatorAvatar = photo.creatorAvatar,
-                                    initialLikes = photo.initialLikes,
-                                    initialComments = photo.initialComments,
-                                    initialIsLiked = isLiked,
-                                    timeAgo = photo.timeAgo
-                                )
+                                selectedPhotoForViewer = photo.copy(initialIsLiked = isLiked)
                             },
                             onDismissBanner = null,
                             isOwner = isPhotoOwner,
@@ -668,8 +657,13 @@ fun HomeScreen(
                 // Item C: Other Dynamic SQLite database Reels
                 if (visibleReels.isNotEmpty()) {
                     itemsIndexed(visibleReels, key = { _, reel -> reel.id }) { _, reel ->
+                        val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
                         InstagramFeedPost(
                             reel = reel,
+                            isOwner = isReelOwner,
+                            onDeleteClick = if (isReelOwner) {
+                                { viewModel.deleteReelVideo(reel) {} }
+                            } else null,
                             onLikeToggle = { viewModel.toggleLikeReel(reel) },
                             onCommentClick = { selectedReelForComments = reel },
                             onFollowToggle = { viewModel.toggleFollowCreator(reel) },
@@ -696,7 +690,13 @@ fun HomeScreen(
                                     ).show()
                                 }
                             },
-                            onProfileClick = { onNavigateTo(Screen.OtherProfile(reel.creatorUsername)) },
+                            onProfileClick = {
+                                if (isReelOwner) {
+                                    onNavigateTo(Screen.Profile)
+                                } else {
+                                    onNavigateTo(Screen.OtherProfile(reel.creatorUsername))
+                                }
+                            },
                             onReelClick = { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
                         )
                     }
@@ -725,10 +725,24 @@ fun HomeScreen(
 
         // FULLSCREEN VIEWER (from Home Feed Photo clicks)
         selectedPhotoForViewer?.let { photo ->
+            val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
             FullScreenPhotoViewer(
                 photoData = photo,
                 currentUsername = currentProfile?.username ?: "",
-                onDismiss = { selectedPhotoForViewer = null }
+                isOwner = isPhotoOwner,
+                onDismiss = { selectedPhotoForViewer = null },
+                onDeletePhoto = if (isPhotoOwner) {
+                    { photoToDelete ->
+                        viewModel.deletePhotoPost(
+                            postId = photoToDelete.firestoreDocId ?: photoToDelete.id,
+                            imageUrl = photoToDelete.imageUrl,
+                            creatorUsername = photoToDelete.creatorUsername,
+                            creatorUid = photoToDelete.creatorUid
+                        ) {
+                            selectedPhotoForViewer = null
+                        }
+                    }
+                } else null
             )
         }
 
@@ -1249,6 +1263,8 @@ private data class UserStoryItem(
 @Composable
 fun InstagramFeedPost(
     reel: ReelEntity,
+    isOwner: Boolean = false,
+    onDeleteClick: (() -> Unit)? = null,
     onLikeToggle: () -> Unit,
     onCommentClick: () -> Unit,
     onFollowToggle: () -> Unit,
@@ -1356,6 +1372,24 @@ fun InstagramFeedPost(
                     onDismissRequest = { showPostMenu = false },
                     modifier = Modifier.background(Color(0xFFFFF8F2))
                 ) {
+                    if (isOwner && onDeleteClick != null) {
+                        DropdownMenuItem(
+                            text = { Text("Delete Reel", color = Color(0xFFB3261E), fontSize = 14.sp, fontWeight = FontWeight.Bold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Delete,
+                                    contentDescription = "Delete Reel",
+                                    tint = Color(0xFFB3261E)
+                                )
+                            },
+                            onClick = {
+                                showPostMenu = false
+                                onDeleteClick()
+                            }
+                        )
+                        HorizontalDivider(color = Color(0xFFE8DFC8), thickness = 1.dp)
+                    }
+
                     DropdownMenuItem(
                         text = {
                             Text(
@@ -1402,38 +1436,40 @@ fun InstagramFeedPost(
                         }
                     )
 
-                    DropdownMenuItem(
-                        text = { Text("Unfollow User", color = Color(0xFF2A1810), fontSize = 14.sp, fontWeight = FontWeight.Medium) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.PersonRemove,
-                                contentDescription = "Unfollow",
-                                tint = Color(0xFF2A1810)
-                            )
-                        },
-                        onClick = {
-                            showPostMenu = false
-                            onFollowToggle()
-                            Toast.makeText(context, "Unfollowed @${reel.creatorUsername}!", Toast.LENGTH_SHORT).show()
-                        }
-                    )
+                    if (!isOwner) {
+                        DropdownMenuItem(
+                            text = { Text("Unfollow User", color = Color(0xFF2A1810), fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.PersonRemove,
+                                    contentDescription = "Unfollow",
+                                    tint = Color(0xFF2A1810)
+                                )
+                            },
+                            onClick = {
+                                showPostMenu = false
+                                onFollowToggle()
+                                Toast.makeText(context, "Unfollowed @${reel.creatorUsername}!", Toast.LENGTH_SHORT).show()
+                            }
+                        )
 
-                    HorizontalDivider(color = Color(0xFFE8DFC8), thickness = 1.dp)
+                        HorizontalDivider(color = Color(0xFFE8DFC8), thickness = 1.dp)
 
-                    DropdownMenuItem(
-                        text = { Text("Report Post", color = Color(0xFFB3261E), fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.Report,
-                                contentDescription = "Report",
-                                tint = Color(0xFFB3261E)
-                            )
-                        },
-                        onClick = {
-                            showPostMenu = false
-                            Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
-                        }
-                    )
+                        DropdownMenuItem(
+                            text = { Text("Report Post", color = Color(0xFFB3261E), fontSize = 14.sp, fontWeight = FontWeight.Bold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Report,
+                                    contentDescription = "Report",
+                                    tint = Color(0xFFB3261E)
+                                )
+                            },
+                            onClick = {
+                                showPostMenu = false
+                                Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
                 }
             }
         }

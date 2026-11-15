@@ -1825,49 +1825,135 @@ fun InsightsScreen(
     viewModel: YouSnapViewModel,
     onBack: () -> Unit
 ) {
+    LaunchedEffect(Unit) {
+        viewModel.refreshHomeFeed(showIndicator = false)
+        viewModel.recalculateCreatorStats()
+    }
+
     var selectedTimeframe by remember { mutableStateOf("Last 30 Days") }
     val timeframes = listOf("Last 7 Days", "Last 30 Days", "Last 90 Days")
 
-    val personalPhotos by viewModel.personalPhotosState.collectAsState()
-    val reels by viewModel.reelsState.collectAsState()
+    val currentProfile by viewModel.profileState.collectAsState()
+    val allPhotos by viewModel.personalPhotosState.collectAsState()
+    val allReels by viewModel.reelsState.collectAsState()
+    val allStoriesList by viewModel.allStories.collectAsState()
+    val homeLikesMap by viewModel.homePostLikesCount.collectAsState()
+    val homeCommentsMap by viewModel.homePostComments.collectAsState()
+    val liveProfileVisits by viewModel.profileVisitsCount.collectAsState()
+    val followersCount by viewModel.followersCount.collectAsState()
 
-    val totalContentCount = personalPhotos.size + reels.size
-    val baseReached = ((totalContentCount * 150L) + if (totalContentCount > 0) 300L else 0L)
-    val baseViews = ((totalContentCount * 120L) + if (totalContentCount > 0) 250L else 0L)
-    val baseVisits = ((totalContentCount * 45L) + if (totalContentCount > 0) 50L else 0L)
-    val baseEngaged = ((totalContentCount * 25L) + if (totalContentCount > 0) 20L else 0L)
-
-    val multiplier = when (selectedTimeframe) {
-        "Last 7 Days" -> 0.35f
-        "Last 90 Days" -> 2.8f
-        else -> 1.0f
+    val myPhotos = remember(allPhotos, currentProfile.username) {
+        allPhotos
+            .filter { viewModel.isOwnedByCurrentUser(it.creatorUsername, it.creatorUid) }
+            .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
+    }
+    val myReels = remember(allReels, currentProfile.username) {
+        allReels
+            .filter { viewModel.isOwnedByCurrentUser(it.creatorUsername, it.creatorUid) }
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
+    }
+    val myStories = remember(allStoriesList, currentProfile.username) {
+        allStoriesList
+            .filter { viewModel.isOwnedByCurrentUser(it.ownerUsername, "") }
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
     }
 
-    val accountsReached = (baseReached * multiplier).toLong()
-    val reelsViews = (baseViews * multiplier).toLong()
-    val profileVisits = (baseVisits * multiplier).toLong()
-    val totalInteractions = (baseEngaged * multiplier).toLong()
+    val nowMs = remember(myPhotos, myReels, myStories, selectedTimeframe) { System.currentTimeMillis() }
+    val cutoffMs = remember(selectedTimeframe, nowMs) {
+        val days = when (selectedTimeframe) {
+            "Last 7 Days" -> 7L
+            "Last 90 Days" -> 90L
+            else -> 30L
+        }
+        nowMs - days * 24L * 60L * 60L * 1000L
+    }
 
-    val reelsPct = if (totalContentCount == 0) 0f else (reelsViews.toFloat() / (accountsReached + reelsViews).coerceAtLeast(1L)).coerceIn(0f, 1f)
-    val profilePct = if (totalContentCount == 0) 0f else (profileVisits.toFloat() / (accountsReached + profileVisits).coerceAtLeast(1L)).coerceIn(0f, 1f)
+    fun extractPhotoTimestamp(photo: com.example.ui.components.FullScreenPhotoData): Long {
+        photo.id.toLongOrNull()?.takeIf { it > 1_000_000_000L }?.let { return it }
+        val urlTs = Regex("(\\d{10,15})").find(photo.imageUrl)?.groupValues?.getOrNull(1)?.toLongOrNull()
+        return urlTs ?: 0L
+    }
 
-    val reelsSubtitle = if (totalContentCount == 0 || reelsViews == 0L) "No activity yet" else "${(reelsPct * 100).toInt()}% of total reach"
-    val profileSubtitle = if (totalContentCount == 0 || profileVisits == 0L) "No activity yet" else "${(profilePct * 100).toInt()}% profile conversion"
+    val filteredPhotos = remember(myPhotos, cutoffMs) {
+        myPhotos.filter { val ts = extractPhotoTimestamp(it); ts == 0L || ts >= cutoffMs }
+    }
+    val filteredReels = remember(myReels, cutoffMs) {
+        myReels.filter { it.timestamp == 0L || it.timestamp >= cutoffMs }
+    }
+    val filteredStories = remember(myStories, cutoffMs) {
+        myStories.filter { it.timestamp == 0L || it.timestamp >= cutoffMs }
+    }
 
-    var selectedDay by remember { mutableStateOf("Fri") }
-    val dayReachMap = if (totalContentCount == 0) {
-        mapOf("Mon" to "0", "Tue" to "0", "Wed" to "0", "Thu" to "0", "Fri" to "0", "Sat" to "0", "Sun" to "0")
+    val totalContentCount = filteredPhotos.size + filteredReels.size + filteredStories.size
+    val reelsViews = filteredReels.sumOf { it.viewsCount.toLong().coerceAtLeast(0L) }
+    val storyViews = filteredStories.sumOf { it.viewsCount.toLong().coerceAtLeast(0L) }
+    val photoLikes = filteredPhotos.sumOf { p ->
+        (homeLikesMap["photo_${p.id}"] ?: p.initialLikes).toLong().coerceAtLeast(0L)
+    }
+    val photoComments = filteredPhotos.sumOf { p ->
+        (homeCommentsMap["photo_${p.id}"]?.size ?: 0).coerceAtLeast(p.initialComments).toLong()
+    }
+    val reelLikes = filteredReels.sumOf { it.likesCount.toLong().coerceAtLeast(0L) }
+    val reelComments = filteredReels.sumOf { it.commentsCount.toLong().coerceAtLeast(0L) }
+    val storyLikes = filteredStories.sumOf { it.likes.size.toLong() }
+
+    val totalInteractions = photoLikes + photoComments + reelLikes + reelComments + storyLikes
+    val accountsReached = totalContentCount.toLong() + reelsViews + storyViews + totalInteractions
+    val profileVisits = liveProfileVisits.toLong().coerceAtLeast(0L)
+
+    val reelsPct = if (accountsReached <= 0L) 0f else (reelsViews.toFloat() / accountsReached.toFloat()).coerceIn(0f, 1f)
+    val profilePct = if (accountsReached <= 0L && profileVisits <= 0L) 0f else (profileVisits.toFloat() / (accountsReached + profileVisits).coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
+
+    val reelsSubtitle = if (filteredReels.isEmpty() && reelsViews == 0L) {
+        "No reels activity yet"
     } else {
-        mapOf(
-            "Mon" to "${totalContentCount * 35}",
-            "Tue" to "${totalContentCount * 50}",
-            "Wed" to "${totalContentCount * 70}",
-            "Thu" to "${totalContentCount * 55}",
-            "Fri" to "${totalContentCount * 95}",
-            "Sat" to "${totalContentCount * 80}",
-            "Sun" to "${totalContentCount * 60}"
-        )
+        "${filteredReels.size} ${if (filteredReels.size == 1) "reel" else "reels"} • $reelsViews real views"
     }
+    val profileSubtitle = if (profileVisits == 0L) {
+        "No profile visits recorded yet"
+    } else {
+        "$profileVisits recorded profile ${if (profileVisits == 1L) "visit" else "visits"}"
+    }
+
+    val weekDays = remember { listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun") }
+    fun weekdayLabelFor(ts: Long): String {
+        val cal = java.util.Calendar.getInstance()
+        if (ts > 0L) cal.timeInMillis = ts
+        return when (cal.get(java.util.Calendar.DAY_OF_WEEK)) {
+            java.util.Calendar.MONDAY -> "Mon"
+            java.util.Calendar.TUESDAY -> "Tue"
+            java.util.Calendar.WEDNESDAY -> "Wed"
+            java.util.Calendar.THURSDAY -> "Thu"
+            java.util.Calendar.FRIDAY -> "Fri"
+            java.util.Calendar.SATURDAY -> "Sat"
+            else -> "Sun"
+        }
+    }
+
+    val dayReachCounts = remember(filteredPhotos, filteredReels, filteredStories, homeLikesMap, homeCommentsMap) {
+        val counts = linkedMapOf("Mon" to 0L, "Tue" to 0L, "Wed" to 0L, "Thu" to 0L, "Fri" to 0L, "Sat" to 0L, "Sun" to 0L)
+        filteredPhotos.forEach { p ->
+            val day = weekdayLabelFor(extractPhotoTimestamp(p))
+            val likes = (homeLikesMap["photo_${p.id}"] ?: p.initialLikes).toLong().coerceAtLeast(0L)
+            val comments = (homeCommentsMap["photo_${p.id}"]?.size ?: 0).coerceAtLeast(p.initialComments).toLong()
+            counts[day] = (counts[day] ?: 0L) + 1L + likes + comments
+        }
+        filteredReels.forEach { r ->
+            val day = weekdayLabelFor(r.timestamp)
+            counts[day] = (counts[day] ?: 0L) + 1L + r.viewsCount.coerceAtLeast(0) + r.likesCount.coerceAtLeast(0) + r.commentsCount.coerceAtLeast(0)
+        }
+        filteredStories.forEach { s ->
+            val day = weekdayLabelFor(s.timestamp)
+            counts[day] = (counts[day] ?: 0L) + 1L + s.viewsCount.coerceAtLeast(0) + s.likes.size
+        }
+        counts
+    }
+    val todayLabel = remember { weekdayLabelFor(System.currentTimeMillis()) }
+    val peakDay = remember(dayReachCounts, todayLabel) {
+        dayReachCounts.maxByOrNull { it.value }?.takeIf { it.value > 0L }?.key ?: todayLabel
+    }
+    var selectedDay by remember(peakDay) { mutableStateOf(peakDay) }
+    val maxDayReach = (dayReachCounts.values.maxOrNull() ?: 0L).coerceAtLeast(1L)
 
     Scaffold(
         topBar = { SubScreenTopBar("Insights & Analytics", onBack) }
@@ -1948,7 +2034,7 @@ fun InsightsScreen(
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = "+15.2% 🚀",
+                                    text = "$totalContentCount ${if (totalContentCount == 1) "Upload" else "Uploads"}",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFF38BDF8)
@@ -1966,7 +2052,11 @@ fun InsightsScreen(
                         )
 
                         Text(
-                            text = "You reached ${if (selectedTimeframe == "Last 7 Days") "35% more" else "15.2% more"} accounts compared to previous period.",
+                            text = if (totalContentCount == 0 && accountsReached == 0L) {
+                                "Upload a photo, reel, or story in $selectedTimeframe to track live reach."
+                            } else {
+                                "${filteredPhotos.size} Photos • ${filteredReels.size} Reels • ${filteredStories.size} Stories ($selectedTimeframe)"
+                            },
                             fontSize = 12.sp,
                             color = Color.White.copy(alpha = 0.85f)
                         )
@@ -1989,12 +2079,17 @@ fun InsightsScreen(
                             Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.3f)))
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Engagement", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text(if (accountsReached > 0) String.format("%.1f", (totalInteractions.toFloat() / accountsReached.toFloat()) * 100f) + "%" else "0.0%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text(
+                                    text = if (accountsReached > 0L) String.format("%.1f%%", (totalInteractions.toFloat() / accountsReached.toFloat()) * 100f) else "0.0%",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
                             }
                             Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.3f)))
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Growth", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text(if (totalContentCount > 0) "+${totalContentCount * 2.5f}%" else "0%", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34D399))
+                                Text("Posts", fontSize = 10.sp, color = Color.White.copy(alpha = 0.7f))
+                                Text("%,d".format(totalContentCount), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34D399))
                             }
                         }
                     }
@@ -2021,8 +2116,15 @@ fun InsightsScreen(
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                        val selectedCount = dayReachCounts[selectedDay] ?: 0L
                         Text(
-                            text = if (selectedDay == "Fri") "Peak: Fri 🔥 (${dayReachMap["Fri"]})" else "$selectedDay: ${dayReachMap[selectedDay]} Reach ✨",
+                            text = if (accountsReached == 0L) {
+                                "No activity yet"
+                            } else if (selectedDay == peakDay) {
+                                "Peak: $peakDay ($selectedCount)"
+                            } else {
+                                "$selectedDay: $selectedCount Reach"
+                            },
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF2563EB)
@@ -2031,14 +2133,6 @@ fun InsightsScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // 7-day Bar Chart Visual
-                    val weekDays = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-                    val barHeights = if (totalContentCount == 0) {
-                        listOf(0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f)
-                    } else {
-                        listOf(0.35f, 0.55f, 0.75f, 0.60f, 1.0f, 0.80f, 0.65f)
-                    }
-
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2046,8 +2140,13 @@ fun InsightsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.Bottom
                     ) {
-                        weekDays.forEachIndexed { index, day ->
-                            val heightFraction = barHeights[index]
+                        weekDays.forEach { day ->
+                            val dayCount = dayReachCounts[day] ?: 0L
+                            val heightFraction = if (dayCount <= 0L) {
+                                0.04f
+                            } else {
+                                (dayCount.toFloat() / maxDayReach.toFloat()).coerceIn(0.15f, 1.0f)
+                            }
                             val isSelected = day == selectedDay
 
                             Column(
@@ -2060,7 +2159,7 @@ fun InsightsScreen(
                                         selectedDay = day
                                         android.widget.Toast.makeText(
                                             viewModel.app,
-                                            "📊 $day Reach: ${dayReachMap[day]} accounts",
+                                            "$day Reach: $dayCount",
                                             android.widget.Toast.LENGTH_SHORT
                                         ).show()
                                     }
@@ -2072,13 +2171,13 @@ fun InsightsScreen(
                                         .fillMaxHeight(heightFraction)
                                         .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
                                         .background(
-                                            if (isSelected) Brush.verticalGradient(
+                                            if (isSelected && dayCount > 0L) Brush.verticalGradient(
                                                 listOf(Color(0xFF2563EB), Color(0xFF06B6D4))
                                             )
                                             else Brush.verticalGradient(
                                                 listOf(
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = if (dayCount > 0L) 0.6f else 0.18f),
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = if (dayCount > 0L) 0.25f else 0.1f)
                                                 )
                                             )
                                         )
@@ -2157,16 +2256,16 @@ fun InsightsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("Top Location", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text(if (totalContentCount > 0) "Active Network (100%)" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Followers", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                            Text("%,d".format(followersCount), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                         Column {
-                            Text("Gender Split", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text(if (totalContentCount > 0) "Community" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Your Uploads", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                            Text("$totalContentCount", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                         Column(horizontalAlignment = Alignment.End) {
-                            Text("Peak Time", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            Text(if (totalContentCount > 0) "Real-time" else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                            Text("Peak Day", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                            Text(if (accountsReached > 0L) peakDay else "No data yet", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
                         }
                     }
                 }
@@ -2261,16 +2360,20 @@ fun MonetizationScreen(
     viewModel: YouSnapViewModel,
     onBack: () -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(Unit) {
+        viewModel.refreshHomeFeed(showIndicator = false)
+        viewModel.recalculateCreatorStats()
+    }
+
     val monetizationStatus by viewModel.monetizationStatus.collectAsState()
 
-    // Dynamic interactive simulation states for requirements
+    // Real live user metrics (1 item = 1 displayed)
     val followers by viewModel.followersCount.collectAsState()
     val videoViews by viewModel.videoViewsCount.collectAsState()
     val photoUploads by viewModel.photoUploadsCount.collectAsState()
     val storiesUploaded by viewModel.storiesUploadedCount.collectAsState()
 
-    // Helper targets
+    // Targets
     val targetFollowers = 500
     val targetViews = 5000
     val targetPhotos = 10
@@ -2320,7 +2423,7 @@ fun MonetizationScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // Status Banner matching user request
+            // Status Banner
             val bannerBg = when (monetizationStatus) {
                 "PENDING" -> Color(0xFFFF9800).copy(alpha = 0.15f)
                 "APPROVED" -> Color(0xFF2EB85C).copy(alpha = 0.15f)
@@ -2357,41 +2460,6 @@ fun MonetizationScreen(
                 )
             }
 
-            // Admin Panel Simulator Controls for real-time testing
-            if (monetizationStatus == "PENDING") {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "Admin Panel Simulator (Test Real-time Approval/Rejection):",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { viewModel.updateMonetizationStatus("APPROVED") },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2EB85C)),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Simulate Approve", fontSize = 12.sp)
-                            }
-                            Button(
-                                onClick = { viewModel.updateMonetizationStatus("REJECTED") },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Simulate Reject", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Section Title: YouTube Studio Requirements Style
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2403,20 +2471,6 @@ fun MonetizationScreen(
                     fontSize = 15.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                
-                // Helper action to quickly fill everything for testing
-                Text(
-                    text = "Auto-Fill ⚡",
-                    color = Color(0xFFE1306C),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Black,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable {
-                            // Simulation: This would be connected to real data flow in production
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
             }
 
             // Metric Tracker 1: Followers
@@ -2425,19 +2479,18 @@ fun MonetizationScreen(
                 requirementText = "500 Followers",
                 currentValue = followers,
                 targetValue = targetFollowers,
-                valueDisplay = "$followers / $targetFollowers",
+                valueDisplay = "%,d / %,d".format(followers, targetFollowers),
                 isMet = isFollowersMet,
                 icon = Icons.Default.People
             )
 
             // Metric Tracker 2: Short Video Views
-            val formattedCurrentViews = if (videoViews >= 1000) "${videoViews / 1000}K" else videoViews.toString()
             EligibilityRequirementCard(
                 title = "Short Video Views",
-                requirementText = "5K Views",
+                requirementText = "5,000 Views",
                 currentValue = videoViews,
                 targetValue = targetViews,
-                valueDisplay = "$videoViews / 5K",
+                valueDisplay = "%,d / %,d".format(videoViews, targetViews),
                 isMet = isViewsMet,
                 icon = Icons.Default.PlayArrow
             )
@@ -2448,7 +2501,7 @@ fun MonetizationScreen(
                 requirementText = "Minimum 10 Photos",
                 currentValue = photoUploads,
                 targetValue = targetPhotos,
-                valueDisplay = "$photoUploads / $targetPhotos",
+                valueDisplay = "%,d / %,d".format(photoUploads, targetPhotos),
                 isMet = isPhotosMet,
                 icon = Icons.Default.Photo
             )
@@ -2459,7 +2512,7 @@ fun MonetizationScreen(
                 requirementText = "Minimum 20 Stories",
                 currentValue = storiesUploaded,
                 targetValue = targetStories,
-                valueDisplay = "$storiesUploaded / $targetStories",
+                valueDisplay = "%,d / %,d".format(storiesUploaded, targetStories),
                 isMet = isStoriesMet,
                 icon = Icons.Default.AddCircle
             )
@@ -2476,7 +2529,12 @@ fun MonetizationScreen(
             )
 
             // Apply Now Button
-            val canApply = allConditionsMet && (monetizationStatus == "NONE" || monetizationStatus == "REJECTED")
+            val canApply = allConditionsMet && (
+                monetizationStatus == "NOT_ELIGIBLE" ||
+                    monetizationStatus == "NONE" ||
+                    monetizationStatus == "REJECTED" ||
+                    monetizationStatus.isBlank()
+                )
             Button(
                 onClick = {
                     if (canApply) {
@@ -2486,7 +2544,7 @@ fun MonetizationScreen(
                 enabled = canApply,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFE1306C), // Pink/Red primary theme
+                    containerColor = Color(0xFFE1306C),
                     contentColor = Color.White,
                     disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
                     disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)

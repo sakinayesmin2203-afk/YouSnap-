@@ -148,11 +148,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val highQualityUploads = MutableStateFlow(true)
     val forceDarkMode = MutableStateFlow(false)
     
-    // Monetization state
+    // Monetization & Analytics state
     val monetizationStatus = MutableStateFlow("NOT_ELIGIBLE")
     val videoViewsCount = MutableStateFlow(0)
     val photoUploadsCount = MutableStateFlow(0)
     val storiesUploadedCount = MutableStateFlow(0)
+    val profileVisitsCount = MutableStateFlow(0)
+
+    private var activeCommentsReelId: Int? = null
 
     val currentStoryState = MutableStateFlow<StoryModel?>(null)
     val searchQuery = MutableStateFlow("")
@@ -174,11 +177,62 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try { loadPersonalPhotosFromPrefs() } catch (e: Throwable) {}
         try { loadReelsFromPrefs() } catch (e: Throwable) {}
         try { loadStoriesFromPrefs() } catch (e: Throwable) {}
+        try { loadProfileVisitsFromPrefs() } catch (e: Throwable) {}
+        try { recalculateCreatorStats() } catch (e: Throwable) {}
         try { listenToAuthChanges() } catch (e: Throwable) {}
         try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
         try { refreshHomeFeed() } catch (e: Throwable) {}
         try { fetchAllUsers() } catch (e: Throwable) {}
         try { loadSearchHistory() } catch (e: Throwable) {}
+    }
+
+    private fun profileVisitsPrefsKey(): String {
+        val identity = activeUserUid()?.takeIf { it.isNotBlank() }
+            ?: _profileState.value.email.takeIf { it.isNotBlank() }?.lowercase()
+            ?: _profileState.value.username.takeIf { it.isNotBlank() }?.lowercase()
+            ?: "guest"
+        return "profile_visits_" + identity.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+    }
+
+    private fun loadProfileVisitsFromPrefs() {
+        profileVisitsCount.value = prefs.getInt(profileVisitsPrefsKey(), 0).coerceAtLeast(0)
+    }
+
+    fun recordProfileVisit() {
+        val next = profileVisitsCount.value + 1
+        profileVisitsCount.value = next
+        prefs.edit().putInt(profileVisitsPrefsKey(), next).apply()
+    }
+
+    fun isOwnedByCurrentUser(creatorUsername: String, creatorUid: String): Boolean {
+        val myUid = activeUserUid()
+        if (!myUid.isNullOrBlank() && creatorUid.isNotBlank() && myUid == creatorUid) {
+            return true
+        }
+        val myUsername = _profileState.value.username.trim()
+        return myUsername.isNotBlank() && creatorUsername.trim().equals(myUsername, ignoreCase = true)
+    }
+
+    fun recalculateCreatorStats() {
+        val myPhotos = personalPhotosState.value
+            .filter { isOwnedByCurrentUser(it.creatorUsername, it.creatorUid) }
+            .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
+
+        val myReels = _reelsState.value
+            .filter { isOwnedByCurrentUser(it.creatorUsername, it.creatorUid) }
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
+
+        val myStories = allStories.value
+            .filter { isOwnedByCurrentUser(it.ownerUsername, "") }
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
+
+        photoUploadsCount.value = myPhotos.size
+        storiesUploadedCount.value = myStories.size
+        videoViewsCount.value = myReels.sumOf { it.viewsCount.coerceAtLeast(0) }
+        val currentStatus = _profileState.value.monetizationStatus
+        if (currentStatus.isNotBlank()) {
+            monetizationStatus.value = currentStatus
+        }
     }
 
     private fun loadSearchHistory() {
@@ -300,6 +354,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             _profileState.value = cached
             myFollowersCount.value = cached.followersCount
             myFollowingCount.value = cached.followingCount
+            monetizationStatus.value = cached.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+            loadProfileVisitsFromPrefs()
+            recalculateCreatorStats()
         }
     }
 
@@ -311,6 +368,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 _profileState.value = cached
                 myFollowersCount.value = cached.followersCount
                 myFollowingCount.value = cached.followingCount
+                monetizationStatus.value = cached.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+                loadProfileVisitsFromPrefs()
+                recalculateCreatorStats()
             }
             db.collection("users").document(uid).get().addOnSuccessListener { doc ->
                 if (doc.exists()) {
@@ -319,7 +379,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         _profileState.value = profile
                         myFollowersCount.value = profile.followersCount
                         myFollowingCount.value = profile.followingCount
+                        monetizationStatus.value = profile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
                         saveProfileToPrefs(profile, uid)
+                        loadProfileVisitsFromPrefs()
+                        recalculateCreatorStats()
                     }
                 }
             }
@@ -343,6 +406,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun navigateTo(screen: Screen) {
+        if ((screen is Screen.Profile ||
+                (screen is Screen.OtherProfile && isOwnedByCurrentUser(screen.username, ""))) &&
+            _currentScreen.value != screen
+        ) {
+            recordProfileVisit()
+        }
         backstack.push(screen)
         _currentScreen.value = screen
     }
@@ -380,6 +449,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _profileState.value = ProfileEntity(name = "User", username = "user")
         myFollowersCount.value = 0
         myFollowingCount.value = 0
+        monetizationStatus.value = "NOT_ELIGIBLE"
+        profileVisitsCount.value = 0
+        recalculateCreatorStats()
         clearAndNavigateTo(Screen.Login)
     }
 
@@ -575,6 +647,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     _reelsState.value = listOf(newReel) + _reelsState.value
                     saveReelsToPrefs()
                 }
+                recalculateCreatorStats()
 
                 var firestoreSynced = false
                 try {
@@ -1019,6 +1092,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     .sortedByDescending { it.timestamp }
                 _reelsState.value = mergedReels
                 saveReelsToPrefs()
+                recalculateCreatorStats()
 
                 watchHistory.value = watchHistory.value.filter {
                     it.mediaUrl.isBlank() || (it.mediaUrl !in deletedUrls && !isMissingFromSupabase(it.mediaUrl))
@@ -1044,6 +1118,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loadCommentsForReel(id: Int) {
+        activeCommentsReelId = id
         db.collection("reels_comments").whereEqualTo("reelId", id.toString()).get().addOnSuccessListener { snapshot ->
             val list = snapshot.documents.mapNotNull { it.toObject(CommentEntity::class.java) }
             activeReelComments.value = list
@@ -1054,9 +1129,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val isCurrentlyLiked = homePostLikedState.value[postId] ?: false
         val newLiked = !isCurrentlyLiked
         homePostLikedState.value = homePostLikedState.value + (postId to newLiked)
-        val currentCount = homePostLikesCount.value[postId] ?: 0
-        val newCount = if (newLiked) currentCount + 1 else (currentCount - 1).coerceAtLeast(0)
+        val cleanId = postId.removePrefix("photo_")
+        val baseCount = homePostLikesCount.value[postId]
+            ?: personalPhotosState.value.find { it.id == cleanId || it.id == postId }?.initialLikes
+            ?: 0
+        val newCount = if (newLiked) baseCount + 1 else (baseCount - 1).coerceAtLeast(0)
         homePostLikesCount.value = homePostLikesCount.value + (postId to newCount)
+        personalPhotosState.value = personalPhotosState.value.map { p ->
+            if (p.id == cleanId || p.id == postId) p.copy(initialLikes = newCount, initialIsLiked = newLiked) else p
+        }
+        savePersonalPhotosToPrefs()
     }
 
     fun toggleBookmarkHomePost(postId: String): Boolean {
@@ -1075,7 +1157,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val effectiveUrl = imageUrl.ifBlank { targetPhoto?.imageUrl.orEmpty() }
             val targetDocId = targetPhoto?.firestoreDocId
 
-            // 1. Immediately remove from local state & mark deleted so UI updates instantly
+            // 1. Immediately remove from local state & mark deleted so UI & Insights update instantly
             if (effectiveUrl.isNotEmpty()) {
                 markUrlDeleted(effectiveUrl)
             }
@@ -1083,11 +1165,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 it.id != postId && it.id != cleanId && (effectiveUrl.isEmpty() || it.imageUrl != effectiveUrl)
             }
             savePersonalPhotosToPrefs()
+            recalculateCreatorStats()
 
-            // 2. Delete from Supabase Storage
+            // 2. Delete from Supabase Storage and verify
+            var deletedFromSupabase = true
             if (effectiveUrl.isNotEmpty()) {
-                val filename = extractSupabaseFilename(effectiveUrl) ?: effectiveUrl.substringAfterLast("/")
-                supabaseRepository.deleteFile(filename)
+                val filename = extractSupabaseFilename(effectiveUrl) ?: effectiveUrl.substringBefore("?").substringAfterLast("/")
+                deletedFromSupabase = supabaseRepository.deleteFile(filename)
             }
 
             // 3. Delete from Firestore (by docId, id, or imageUrl)
@@ -1095,9 +1179,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 if (!targetDocId.isNullOrEmpty()) {
                     awaitTask(db.collection("posts").document(targetDocId).delete())
                 }
-                val byId = awaitTask(db.collection("posts").whereIn("id", listOf(postId, cleanId)).get())
-                for (doc in byId.documents) {
-                    try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+                val idCandidates = listOf(postId, cleanId).distinct().filter { it.isNotBlank() }
+                if (idCandidates.isNotEmpty()) {
+                    val byId = awaitTask(db.collection("posts").whereIn("id", idCandidates).get())
+                    for (doc in byId.documents) {
+                        try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+                    }
                 }
                 if (effectiveUrl.isNotEmpty()) {
                     val byUrl = awaitTask(db.collection("posts").whereEqualTo("imageUrl", effectiveUrl).get())
@@ -1109,7 +1196,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Firestore photo delete notice: ${e.message}")
             }
 
-            refreshHomeFeed()
+            if (effectiveUrl.isNotEmpty() && !deletedFromSupabase) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(
+                        app,
+                        "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+            refreshHomeFeed(showIndicator = false)
             onSuccess()
         }
     }
@@ -1127,11 +1224,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 it.id != reel.id && (reel.mediaUrl.isEmpty() || it.mediaUrl != reel.mediaUrl)
             }
             saveReelsToPrefs()
+            recalculateCreatorStats()
 
-            // 2. Delete file from Supabase storage
+            // 2. Delete file from Supabase storage and verify
+            var deletedFromSupabase = true
             if (reel.mediaUrl.isNotEmpty()) {
-                val filename = extractSupabaseFilename(reel.mediaUrl) ?: reel.mediaUrl.substringAfterLast("/")
-                supabaseRepository.deleteFile(filename)
+                val filename = extractSupabaseFilename(reel.mediaUrl) ?: reel.mediaUrl.substringBefore("?").substringAfterLast("/")
+                deletedFromSupabase = supabaseRepository.deleteFile(filename)
             }
 
             // 3. Delete from Firestore collection "reels"
@@ -1156,18 +1255,30 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Firestore reel delete notice: ${e.message}")
             }
 
-            refreshHomeFeed()
+            if (reel.mediaUrl.isNotEmpty() && !deletedFromSupabase) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(
+                        app,
+                        "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+            refreshHomeFeed(showIndicator = false)
             onComplete()
         }
     }
 
     fun addCommentToHomePost(postId: String, text: String) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) return
         val user = profileState.value
         val comment = CommentEntity(
             id = System.currentTimeMillis().toInt(),
             postId = postId,
             username = user.username,
-            text = text,
+            text = cleanText,
             timestamp = System.currentTimeMillis()
         )
         val currentMap = homePostComments.value.toMutableMap()
@@ -1176,20 +1287,38 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         currentMap[postId] = currentList
         homePostComments.value = currentMap
 
+        val cleanId = postId.removePrefix("photo_")
+        personalPhotosState.value = personalPhotosState.value.map { p ->
+            if (p.id == cleanId || p.id == postId) p.copy(initialComments = p.initialComments + 1) else p
+        }
+        savePersonalPhotosToPrefs()
+
         val doc = mapOf(
             "postId" to postId,
             "username" to user.username,
-            "text" to text,
+            "text" to cleanText,
             "timestamp" to System.currentTimeMillis()
         )
-        db.collection("comments").add(doc).addOnSuccessListener {
-            refreshHomeFeed()
-        }
+        db.collection("comments").add(doc)
     }
 
     fun uploadTextStory(text: String, gradientStart: String, gradientEnd: String, onComplete: () -> Unit) {
         val profile = profileState.value
         val timestamp = System.currentTimeMillis()
+        val newStory = StoryModel(
+            storyId = timestamp.toString(),
+            ownerUsername = profile.username,
+            mediaUrl = "",
+            mediaType = "text",
+            caption = text,
+            bgGradientStart = gradientStart,
+            bgGradientEnd = gradientEnd,
+            timestamp = timestamp
+        )
+        allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(profile.username, ignoreCase = true) }
+        saveStoriesToPrefs()
+        recalculateCreatorStats()
+
         val storyDoc = mapOf(
             "storyId" to timestamp.toString(),
             "ownerUsername" to profile.username,
@@ -1204,9 +1333,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "viewsCount" to 0,
             "likes" to emptyList<String>()
         )
-        db.collection("stories").document(profile.username).set(storyDoc).addOnSuccessListener {
+        db.collection("stories").document(profile.username).set(storyDoc).addOnCompleteListener {
             onComplete()
-            refreshHomeFeed()
+            refreshHomeFeed(showIndicator = false)
         }
     }
 
@@ -1223,6 +1352,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleLikeReel(reel: ReelEntity) {
+        val newLiked = !reel.isLiked
+        val newCount = if (newLiked) reel.likesCount + 1 else (reel.likesCount - 1).coerceAtLeast(0)
+        _reelsState.value = _reelsState.value.map {
+            if (it.id == reel.id) it.copy(isLiked = newLiked, likesCount = newCount) else it
+        }
+        saveReelsToPrefs()
+
         val uid = auth.currentUser?.uid ?: return
         db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { snapshot ->
             for (doc in snapshot.documents) {
@@ -1253,7 +1389,21 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val text = currentCommentText.value.trim()
         if (text.isEmpty()) return
         val user = profileState.value
-        val reelId = selectedReelForPreview.value?.id ?: return
+        val reelId = activeCommentsReelId ?: selectedReelForPreview.value?.id ?: return
+        val newComment = CommentEntity(
+            id = System.currentTimeMillis().toInt(),
+            reelId = reelId,
+            username = user.username,
+            text = text,
+            timestamp = System.currentTimeMillis()
+        )
+        activeReelComments.value = activeReelComments.value + newComment
+        currentCommentText.value = ""
+        _reelsState.value = _reelsState.value.map {
+            if (it.id == reelId) it.copy(commentsCount = it.commentsCount + 1) else it
+        }
+        saveReelsToPrefs()
+
         val comment = mapOf(
             "reelId" to reelId.toString(),
             "username" to user.username,
@@ -1261,7 +1411,6 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "timestamp" to System.currentTimeMillis()
         )
         db.collection("reels_comments").add(comment).addOnSuccessListener {
-            currentCommentText.value = ""
             loadCommentsForReel(reelId)
         }
     }
@@ -1272,6 +1421,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val story = snapshot.toObject(StoryModel::class.java)
                 if (story != null) {
                     allStories.value = allStories.value.filter { it.ownerUsername != username } + story
+                    recalculateCreatorStats()
                 }
             }
         }
@@ -1291,22 +1441,37 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun deleteStory(username: String, onComplete: () -> Unit) {
         viewModelScope.launch {
             val matchingStories = allStories.value.filter { it.ownerUsername.equals(username, ignoreCase = true) }
+            var allDeletedInSupabase = true
             matchingStories.forEach { story ->
                 if (story.mediaUrl.isNotBlank()) {
                     markUrlDeleted(story.mediaUrl)
-                    val filename = extractSupabaseFilename(story.mediaUrl) ?: story.mediaUrl.substringAfterLast("/")
-                    supabaseRepository.deleteFile(filename)
+                    val filename = extractSupabaseFilename(story.mediaUrl) ?: story.mediaUrl.substringBefore("?").substringAfterLast("/")
+                    if (!supabaseRepository.deleteFile(filename)) {
+                        allDeletedInSupabase = false
+                    }
                 }
             }
             allStories.value = allStories.value.filterNot { it.ownerUsername.equals(username, ignoreCase = true) }
             saveStoriesToPrefs()
+            recalculateCreatorStats()
 
             try {
                 awaitTask(db.collection("stories").document(username).delete())
             } catch (e: Exception) {
                 android.util.Log.w("YouSnapViewModel", "Firestore story delete notice: ${e.message}")
             }
-            refreshHomeFeed()
+
+            if (!allDeletedInSupabase) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(
+                        app,
+                        "Story removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+            refreshHomeFeed(showIndicator = false)
             onComplete()
         }
     }
@@ -1391,6 +1556,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun clearWatchHistory() { watchHistory.value = emptyList() }
     fun addToWatchHistory(reel: ReelEntity) { watchHistory.value = (listOf(reel) + watchHistory.value.filter { it.id != reel.id }).take(20) }
     fun recordReelViewOnce(id: Int) {
+        _reelsState.value = _reelsState.value.map { reel ->
+            if (reel.id == id) reel.copy(viewsCount = reel.viewsCount + 1) else reel
+        }
+        saveReelsToPrefs()
+        recalculateCreatorStats()
+
         db.collection("reels").whereEqualTo("id", id.toString()).get().addOnSuccessListener { snapshot ->
             for (doc in snapshot.documents) {
                 doc.reference.update("viewsCount", FieldValue.increment(1))
@@ -1458,6 +1629,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     fun recordStoryView(username: String) {
         val myUser = profileState.value.username
+        allStories.value = allStories.value.map { story ->
+            if (story.ownerUsername.equals(username, ignoreCase = true)) {
+                val updatedViewers = if (myUser.isNotBlank() && !story.viewerIds.contains(myUser)) {
+                    story.viewerIds + myUser
+                } else story.viewerIds
+                story.copy(viewerIds = updatedViewers, viewsCount = story.viewsCount + 1)
+            } else story
+        }
+        saveStoriesToPrefs()
+        recalculateCreatorStats()
         db.collection("stories").document(username).update("viewerIds", FieldValue.arrayUnion(myUser), "viewsCount", FieldValue.increment(1))
     }
 
@@ -1502,7 +1683,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         email: String = "",
         country: String = ""
     ) {
-        val uid = auth.currentUser?.uid ?: return
+        updateMonetizationStatus("PENDING")
+        val uid = activeUserUid() ?: return
         val data = mapOf(
             "fullName" to fullName.ifEmpty { name },
             "age" to age,
@@ -1522,8 +1704,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateMonetizationStatus(status: String) {
-        val uid = auth.currentUser?.uid ?: return
-        db.collection("users").document(uid).update("monetizationStatus", status)
+        monetizationStatus.value = status
+        val updated = _profileState.value.copy(monetizationStatus = status)
+        _profileState.value = updated
+        val uid = activeUserUid()
+        saveProfileToPrefs(updated, uid)
+        if (!uid.isNullOrBlank()) {
+            db.collection("users").document(uid).update("monetizationStatus", status)
+        }
     }
 
     fun submitSupportTicket(subject: String, description: String) {
@@ -1579,6 +1767,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
             saveStoriesToPrefs()
         }
+        recalculateCreatorStats()
 
         if (uid.isNullOrBlank()) {
             onComplete(true)
@@ -1643,7 +1832,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             _profileState.value = initialProfile
             myFollowersCount.value = initialProfile.followersCount
             myFollowingCount.value = initialProfile.followingCount
+            monetizationStatus.value = initialProfile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
             saveProfileToPrefs(initialProfile, uid)
+            loadProfileVisitsFromPrefs()
+            recalculateCreatorStats()
 
             try {
                 val userDocRef = db.collection("users").document(uid)
@@ -1652,6 +1844,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         userDocRef.set(initialProfile).addOnCompleteListener {
                             _profileState.value = initialProfile
                             saveProfileToPrefs(initialProfile, uid)
+                            recalculateCreatorStats()
                             refreshHomeFeed()
                             onSuccess()
                         }
@@ -1666,7 +1859,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         _profileState.value = resolvedProfile
                         myFollowersCount.value = resolvedProfile.followersCount
                         myFollowingCount.value = resolvedProfile.followingCount
+                        monetizationStatus.value = resolvedProfile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
                         saveProfileToPrefs(resolvedProfile, uid)
+                        recalculateCreatorStats()
                         refreshHomeFeed()
                         onSuccess()
                     }
@@ -1711,6 +1906,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val profile = ProfileEntity(id = uid.hashCode(), name = name, username = defaultUsername, email = normalizedEmail)
             _profileState.value = profile
             saveProfileToPrefs(profile, uid)
+            loadProfileVisitsFromPrefs()
+            recalculateCreatorStats()
             db.collection("users").document(uid).set(profile).addOnCompleteListener {
                 refreshHomeFeed()
                 onSuccess()
@@ -1736,6 +1933,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 _profileState.value = fallback
                 saveProfileToPrefs(fallback, uid)
             }
+            loadProfileVisitsFromPrefs()
+            recalculateCreatorStats()
             fetchAndSyncUserProfile()
             refreshHomeFeed()
             onSuccess()

@@ -45,6 +45,7 @@ import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.VideoLibrary
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -618,21 +619,45 @@ fun ProfileScreen(
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    // Close Button
-                    IconButton(
-                        onClick = { selectedReelForPreview = null },
+                    // Top-end action buttons (Delete if owner + Close)
+                    Row(
                         modifier = Modifier
                             .padding(16.dp)
                             .windowInsetsPadding(WindowInsets.statusBars)
-                            .size(48.dp)
-                            .align(Alignment.TopEnd)
-                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+                            .align(Alignment.TopEnd),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = Color.White
-                        )
+                        if (viewModel.isOwnedByCurrentUser(activePreviewReel.creatorUsername, activePreviewReel.creatorUid)) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.deleteReelVideo(activePreviewReel) {
+                                        selectedReelForPreview = null
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(Color(0xFFB3261E).copy(alpha = 0.85f), RoundedCornerShape(24.dp))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Delete,
+                                    contentDescription = "Delete Reel",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = { selectedReelForPreview = null },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = Color.White
+                            )
+                        }
                     }
 
                     // Comments Sheet inside dialog
