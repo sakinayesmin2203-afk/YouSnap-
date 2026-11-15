@@ -37,6 +37,13 @@ data class UploadResult(
     val responseCode: Int = 0
 )
 
+data class DeleteResult(
+    val isSuccess: Boolean,
+    val responseCode: Int = 0,
+    val errorMessage: String? = null,
+    val details: String = ""
+)
+
 sealed class UploadTransferState {
     data class Progress(val fraction: Float) : UploadTransferState()
     data class Completed(val result: UploadResult) : UploadTransferState()
@@ -94,7 +101,7 @@ class SupabaseRepository {
             val mediaType = contentType.toMediaTypeOrNull()
             val apiKey = SupabaseStorageService.API_KEY
             val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
-            val encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8.toString())
+            val encodedFilename = android.net.Uri.encode(filename, "/")
 
             // Reserve final 2% until HTTP server confirms upload success
             val byteProgressWrapper: (Float) -> Unit = { byteFraction ->
@@ -215,7 +222,7 @@ class SupabaseRepository {
 
             val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val apiKey = SupabaseStorageService.API_KEY
-            val encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8.toString())
+            val encodedFilename = android.net.Uri.encode(filename, "/")
 
             val directUrl = SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename
             val requestBuilder = Request.Builder()
@@ -262,137 +269,264 @@ class SupabaseRepository {
         }
     }
 
-    suspend fun deleteFile(filename: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val rawName = filename.substringBefore("?").substringAfterLast("/")
-            val cleanName = try {
-                URLDecoder.decode(rawName, StandardCharsets.UTF_8.toString())
-            } catch (_: Exception) {
-                rawName
+    fun extractObjectKey(urlOrName: String): String {
+        val trimmed = urlOrName.trim().substringBefore("#").substringBefore("?")
+        if (trimmed.isBlank()) return ""
+        val bucket = SupabaseStorageService.BUCKET_NAME
+        val markers = listOf(
+            "/storage/v1/object/public/$bucket/",
+            "/storage/v1/object/authenticated/$bucket/",
+            "/storage/v1/object/sign/$bucket/",
+            "/storage/v1/object/$bucket/",
+            "/$bucket/"
+        )
+        val rawKey = if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            val matchedMarker = markers.firstOrNull { trimmed.contains(it, ignoreCase = true) }
+            if (matchedMarker != null) {
+                val idx = trimmed.indexOf(matchedMarker, ignoreCase = true)
+                trimmed.substring(idx + matchedMarker.length)
+            } else {
+                trimmed.substringAfterLast("/")
             }
-            if (cleanName.isBlank()) return@withContext false
+        } else if (
+            trimmed.startsWith("/") ||
+            trimmed.startsWith("content:", ignoreCase = true) ||
+            trimmed.startsWith("file:", ignoreCase = true)
+        ) {
+            return ""
+        } else {
+            val matchedMarker = markers.firstOrNull { trimmed.contains(it, ignoreCase = true) }
+            if (matchedMarker != null) {
+                val idx = trimmed.indexOf(matchedMarker, ignoreCase = true)
+                trimmed.substring(idx + matchedMarker.length)
+            } else {
+                trimmed.trimStart('/')
+            }
+        }
+
+        return try {
+            android.net.Uri.decode(rawKey).trimStart('/')
+        } catch (_: Exception) {
+            rawKey.trimStart('/')
+        }
+    }
+
+    suspend fun deleteFile(filename: String): Boolean = deleteFileDetailed(filename).isSuccess
+
+    suspend fun deleteFileDetailed(filename: String): DeleteResult = withContext(Dispatchers.IO) {
+        try {
+            val cleanName = extractObjectKey(filename)
+            if (cleanName.isBlank()) {
+                return@withContext DeleteResult(
+                    isSuccess = false,
+                    errorMessage = "Empty or non-Supabase file key"
+                )
+            }
 
             // If file is already missing from Supabase Storage, deletion is already satisfied
             if (checkPublicFileExists(cleanName) == false) {
-                return@withContext true
+                return@withContext DeleteResult(
+                    isSuccess = true,
+                    responseCode = 200,
+                    details = "File already absent from Supabase Storage"
+                )
             }
 
             val directAuthHeader = SupabaseStorageService.DIRECT_AUTHORIZATION_HEADER
             val apiKey = SupabaseStorageService.API_KEY
-            val encodedFilename = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString()).replace("+", "%20")
             val directBatchUrl = "https://${SupabaseStorageService.PROJECT_ID}.supabase.co/storage/v1/object/${SupabaseStorageService.BUCKET_NAME}"
             val workerBatchUrl = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/${SupabaseStorageService.BUCKET_NAME}"
-            val batchPayloadJson = org.json.JSONObject().apply {
-                put("prefixes", JSONArray().apply { put(cleanName) })
-            }.toString()
 
-            suspend fun executeAndVerify(request: Request, label: String): Boolean {
+            var lastCode = 0
+            var lastBody = ""
+            var lastLabel = ""
+
+            suspend fun executeAndVerify(request: Request, targetKey: String, label: String): Boolean {
                 return try {
                     client.newCall(request).execute().use { response ->
                         val body = response.body?.string().orEmpty().trim()
-                        android.util.Log.d("SupabaseRepository", "$label ($cleanName): HTTP ${response.code} $body")
-                        val deletedByPayload = response.isSuccessful &&
-                            body != "[]" &&
+                        lastCode = response.code
+                        lastBody = body
+                        lastLabel = label
+                        android.util.Log.d("SupabaseRepository", "$label ($targetKey): HTTP ${response.code} $body")
+
+                        val shortName = targetKey.substringAfterLast("/")
+                        val confirmedSingle = response.isSuccessful &&
+                            body.contains("Successfully deleted", ignoreCase = true) &&
                             !body.contains("\"error\"", ignoreCase = true)
-                        if (deletedByPayload || response.code == 404) {
-                            kotlinx.coroutines.delay(150L)
-                            val stillExists = checkPublicFileExists(cleanName)
-                            if (stillExists == false) {
-                                return true
+                        val confirmedBatch = response.isSuccessful &&
+                            body != "[]" &&
+                            body.startsWith("[") &&
+                            !body.contains("\"error\"", ignoreCase = true) &&
+                            (body.contains(targetKey, ignoreCase = true) || body.contains(shortName, ignoreCase = true))
+
+                        if (confirmedSingle || confirmedBatch) {
+                            repeat(2) { attempt ->
+                                kotlinx.coroutines.delay(if (attempt == 0) 150L else 350L)
+                                if (checkPublicFileExists(targetKey) == false) {
+                                    return true
+                                }
                             }
-                            // If HTTP confirmed non-empty deleted object list and existence check is indeterminate (null), accept
-                            if (stillExists == null && deletedByPayload && body.startsWith("[") && body.contains(cleanName)) {
+                            // Supabase explicitly confirmed deletion in its JSON response
+                            return true
+                        }
+
+                        if (response.code == 404 &&
+                            (body.contains("not_found", ignoreCase = true) || body.contains("Object not found", ignoreCase = true))
+                        ) {
+                            kotlinx.coroutines.delay(150L)
+                            if (checkPublicFileExists(targetKey) == false) {
                                 return true
                             }
                         }
                     }
                     false
                 } catch (e: Exception) {
-                    android.util.Log.w("SupabaseRepository", "$label error ($cleanName): ${e.message}")
+                    lastBody = e.localizedMessage ?: "Network exception"
+                    lastLabel = label
+                    android.util.Log.w("SupabaseRepository", "$label error ($targetKey): ${e.message}")
                     false
                 }
             }
 
-            // 1. Direct Supabase Storage Single DELETE /object/{bucket}/{file}
-            if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
-                val directSingleBuilder = Request.Builder()
-                    .url(SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedFilename)
-                    .addHeader("apikey", apiKey)
+            suspend fun attemptDeleteForKey(targetKey: String): Boolean {
+                val encodedPath = android.net.Uri.encode(targetKey, "/")
+                val batchPayloadJson = org.json.JSONObject().apply {
+                    put("prefixes", JSONArray().apply { put(targetKey) })
+                }.toString()
+                val jsonMediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+
+                // 1. Direct Supabase Storage Single & Batch DELETE
+                if (SupabaseStorageService.HAS_VALID_SUPABASE_KEY) {
+                    val directSingleBuilder = Request.Builder()
+                        .url(SupabaseStorageService.DIRECT_SUPABASE_ENDPOINT + encodedPath)
+                        .addHeader("apikey", apiKey)
+                        .delete()
+                    if (!directAuthHeader.isNullOrBlank()) {
+                        directSingleBuilder.addHeader("Authorization", directAuthHeader)
+                    }
+                    if (executeAndVerify(directSingleBuilder.build(), targetKey, "Direct single delete")) {
+                        return true
+                    }
+
+                    val directBatchBuilder = Request.Builder()
+                        .url(directBatchUrl)
+                        .addHeader("apikey", apiKey)
+                        .delete(batchPayloadJson.toRequestBody(jsonMediaType))
+                    if (!directAuthHeader.isNullOrBlank()) {
+                        directBatchBuilder.addHeader("Authorization", directAuthHeader)
+                    }
+                    if (executeAndVerify(directBatchBuilder.build(), targetKey, "Direct batch delete")) {
+                        return true
+                    }
+                }
+
+                // 2. Cloudflare Worker Single & Batch DELETE (using Worker's own configured service key)
+                val workerSingleNoKey = Request.Builder()
+                    .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
                     .delete()
-                if (!directAuthHeader.isNullOrBlank()) {
-                    directSingleBuilder.addHeader("Authorization", directAuthHeader)
-                }
-                if (executeAndVerify(directSingleBuilder.build(), "Direct single delete")) {
-                    return@withContext true
+                    .build()
+                if (executeAndVerify(workerSingleNoKey, targetKey, "Worker single delete")) {
+                    return true
                 }
 
-                // 2. Direct Supabase Storage Batch DELETE /object/{bucket} with {"prefixes":[cleanName]}
-                val directBatchBuilder = Request.Builder()
-                    .url(directBatchUrl)
-                    .addHeader("apikey", apiKey)
-                    .addHeader("Content-Type", "application/json")
-                    .delete(batchPayloadJson.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
-                if (!directAuthHeader.isNullOrBlank()) {
-                    directBatchBuilder.addHeader("Authorization", directAuthHeader)
+                val workerBatchNoKey = Request.Builder()
+                    .url(workerBatchUrl)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                    .delete(batchPayloadJson.toRequestBody(jsonMediaType))
+                    .build()
+                if (executeAndVerify(workerBatchNoKey, targetKey, "Worker batch delete")) {
+                    return true
                 }
-                if (executeAndVerify(directBatchBuilder.build(), "Direct batch delete")) {
-                    return@withContext true
+
+                // 3. Cloudflare Worker Single & Batch DELETE with apikey header fallback
+                val fallbackApiKey = apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") }
+                val workerSingleWithKey = Request.Builder()
+                    .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                    .addHeader("apikey", fallbackApiKey)
+                    .delete()
+                    .build()
+                if (executeAndVerify(workerSingleWithKey, targetKey, "Worker single delete (apikey)")) {
+                    return true
                 }
+
+                val workerBatchWithKey = Request.Builder()
+                    .url(workerBatchUrl)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
+                    .addHeader("apikey", fallbackApiKey)
+                    .delete(batchPayloadJson.toRequestBody(jsonMediaType))
+                    .build()
+                if (executeAndVerify(workerBatchWithKey, targetKey, "Worker batch delete (apikey)")) {
+                    return true
+                }
+
+                return false
             }
 
-            // 3. Cloudflare Worker Single DELETE (without forwarding client apikey first so Worker's own service key is used)
-            val workerSingleNoKey = Request.Builder()
-                .url(SupabaseStorageService.WORKER_ENDPOINT + encodedFilename)
-                .addHeader("User-Agent", "YouSnap-Android/1.0")
-                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                .delete()
-                .build()
-            if (executeAndVerify(workerSingleNoKey, "Worker single delete")) {
-                return@withContext true
+            if (attemptDeleteForKey(cleanName)) {
+                return@withContext DeleteResult(
+                    isSuccess = true,
+                    responseCode = lastCode.takeIf { it > 0 } ?: 200,
+                    details = "$lastLabel succeeded"
+                )
             }
 
-            // 4. Cloudflare Worker Batch DELETE /object/{bucket} with {"prefixes":[cleanName]}
-            val workerBatchNoKey = Request.Builder()
-                .url(workerBatchUrl)
-                .addHeader("User-Agent", "YouSnap-Android/1.0")
-                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                .addHeader("Content-Type", "application/json")
-                .delete(batchPayloadJson.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
-                .build()
-            if (executeAndVerify(workerBatchNoKey, "Worker batch delete")) {
-                return@withContext true
+            // Fallback: cross-check live bucket listing in case exact object key differs (e.g., encoding or prefix)
+            val listedObjects = try { listMediaFiles(limit = 1000) } catch (_: Exception) { null }
+            val shortClean = cleanName.substringAfterLast("/")
+            val matchingListed = listedObjects?.firstOrNull { obj ->
+                obj.name.equals(cleanName, ignoreCase = true) ||
+                    obj.name.substringAfterLast("/").equals(shortClean, ignoreCase = true)
             }
-
-            // 5. Cloudflare Worker Single & Batch DELETE with apikey header fallback
-            val fallbackApiKey = apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") }
-            val workerSingleWithKey = Request.Builder()
-                .url(SupabaseStorageService.WORKER_ENDPOINT + encodedFilename)
-                .addHeader("User-Agent", "YouSnap-Android/1.0")
-                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                .addHeader("apikey", fallbackApiKey)
-                .delete()
-                .build()
-            if (executeAndVerify(workerSingleWithKey, "Worker single delete (apikey)")) {
-                return@withContext true
-            }
-
-            val workerBatchWithKey = Request.Builder()
-                .url(workerBatchUrl)
-                .addHeader("User-Agent", "YouSnap-Android/1.0")
-                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                .addHeader("apikey", fallbackApiKey)
-                .addHeader("Content-Type", "application/json")
-                .delete(batchPayloadJson.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
-                .build()
-            if (executeAndVerify(workerBatchWithKey, "Worker batch delete (apikey)")) {
-                return@withContext true
+            if (matchingListed != null && matchingListed.name != cleanName) {
+                if (attemptDeleteForKey(matchingListed.name)) {
+                    return@withContext DeleteResult(
+                        isSuccess = true,
+                        responseCode = lastCode.takeIf { it > 0 } ?: 200,
+                        details = "Deleted matched bucket object ${matchingListed.name}"
+                    )
+                }
             }
 
             // Final confirmation check in case CDN propagated slightly after response
-            checkPublicFileExists(cleanName) == false
+            if (checkPublicFileExists(cleanName) == false) {
+                return@withContext DeleteResult(
+                    isSuccess = true,
+                    responseCode = 200,
+                    details = "Confirmed absent from Supabase Storage"
+                )
+            }
+
+            val errorSummary = when {
+                !SupabaseStorageService.HAS_VALID_SUPABASE_KEY && (lastCode == 401 || lastCode == 403 || lastCode == 405) ->
+                    "SUPABASE_API_KEY not set in Secrets and Worker rejected DELETE (HTTP $lastCode)."
+                lastCode == 401 || lastBody.contains("Invalid Compact JWS", ignoreCase = true) ->
+                    "Supabase authentication failed (HTTP $lastCode). Check SUPABASE_API_KEY."
+                lastCode == 403 || lastBody.contains("row-level security", ignoreCase = true) || lastBody == "[]" ->
+                    "Supabase Storage DELETE RLS policy is blocking removal on 'YouSnap' bucket (HTTP $lastCode)."
+                lastCode == 405 ->
+                    "Cloudflare Worker does not allow DELETE (HTTP 405) and direct DELETE is blocked."
+                else -> "Remote delete failed ($lastLabel HTTP $lastCode: ${lastBody.take(120)})"
+            }
+
+            DeleteResult(
+                isSuccess = false,
+                responseCode = lastCode,
+                errorMessage = errorSummary,
+                details = "$lastLabel -> HTTP $lastCode $lastBody"
+            )
         } catch (e: Exception) {
             android.util.Log.e("SupabaseRepository", "Delete exception: ${e.message}")
-            false
+            DeleteResult(
+                isSuccess = false,
+                errorMessage = e.localizedMessage ?: "Network exception during delete"
+            )
         }
     }
 
@@ -409,27 +543,24 @@ class SupabaseRepository {
         if (mediaUrlOrName.isBlank()) return@withContext null
         try {
             val trimmed = mediaUrlOrName.trim()
-            val rawName = when {
-                trimmed.startsWith("http://") || trimmed.startsWith("https://") -> {
-                    val isKnownStorageHost =
-                        trimmed.contains(CdnConfig.PROJECT_ID, ignoreCase = true) ||
-                            trimmed.contains("/storage/v1/object/public/${CdnConfig.BUCKET_NAME}/", ignoreCase = true) ||
-                            trimmed.contains("yousnap-cdn.sakinayesmin2203.workers.dev", ignoreCase = true)
-                    if (!isKnownStorageHost) return@withContext null
-                    trimmed.substringBefore("?").substringAfterLast("/")
-                }
-                trimmed.startsWith("/") -> return@withContext null
-                else -> trimmed.substringBefore("?").substringAfterLast("/")
+            if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+                val isKnownStorageHost =
+                    trimmed.contains(CdnConfig.PROJECT_ID, ignoreCase = true) ||
+                        trimmed.contains("/storage/v1/object/public/${CdnConfig.BUCKET_NAME}/", ignoreCase = true) ||
+                        trimmed.contains("yousnap-cdn.sakinayesmin2203.workers.dev", ignoreCase = true)
+                if (!isKnownStorageHost) return@withContext null
+            } else if (
+                trimmed.startsWith("/") ||
+                trimmed.startsWith("content:", ignoreCase = true) ||
+                trimmed.startsWith("file:", ignoreCase = true)
+            ) {
+                return@withContext null
             }
 
-            val cleanName = try {
-                URLDecoder.decode(rawName, StandardCharsets.UTF_8.toString())
-            } catch (_: Exception) {
-                rawName
-            }
+            val cleanName = extractObjectKey(trimmed)
             if (cleanName.isBlank()) return@withContext null
 
-            val encodedName = URLEncoder.encode(cleanName, StandardCharsets.UTF_8.toString()).replace("+", "%20")
+            val encodedName = android.net.Uri.encode(cleanName, "/")
             val cacheBuster = System.currentTimeMillis()
             val uncachedPublicUrl = "${CdnConfig.STORAGE_BASE_URL}$encodedName?cb=$cacheBuster"
 

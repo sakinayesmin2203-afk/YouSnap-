@@ -769,16 +769,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private fun extractSupabaseFilename(url: String): String? {
         if (url.isBlank()) return null
         val isSupabaseUrl = url.contains(com.example.data.CdnConfig.PROJECT_ID, ignoreCase = true) ||
-            url.contains("/storage/v1/object/public/${com.example.data.CdnConfig.BUCKET_NAME}/", ignoreCase = true) ||
+            url.contains("/storage/v1/object/", ignoreCase = true) ||
             url.contains("yousnap-cdn.sakinayesmin2203.workers.dev", ignoreCase = true)
         if (!isSupabaseUrl) return null
-        val raw = url.substringBefore("?").substringAfterLast("/")
-        if (raw.isBlank()) return null
-        return try {
-            java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8.toString())
-        } catch (_: Exception) {
-            raw
-        }
+        val key = supabaseRepository.extractObjectKey(url)
+        return key.takeIf { it.isNotBlank() }
+    }
+
+    private fun isUrlOrKeyDeleted(url: String, deletedSet: Set<String>): Boolean {
+        if (url.isBlank()) return false
+        if (url in deletedSet || url.substringBefore("?") in deletedSet) return true
+        val key = extractSupabaseFilename(url)
+        return key != null && key in deletedSet
     }
 
     fun refreshHomeFeed(showIndicator: Boolean = true, onComplete: () -> Unit = {}) {
@@ -857,7 +859,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }.filter { url ->
                     val fname = extractSupabaseFilename(url)
                     fname != null &&
-                        url !in deletedUrls &&
+                        !isUrlOrKeyDeleted(url, deletedUrls) &&
                         fname !in activeSupabaseNames
                 }
 
@@ -895,10 +897,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         return@mapNotNull null
                     }
                     story.copy(mediaUrl = fixedUrl)
-                }?.filter { it.mediaUrl.isBlank() || it.mediaUrl !in deletedUrls }.orEmpty()
+                }?.filter { it.mediaUrl.isBlank() || !isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) }.orEmpty()
 
                 val existingStories = allStories.value.filter {
-                    (it.mediaUrl.isBlank() || (it.mediaUrl !in deletedUrls && !isMissingFromSupabase(it.mediaUrl)))
+                    (it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl)))
                 }
                 val knownStoryUrls = (remoteStories.map { it.mediaUrl } + existingStories.map { it.mediaUrl })
                     .filter { it.isNotBlank() }.toSet()
@@ -907,7 +909,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val fallbackStories = supabaseObjects.orEmpty()
                     .filter {
                         it.name.startsWith("story", ignoreCase = true) &&
-                            it.publicUrl !in deletedUrls &&
+                            !isUrlOrKeyDeleted(it.publicUrl, deletedUrls) &&
+                            it.name !in deletedUrls &&
                             it.publicUrl !in knownStoryUrls &&
                             it.name !in knownStoryNames
                     }
@@ -934,7 +937,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val remotePhotos = postsSnapshot?.documents?.mapNotNull { doc ->
                     val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
                     val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
-                    if (fixedUrl.isNotBlank() && (fixedUrl in deletedUrls || isMissingFromSupabase(fixedUrl))) {
+                    if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
                         if (isMissingFromSupabase(fixedUrl)) {
                             try { doc.reference.delete() } catch (_: Exception) {}
                         }
@@ -961,7 +964,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }.orEmpty()
 
                 val existingPhotos = personalPhotosState.value
-                    .filter { it.imageUrl.isBlank() || (it.imageUrl !in deletedUrls && !isMissingFromSupabase(it.imageUrl)) }
+                    .filter { it.imageUrl.isBlank() || (!isUrlOrKeyDeleted(it.imageUrl, deletedUrls) && !isMissingFromSupabase(it.imageUrl)) }
                     .map { photo ->
                         val betterOwner = supabaseOwnerByUrl[photo.imageUrl]
                         if ((photo.creatorUsername.isBlank() || photo.creatorUsername == "user") && !betterOwner.isNullOrBlank()) {
@@ -977,7 +980,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val lower = obj.name.lowercase()
                         !lower.startsWith("story") &&
                             (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) &&
-                            obj.publicUrl !in deletedUrls &&
+                            !isUrlOrKeyDeleted(obj.publicUrl, deletedUrls) &&
+                            obj.name !in deletedUrls &&
                             obj.publicUrl !in knownPhotoUrls &&
                             obj.name !in knownPhotoNames
                     }
@@ -1007,7 +1011,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 // 3. Merge Reels (Firestore + Local/Cached + Public Supabase video fallback)
                 val existingReels = _reelsState.value
-                    .filter { it.mediaUrl.isBlank() || (it.mediaUrl !in deletedUrls && !isMissingFromSupabase(it.mediaUrl)) }
+                    .filter { it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl)) }
                     .map { reel ->
                         val betterOwner = supabaseOwnerByUrl[reel.mediaUrl]
                         if ((reel.creatorUsername.isBlank() || reel.creatorUsername == "user") && !betterOwner.isNullOrBlank()) {
@@ -1024,7 +1028,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val remoteReels = reelsSnapshot?.documents?.mapNotNull { doc ->
                     val rawUrl = doc.getString("mediaUrl") ?: ""
                     val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
-                    if (fixedUrl.isNotBlank() && (fixedUrl in deletedUrls || isMissingFromSupabase(fixedUrl))) {
+                    if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
                         if (isMissingFromSupabase(fixedUrl)) {
                             try { doc.reference.delete() } catch (_: Exception) {}
                         }
@@ -1063,7 +1067,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         val lower = obj.name.lowercase()
                         !lower.startsWith("story") &&
                             (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")) &&
-                            obj.publicUrl !in deletedUrls &&
+                            !isUrlOrKeyDeleted(obj.publicUrl, deletedUrls) &&
+                            obj.name !in deletedUrls &&
                             obj.publicUrl !in knownReelUrls &&
                             obj.name !in knownReelNames
                     }
@@ -1095,7 +1100,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 recalculateCreatorStats()
 
                 watchHistory.value = watchHistory.value.filter {
-                    it.mediaUrl.isBlank() || (it.mediaUrl !in deletedUrls && !isMissingFromSupabase(it.mediaUrl))
+                    it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl))
                 }
                 if (searchQuery.value.isNotBlank()) {
                     searchResultPosts.value = mergedReels.filter {
@@ -1156,22 +1161,29 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
             val effectiveUrl = imageUrl.ifBlank { targetPhoto?.imageUrl.orEmpty() }
             val targetDocId = targetPhoto?.firestoreDocId
+            val targetKey = extractSupabaseFilename(effectiveUrl)
 
             // 1. Immediately remove from local state & mark deleted so UI & Insights update instantly
             if (effectiveUrl.isNotEmpty()) {
                 markUrlDeleted(effectiveUrl)
+                if (effectiveUrl.startsWith("/") || effectiveUrl.startsWith("file:", ignoreCase = true)) {
+                    try { File(effectiveUrl.removePrefix("file://")).delete() } catch (_: Exception) {}
+                }
             }
-            personalPhotosState.value = personalPhotosState.value.filter {
-                it.id != postId && it.id != cleanId && (effectiveUrl.isEmpty() || it.imageUrl != effectiveUrl)
+            personalPhotosState.value = personalPhotosState.value.filter { photo ->
+                val photoKey = extractSupabaseFilename(photo.imageUrl)
+                photo.id != postId &&
+                    photo.id != cleanId &&
+                    (effectiveUrl.isEmpty() || photo.imageUrl != effectiveUrl) &&
+                    (targetKey == null || photoKey != targetKey)
             }
             savePersonalPhotosToPrefs()
             recalculateCreatorStats()
 
             // 2. Delete from Supabase Storage and verify
-            var deletedFromSupabase = true
-            if (effectiveUrl.isNotEmpty()) {
-                val filename = extractSupabaseFilename(effectiveUrl) ?: effectiveUrl.substringBefore("?").substringAfterLast("/")
-                deletedFromSupabase = supabaseRepository.deleteFile(filename)
+            var supabaseDeleteResult = com.example.data.repository.DeleteResult(isSuccess = true)
+            if (effectiveUrl.isNotEmpty() && targetKey != null) {
+                supabaseDeleteResult = supabaseRepository.deleteFileDetailed(effectiveUrl)
             }
 
             // 3. Delete from Firestore (by docId, id, or imageUrl)
@@ -1196,13 +1208,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Firestore photo delete notice: ${e.message}")
             }
 
-            if (effectiveUrl.isNotEmpty() && !deletedFromSupabase) {
+            if (effectiveUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
+                val msg = supabaseDeleteResult.errorMessage
+                    ?: "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket."
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(
-                        app,
-                        "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    android.widget.Toast.makeText(app, msg, android.widget.Toast.LENGTH_LONG).show()
                 }
             }
 
@@ -1213,24 +1223,36 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     fun deleteReelVideo(reel: ReelEntity, onComplete: () -> Unit) {
         viewModelScope.launch {
+            val targetKey = extractSupabaseFilename(reel.mediaUrl)
             // 1. Remove immediately from local state & delete local thumbnail file
             if (reel.mediaUrl.isNotEmpty()) {
                 markUrlDeleted(reel.mediaUrl)
+                if (reel.mediaUrl.startsWith("/") || reel.mediaUrl.startsWith("file:", ignoreCase = true)) {
+                    try { File(reel.mediaUrl.removePrefix("file://")).delete() } catch (_: Exception) {}
+                }
             }
-            if (reel.thumbnailUrl.isNotBlank() && reel.thumbnailUrl.startsWith("/")) {
-                try { File(reel.thumbnailUrl).delete() } catch (_: Exception) {}
+            if (reel.thumbnailUrl.isNotBlank() && (reel.thumbnailUrl.startsWith("/") || reel.thumbnailUrl.startsWith("file:", ignoreCase = true))) {
+                try { File(reel.thumbnailUrl.removePrefix("file://")).delete() } catch (_: Exception) {}
             }
-            _reelsState.value = _reelsState.value.filter {
-                it.id != reel.id && (reel.mediaUrl.isEmpty() || it.mediaUrl != reel.mediaUrl)
+            _reelsState.value = _reelsState.value.filter { item ->
+                val itemKey = extractSupabaseFilename(item.mediaUrl)
+                item.id != reel.id &&
+                    (reel.mediaUrl.isEmpty() || item.mediaUrl != reel.mediaUrl) &&
+                    (targetKey == null || itemKey != targetKey)
+            }
+            watchHistory.value = watchHistory.value.filter { item ->
+                val itemKey = extractSupabaseFilename(item.mediaUrl)
+                item.id != reel.id &&
+                    (reel.mediaUrl.isEmpty() || item.mediaUrl != reel.mediaUrl) &&
+                    (targetKey == null || itemKey != targetKey)
             }
             saveReelsToPrefs()
             recalculateCreatorStats()
 
             // 2. Delete file from Supabase storage and verify
-            var deletedFromSupabase = true
-            if (reel.mediaUrl.isNotEmpty()) {
-                val filename = extractSupabaseFilename(reel.mediaUrl) ?: reel.mediaUrl.substringBefore("?").substringAfterLast("/")
-                deletedFromSupabase = supabaseRepository.deleteFile(filename)
+            var supabaseDeleteResult = com.example.data.repository.DeleteResult(isSuccess = true)
+            if (reel.mediaUrl.isNotEmpty() && targetKey != null) {
+                supabaseDeleteResult = supabaseRepository.deleteFileDetailed(reel.mediaUrl)
             }
 
             // 3. Delete from Firestore collection "reels"
@@ -1255,13 +1277,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Firestore reel delete notice: ${e.message}")
             }
 
-            if (reel.mediaUrl.isNotEmpty() && !deletedFromSupabase) {
+            if (reel.mediaUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
+                val msg = supabaseDeleteResult.errorMessage
+                    ?: "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket."
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(
-                        app,
-                        "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    android.widget.Toast.makeText(app, msg, android.widget.Toast.LENGTH_LONG).show()
                 }
             }
 
@@ -1441,13 +1461,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun deleteStory(username: String, onComplete: () -> Unit) {
         viewModelScope.launch {
             val matchingStories = allStories.value.filter { it.ownerUsername.equals(username, ignoreCase = true) }
-            var allDeletedInSupabase = true
+            var storyDeleteError: String? = null
             matchingStories.forEach { story ->
                 if (story.mediaUrl.isNotBlank()) {
                     markUrlDeleted(story.mediaUrl)
-                    val filename = extractSupabaseFilename(story.mediaUrl) ?: story.mediaUrl.substringBefore("?").substringAfterLast("/")
-                    if (!supabaseRepository.deleteFile(filename)) {
-                        allDeletedInSupabase = false
+                    val key = extractSupabaseFilename(story.mediaUrl)
+                    if (key != null) {
+                        val res = supabaseRepository.deleteFileDetailed(story.mediaUrl)
+                        if (!res.isSuccess) {
+                            storyDeleteError = res.errorMessage
+                        }
                     }
                 }
             }
@@ -1461,11 +1484,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Firestore story delete notice: ${e.message}")
             }
 
-            if (!allDeletedInSupabase) {
+            if (storyDeleteError != null) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(
                         app,
-                        "Story removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket.",
+                        storyDeleteError ?: "Story removed from app. Supabase Storage blocked remote delete.",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 }
@@ -1945,6 +1968,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         if (url.isBlank()) return
         val current = prefs.getStringSet("deleted_media_urls", emptySet())?.toMutableSet() ?: mutableSetOf()
         current.add(url)
+        val cleanUrl = url.substringBefore("?")
+        if (cleanUrl.isNotBlank()) current.add(cleanUrl)
+        extractSupabaseFilename(url)?.let { if (it.isNotBlank()) current.add(it) }
         prefs.edit().putStringSet("deleted_media_urls", current).apply()
     }
 

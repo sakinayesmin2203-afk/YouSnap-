@@ -526,9 +526,7 @@ fun HomeScreen(
                         val postId = "photo_${photo.id}"
                         val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
                         val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
-                        val currentAuthUid = viewModel.currentUser.collectAsState().value?.uid
-                        val isPhotoOwner = currentProfile.username.equals(photo.creatorUsername, ignoreCase = true) ||
-                                           (currentAuthUid != null && photo.creatorUid.isNotEmpty() && currentAuthUid == photo.creatorUid)
+                        val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
 
                         val postItem = HomePostItem(
                             id = postId,
@@ -591,7 +589,7 @@ fun HomeScreen(
                             isOwner = isPhotoOwner,
                             onDeleteClick = if (isPhotoOwner) {
                                 {
-                                    viewModel.deletePhotoPost(photo.id.toString(), photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
+                                    viewModel.deletePhotoPost(photo.firestoreDocId ?: photo.id, photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
                                 }
                             } else null,
                             onRequestReport = {
