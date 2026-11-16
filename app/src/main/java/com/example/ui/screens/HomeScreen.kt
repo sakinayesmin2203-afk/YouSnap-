@@ -33,6 +33,9 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -60,6 +63,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.AspectRatioFrameLayout
 import coil.compose.AsyncImage
 import coil.request.videoFrameMillis
 import com.example.R
@@ -132,6 +140,51 @@ fun HomeScreen(
     var activePostCommentInput by remember { mutableStateOf("") }
     var selectedPhotoForViewer by remember { mutableStateOf<FullScreenPhotoData?>(null) }
     var postToReport by remember { mutableStateOf<HomePostItem?>(null) }
+    var isFeedMuted by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isLifecycleResumed by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isLifecycleResumed = true
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                isLifecycleResumed = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val isAnyOverlayOpen = activeStoryUser != null ||
+        selectedPhotoForViewer != null ||
+        activePostForComments != null ||
+        selectedReelForComments != null ||
+        postToReport != null
+    val canAutoPlayFeed = isLifecycleResumed && !isAnyOverlayOpen
+
+    val activePlayingReelKey by remember {
+        derivedStateOf {
+            if (!canAutoPlayFeed) return@derivedStateOf null
+            val layoutInfo = listState.layoutInfo
+            val viewportStart = layoutInfo.viewportStartOffset
+            val viewportEnd = layoutInfo.viewportEndOffset
+            layoutInfo.visibleItemsInfo
+                .filter { (it.key as? String)?.startsWith("reel_") == true }
+                .mapNotNull { info ->
+                    val itemStart = info.offset
+                    val itemEnd = info.offset + info.size
+                    val visiblePx = (minOf(itemEnd, viewportEnd) - maxOf(itemStart, viewportStart)).coerceAtLeast(0)
+                    if (info.size > 0 && visiblePx >= (info.size * 0.30f).toInt()) {
+                        (info.key as String) to visiblePx
+                    } else null
+                }
+                .maxByOrNull { it.second }
+                ?.first
+        }
+    }
 
     // Scroll to top when a photo is opened from a user's profile
     LaunchedEffect(selectedHomePost) {
@@ -299,12 +352,55 @@ fun HomeScreen(
                                                         .background(Color.White)
                                                         .padding(2.dp)
                                                 ) {
-                                                    AsyncImage(
-                                                        model = myStory.mediaUrl,
-                                                        contentDescription = "My Story",
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize().clip(CircleShape)
-                                                    )
+                                                    if (myStory.mediaType == "text") {
+                                                        val gStart = remember(myStory.bgGradientStart) {
+                                                            try { Color(android.graphics.Color.parseColor(myStory.bgGradientStart.ifBlank { "#E59424" })) }
+                                                            catch (_: Exception) { Color(0xFFE59424) }
+                                                        }
+                                                        val gEnd = remember(myStory.bgGradientEnd) {
+                                                            try { Color(android.graphics.Color.parseColor(myStory.bgGradientEnd.ifBlank { "#C48B5E" })) }
+                                                            catch (_: Exception) { Color(0xFFC48B5E) }
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxSize()
+                                                                .clip(CircleShape)
+                                                                .background(Brush.verticalGradient(listOf(gStart, gEnd))),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Text(
+                                                                text = myStory.caption.take(12).ifBlank { "Aa" },
+                                                                color = Color.White,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                textAlign = TextAlign.Center,
+                                                                maxLines = 2,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.padding(4.dp)
+                                                            )
+                                                        }
+                                                    } else {
+                                                        val myStoryThumbModel = remember(myStory.mediaUrl, myStory.mediaType) {
+                                                            if (myStory.mediaType == "video" || myStory.mediaUrl.lowercase().let {
+                                                                    it.endsWith(".mp4") || it.endsWith(".mov") || it.endsWith(".mkv") || it.endsWith(".webm")
+                                                                }
+                                                            ) {
+                                                                coil.request.ImageRequest.Builder(context)
+                                                                    .data(myStory.mediaUrl)
+                                                                    .videoFrameMillis(500L)
+                                                                    .crossfade(true)
+                                                                    .build()
+                                                            } else {
+                                                                myStory.mediaUrl
+                                                            }
+                                                        }
+                                                        AsyncImage(
+                                                            model = myStoryThumbModel,
+                                                            contentDescription = "My Story",
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                                        )
+                                                    }
                                                 }
                                             }
                                             Spacer(modifier = Modifier.height(4.dp))
@@ -409,12 +505,55 @@ fun HomeScreen(
                                                     .background(Color.White)
                                                     .padding(2.dp)
                                             ) {
-                                                AsyncImage(
-                                                    model = story.mediaUrl,
-                                                    contentDescription = "Story from ${story.ownerUsername}",
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier.fillMaxSize().clip(CircleShape)
-                                                )
+                                                if (story.mediaType == "text") {
+                                                    val gStart = remember(story.bgGradientStart) {
+                                                        try { Color(android.graphics.Color.parseColor(story.bgGradientStart.ifBlank { "#E59424" })) }
+                                                        catch (_: Exception) { Color(0xFFE59424) }
+                                                    }
+                                                    val gEnd = remember(story.bgGradientEnd) {
+                                                        try { Color(android.graphics.Color.parseColor(story.bgGradientEnd.ifBlank { "#C48B5E" })) }
+                                                        catch (_: Exception) { Color(0xFFC48B5E) }
+                                                    }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .clip(CircleShape)
+                                                            .background(Brush.verticalGradient(listOf(gStart, gEnd))),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = story.caption.take(12).ifBlank { "Aa" },
+                                                            color = Color.White,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            textAlign = TextAlign.Center,
+                                                            maxLines = 2,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.padding(4.dp)
+                                                        )
+                                                    }
+                                                } else {
+                                                    val storyThumbModel = remember(story.mediaUrl, story.mediaType) {
+                                                        if (story.mediaType == "video" || story.mediaUrl.lowercase().let {
+                                                                it.endsWith(".mp4") || it.endsWith(".mov") || it.endsWith(".mkv") || it.endsWith(".webm")
+                                                            }
+                                                        ) {
+                                                            coil.request.ImageRequest.Builder(context)
+                                                                .data(story.mediaUrl)
+                                                                .videoFrameMillis(500L)
+                                                                .crossfade(true)
+                                                                .build()
+                                                        } else {
+                                                            story.mediaUrl
+                                                        }
+                                                    }
+                                                    AsyncImage(
+                                                        model = storyThumbModel,
+                                                        contentDescription = "Story from ${story.ownerUsername}",
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                                    )
+                                                }
                                             }
                                         }
                                         Spacer(modifier = Modifier.height(4.dp))
@@ -652,13 +791,20 @@ fun HomeScreen(
                     }
                 }
 
-                // Item C: Other Dynamic SQLite database Reels
+                // Item C: Auto-Playing Feed Video Reels
                 if (visibleReels.isNotEmpty()) {
-                    itemsIndexed(visibleReels, key = { _, reel -> reel.id }) { _, reel ->
+                    itemsIndexed(
+                        items = visibleReels,
+                        key = { _, reel -> "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}" }
+                    ) { _, reel ->
+                        val itemKey = "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}"
                         val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
                         InstagramFeedPost(
                             reel = reel,
                             isOwner = isReelOwner,
+                            isAutoPlayActive = canAutoPlayFeed && activePlayingReelKey == itemKey,
+                            isMuted = isFeedMuted,
+                            onToggleMute = { isFeedMuted = !isFeedMuted },
                             onDeleteClick = if (isReelOwner) {
                                 { viewModel.deleteReelVideo(reel) {} }
                             } else null,
@@ -1257,11 +1403,14 @@ private data class UserStoryItem(
     val imageRes: Int
 )
 
-// Custom Composable rendering feed items
+// Custom Composable rendering feed items with automatic ExoPlayer video playback
 @Composable
 fun InstagramFeedPost(
     reel: ReelEntity,
     isOwner: Boolean = false,
+    isAutoPlayActive: Boolean = false,
+    isMuted: Boolean = false,
+    onToggleMute: () -> Unit = {},
     onDeleteClick: (() -> Unit)? = null,
     onLikeToggle: () -> Unit,
     onCommentClick: () -> Unit,
@@ -1472,7 +1621,7 @@ fun InstagramFeedPost(
             }
         }
 
-        // Post Video/Thumbnail Box
+        // Post Video Player + Thumbnail Poster Box (Auto-plays smoothly via Media3 ExoPlayer when visible)
         val mediaToDisplay = reel.thumbnailUrl.takeIf {
             it.isNotBlank() && ((!it.startsWith("/") && !it.startsWith("file:")) || java.io.File(it.removePrefix("file://")).exists())
         } ?: reel.mediaUrl
@@ -1489,12 +1638,15 @@ fun InstagramFeedPost(
                     .build()
             }
         }
+        var isFirstFrameRendered by remember(reel.mediaUrl, isAutoPlayActive) { mutableStateOf(false) }
+        var isBuffering by remember(reel.mediaUrl, isAutoPlayActive) { mutableStateOf(false) }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(380.dp)
                 .background(Color(0xFF161616))
-                .pointerInput(Unit) {
+                .pointerInput(reel.id) {
                     detectTapGestures(
                         onDoubleTap = {
                             if (!localIsLiked) {
@@ -1511,13 +1663,80 @@ fun InstagramFeedPost(
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (mediaRequestModel != null) {
+            if (isAutoPlayActive && reel.mediaUrl.isNotBlank()) {
+                CdnVideoPlayer(
+                    videoUrl = reel.mediaUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    autoPlay = true,
+                    isLooping = true,
+                    isMuted = isMuted,
+                    onFirstFrameRendered = {
+                        isFirstFrameRendered = true
+                        isBuffering = false
+                    },
+                    onBufferingChanged = { buffering ->
+                        isBuffering = buffering
+                    }
+                )
+            }
+
+            // Poster thumbnail stays visible until ExoPlayer renders its first video frame
+            if (mediaRequestModel != null && (!isAutoPlayActive || !isFirstFrameRendered)) {
                 AsyncImage(
                     model = mediaRequestModel,
                     contentDescription = reel.caption,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+
+            if (isAutoPlayActive && isBuffering && !isFirstFrameRendered) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.5.dp,
+                    modifier = Modifier.size(34.dp)
+                )
+            } else if (!isAutoPlayActive && reel.mediaUrl.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Play Video",
+                        tint = Color.White,
+                        modifier = Modifier.size(30.dp)
+                    )
+                }
+            }
+
+            if (reel.mediaUrl.isNotBlank()) {
+                IconButton(
+                    onClick = onToggleMute,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .size(48.dp)
+                        .testTag("home_video_mute_button_${reel.id}")
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = if (isMuted) "Unmute video" else "Mute video",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
 
             androidx.compose.animation.AnimatedVisibility(
@@ -1680,6 +1899,7 @@ fun InstagramFeedPost(
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StoryPlaybackDialog(
@@ -1763,32 +1983,63 @@ fun StoryPlaybackDialog(
         }
     }
 
-    // Story data from real-time Firebase Firestore
+    // Story data from real-time Firebase Firestore + immediate local allStories fallback
     val storyState by viewModel.currentStoryState.collectAsState()
+    val allStoriesList by viewModel.allStories.collectAsState()
+    val resolvedStory = remember(storyState, allStoriesList, activeUsername) {
+        storyState ?: allStoriesList.firstOrNull { it.ownerUsername.equals(activeUsername, ignoreCase = true) }
+    }
     val isOwner = activeUsername.lowercase() == loggedInUsername.lowercase()
 
-    val viewsCount = storyState?.viewsCount ?: 0
-    val likesList = storyState?.likes ?: emptyList()
+    val viewsCount = resolvedStory?.viewsCount ?: 0
+    val likesList = resolvedStory?.likes ?: emptyList()
     val isLiked = likesList.any {
         it.equals(loggedInUsername, ignoreCase = true) || (it.equals("me", ignoreCase = true) && loggedInUsername.isEmpty())
     }
 
-    // Story progress animation with pause/resume support
+    val mediaModel: String? = resolvedStory?.mediaUrl?.takeIf { it.isNotBlank() }
+    val resolvedMediaType = remember(resolvedStory, mediaModel) {
+        when {
+            resolvedStory == null -> "loading"
+            resolvedStory.mediaType.equals("text", ignoreCase = true) -> "text"
+            resolvedStory.mediaType.equals("video", ignoreCase = true) -> "video"
+            resolvedStory.mediaType.equals("image", ignoreCase = true) -> "image"
+            mediaModel.isNullOrBlank() && resolvedStory.caption.isNotBlank() -> "text"
+            !mediaModel.isNullOrBlank() && mediaModel.lowercase().let {
+                it.endsWith(".mp4") || it.endsWith(".mov") || it.endsWith(".mkv") || it.endsWith(".webm")
+            } -> "video"
+            !mediaModel.isNullOrBlank() -> "image"
+            else -> "text"
+        }
+    }
+
+    // Media Loading Safety states keyed by active mediaUrl so state resets cleanly when story loads
+    var imageLoading by remember(mediaModel, resolvedMediaType) {
+        mutableStateOf(resolvedMediaType == "image" && !mediaModel.isNullOrEmpty())
+    }
+    var imageError by remember(mediaModel, resolvedMediaType) { mutableStateOf(false) }
+    var videoReady by remember(mediaModel, resolvedMediaType) { mutableStateOf(false) }
+
+    // Story progress animation with pause/resume support (pauses while story or media loads/buffers)
+    val isMediaPreparing = resolvedMediaType == "loading" ||
+        (resolvedMediaType == "image" && imageLoading) ||
+        (resolvedMediaType == "video" && !videoReady)
     val shouldPauseTimer = isPaused || isHoldingToPause || showViewerSheet || showMenu || showDeleteConfirmDialog || showReportDialog
-    LaunchedEffect(shouldPauseTimer, activeUsername) {
+    val effectivePauseTimer = shouldPauseTimer || isMediaPreparing
+    LaunchedEffect(effectivePauseTimer, activeUsername, resolvedMediaType) {
         try {
-            if (!shouldPauseTimer) {
-                val duration = 6000 // 6 seconds to view
+            if (!effectivePauseTimer) {
+                val duration = if (resolvedMediaType == "video") 30000 else 6000
                 val interval = 40
                 val steps = duration / interval
                 var currentStep = (progress * steps).toInt()
                 while (currentStep <= steps) {
-                    if (shouldPauseTimer) break
+                    if (effectivePauseTimer) break
                     progress = currentStep.toFloat() / steps
                     delay(interval.toLong())
                     currentStep++
                 }
-                if (currentStep > steps && !shouldPauseTimer) {
+                if (currentStep > steps && !effectivePauseTimer) {
                     navigateToNextStory()
                 }
             }
@@ -1813,15 +2064,6 @@ fun StoryPlaybackDialog(
                 .background(Color.Black)
                 .systemBarsPadding()
         ) {
-            // Media Loading Safety states
-            var imageLoading by remember { mutableStateOf(true) }
-            var imageError by remember { mutableStateOf(false) }
-
-            val mediaModel: String? = if (!storyState?.mediaUrl.isNullOrEmpty()) {
-                storyState?.mediaUrl
-            } else {
-                null
-            }
 
             // Real Media Display
             var layoutWidth by remember { mutableStateOf(0) }
@@ -1852,81 +2094,104 @@ fun StoryPlaybackDialog(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                if (storyState?.mediaType == "text") {
-                    // TEXT-ONLY STORY DISPLAY
-                    val gStart = remember(storyState?.bgGradientStart) {
-                        try { Color(android.graphics.Color.parseColor(storyState?.bgGradientStart ?: "#FF512F")) } catch (e: Exception) { Color(0xFFFF512F) }
+                when {
+                    resolvedMediaType == "loading" -> {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 3.dp
+                        )
                     }
-                    val gEnd = remember(storyState?.bgGradientEnd) {
-                        try { Color(android.graphics.Color.parseColor(storyState?.bgGradientEnd ?: "#DD2476")) } catch (e: Exception) { Color(0xFFDD2476) }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Brush.verticalGradient(listOf(gStart, gEnd))),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
+                    resolvedMediaType == "text" -> {
+                        // TEXT-ONLY STORY DISPLAY
+                        val gStart = remember(resolvedStory?.bgGradientStart) {
+                            try { Color(android.graphics.Color.parseColor(resolvedStory?.bgGradientStart?.ifBlank { "#FF512F" } ?: "#FF512F")) } catch (_: Exception) { Color(0xFFFF512F) }
+                        }
+                        val gEnd = remember(resolvedStory?.bgGradientEnd) {
+                            try { Color(android.graphics.Color.parseColor(resolvedStory?.bgGradientEnd?.ifBlank { "#DD2476" } ?: "#DD2476")) } catch (_: Exception) { Color(0xFFDD2476) }
+                        }
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 32.dp, vertical = 48.dp)
+                                .fillMaxSize()
+                                .background(Brush.verticalGradient(listOf(gStart, gEnd))),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = storyState?.caption ?: "",
-                                color = Color.White,
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 36.sp,
-                                style = androidx.compose.ui.text.TextStyle(
-                                    shadow = androidx.compose.ui.graphics.Shadow(
-                                        color = Color.Black.copy(alpha = 0.5f),
-                                        offset = androidx.compose.ui.geometry.Offset(2f, 4f),
-                                        blurRadius = 8f
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 32.dp, vertical = 48.dp)
+                            ) {
+                                Text(
+                                    text = resolvedStory?.caption.orEmpty(),
+                                    color = Color.White,
+                                    fontSize = 26.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 36.sp,
+                                    style = TextStyle(
+                                        shadow = Shadow(
+                                            color = Color.Black.copy(alpha = 0.5f),
+                                            offset = Offset(2f, 4f),
+                                            blurRadius = 8f
+                                        )
                                     )
                                 )
+                            }
+                        }
+                    }
+                    resolvedMediaType == "video" && !mediaModel.isNullOrEmpty() -> {
+                        // VIDEO PLAYER FOR STORIES
+                        CdnVideoPlayer(
+                            videoUrl = mediaModel,
+                            modifier = Modifier.fillMaxSize(),
+                            autoPlay = !shouldPauseTimer,
+                            isLooping = false,
+                            isMuted = false,
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                            onFirstFrameRendered = { videoReady = true },
+                            onVideoCompleted = { navigateToNextStory() }
+                        )
+                        if (!videoReady) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp
                             )
                         }
                     }
-                } else if (storyState?.mediaType == "video" && !mediaModel.isNullOrEmpty()) {
-                    // VIDEO PLAYER FOR STORIES
-                    com.example.ui.components.CdnVideoPlayer(
-                        videoUrl = mediaModel,
-                        modifier = Modifier.fillMaxSize(),
-                        autoPlay = !shouldPauseTimer,
-                        isLooping = false // Story should move to next after finishing usually, or just stay
-                    )
-                } else {
-                    // PHOTO DISPLAY
-                    coil.compose.AsyncImage(
-                        model = mediaModel,
-                        contentDescription = "Story Media",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit, // Fit ensures whole photo is visible
-                        onLoading = { 
-                            imageLoading = true
-                            imageError = false 
-                        },
-                        onSuccess = { 
-                            imageLoading = false
-                            imageError = false 
-                        },
-                        onError = { 
-                            imageLoading = false
-                            imageError = true 
-                        }
-                    )
+                    !mediaModel.isNullOrEmpty() -> {
+                        // PHOTO DISPLAY
+                        AsyncImage(
+                            model = mediaModel,
+                            contentDescription = "Story Media",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                            onLoading = {
+                                imageLoading = true
+                                imageError = false
+                            },
+                            onSuccess = {
+                                imageLoading = false
+                                imageError = false
+                            },
+                            onError = {
+                                imageLoading = false
+                                imageError = true
+                            }
+                        )
+                    }
+                    else -> {
+                        imageError = true
+                    }
                 }
 
                 // If media has a text overlay, display stylish overlay banner
-                val storyCaption = storyState?.caption ?: ""
-                if (storyState?.mediaType != "text" && storyCaption.isNotBlank()) {
+                val storyCaption = resolvedStory?.caption ?: ""
+                if (resolvedMediaType != "text" && resolvedMediaType != "loading" && storyCaption.isNotBlank()) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 76.dp, start = 20.dp, end = 20.dp)
+                            .padding(bottom = 120.dp, start = 20.dp, end = 20.dp)
                             .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
                             .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
                             .padding(horizontal = 16.dp, vertical = 10.dp)
@@ -1941,8 +2206,8 @@ fun StoryPlaybackDialog(
                     }
                 }
 
-                // Error Fallback UI
-                if (imageError && storyState?.mediaType != "video" && storyState?.mediaType != "text") {
+                // Error Fallback UI (only shown if media actually failed to load)
+                if (imageError && resolvedMediaType == "image") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -1964,7 +2229,7 @@ fun StoryPlaybackDialog(
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = if (isOwner) "Viewing your story..." else "Viewing $activeUsername's story...",
+                                text = if (isOwner) "Unable to load your story" else "Unable to load $activeUsername's story",
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp
@@ -1973,8 +2238,8 @@ fun StoryPlaybackDialog(
                     }
                 }
 
-                // Loading State Indicator
-                if (imageLoading && storyState?.mediaType != "video" && storyState?.mediaType != "text") {
+                // Loading State Indicator for image stories
+                if (imageLoading && resolvedMediaType == "image") {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -2281,7 +2546,7 @@ fun StoryPlaybackDialog(
             }
 
             // INSTAGRAM-STYLE BOTTOM SHEET (Only shown when owner clicks "Seen by")
-            if (showViewerSheet && storyState != null) {
+            if (showViewerSheet && resolvedStory != null) {
                 ModalBottomSheet(
                     onDismissRequest = { showViewerSheet = false },
                     containerColor = Color(0xFF1E1E1E),
@@ -2293,7 +2558,7 @@ fun StoryPlaybackDialog(
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
                         Text(
-                            text = "Story Views (${storyState?.viewsCount ?: 0})",
+                            text = "Story Views (${resolvedStory.viewsCount})",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
@@ -2302,7 +2567,7 @@ fun StoryPlaybackDialog(
                         
                         // Safe and crash-free retrieval of viewer profiles
                         val viewersList = try {
-                            viewModel.getViewerProfilesForStory(storyState)
+                            viewModel.getViewerProfilesForStory(resolvedStory)
                         } catch (e: Exception) {
                             android.util.Log.e("StoryPlaybackDialog", "Error getting viewers: ${e.message}")
                             emptyList()

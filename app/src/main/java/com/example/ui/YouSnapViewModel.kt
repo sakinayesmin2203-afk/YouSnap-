@@ -158,6 +158,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private var activeCommentsReelId: Int? = null
 
     val currentStoryState = MutableStateFlow<StoryModel?>(null)
+    private var storyListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
     val searchQuery = MutableStateFlow("")
     val searchResultUsers = MutableStateFlow<List<ProfileEntity>>(emptyList())
     val searchResultPosts = MutableStateFlow<List<ReelEntity>>(emptyList())
@@ -1435,16 +1436,63 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun normalizeStoryMedia(story: StoryModel): StoryModel {
+        val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(story.mediaUrl)
+        val inferredType = when {
+            story.mediaType.equals("text", ignoreCase = true) -> "text"
+            story.mediaType.equals("video", ignoreCase = true) -> "video"
+            story.mediaType.equals("image", ignoreCase = true) -> "image"
+            fixedUrl.isBlank() && story.caption.isNotBlank() -> "text"
+            fixedUrl.lowercase().let {
+                it.endsWith(".mp4") || it.endsWith(".mov") || it.endsWith(".mkv") || it.endsWith(".webm")
+            } -> "video"
+            fixedUrl.isNotBlank() -> "image"
+            else -> story.mediaType
+        }
+        return story.copy(mediaUrl = fixedUrl, mediaType = inferredType)
+    }
+
     fun startListeningToStory(username: String) {
-        db.collection("stories").document(username).addSnapshotListener { snapshot, _ ->
-            if (snapshot != null && snapshot.exists()) {
-                val story = snapshot.toObject(StoryModel::class.java)
-                if (story != null) {
-                    allStories.value = allStories.value.filter { it.ownerUsername != username } + story
-                    recalculateCreatorStats()
+        storyListenerRegistration?.remove()
+        storyListenerRegistration = null
+
+        val cachedStory = allStories.value
+            .firstOrNull { it.ownerUsername.equals(username, ignoreCase = true) }
+            ?.let { normalizeStoryMedia(it) }
+        if (cachedStory != null) {
+            currentStoryState.value = cachedStory
+        }
+
+        storyListenerRegistration = db.collection("stories").document(username)
+            .addSnapshotListener { snapshot, _ ->
+                if (snapshot != null && snapshot.exists()) {
+                    val rawStory = snapshot.toObject(StoryModel::class.java)
+                    if (rawStory != null) {
+                        val normalized = normalizeStoryMedia(rawStory)
+                        val latestLocal = allStories.value
+                            .firstOrNull { it.ownerUsername.equals(username, ignoreCase = true) }
+                            ?.let { normalizeStoryMedia(it) }
+                        val resolved = if (latestLocal != null &&
+                            latestLocal.timestamp > normalized.timestamp &&
+                            latestLocal.mediaUrl.isNotBlank()
+                        ) {
+                            latestLocal.copy(
+                                viewsCount = maxOf(latestLocal.viewsCount, normalized.viewsCount),
+                                viewerIds = (latestLocal.viewerIds + normalized.viewerIds).distinct(),
+                                likes = (latestLocal.likes + normalized.likes).distinct()
+                            )
+                        } else {
+                            normalized
+                        }
+                        currentStoryState.value = resolved
+                        allStories.value = allStories.value.filterNot {
+                            it.ownerUsername.equals(username, ignoreCase = true)
+                        } + resolved
+                        saveStoriesToPrefs()
+                        recalculateCreatorStats()
+                    }
                 }
             }
-        }
     }
 
     fun toggleStoryLike(username: String) {
@@ -1665,7 +1713,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         db.collection("stories").document(username).update("viewerIds", FieldValue.arrayUnion(myUser), "viewsCount", FieldValue.increment(1))
     }
 
-    fun stopListeningToStory() { currentStoryState.value = null }
+    fun stopListeningToStory() {
+        storyListenerRegistration?.remove()
+        storyListenerRegistration = null
+        currentStoryState.value = null
+    }
     
     fun getViewerProfilesForStory(story: StoryModel?): List<ViewerProfile> {
         if (story == null) return emptyList()
