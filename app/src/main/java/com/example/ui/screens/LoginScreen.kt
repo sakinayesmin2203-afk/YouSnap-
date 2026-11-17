@@ -1,7 +1,7 @@
 package com.example.ui.screens
 
 import android.app.Activity
-import android.widget.Toast
+import com.example.ui.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas

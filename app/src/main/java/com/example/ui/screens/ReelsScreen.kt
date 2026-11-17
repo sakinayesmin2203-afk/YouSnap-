@@ -77,6 +77,7 @@ fun ReelsScreen(
     onNavigateBack: () -> Unit,
     onNavigateTo: ((Screen) -> Unit)? = null,
     startReelId: Int? = null,
+    startMediaUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     // Standard layout parameters
@@ -110,12 +111,22 @@ fun ReelsScreen(
     var selectedReelForComments by remember { mutableStateOf<ReelEntity?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Auto-scroll to startReelId if specified
-    LaunchedEffect(startReelId, feedItems) {
-        if (startReelId != null && feedItems.isNotEmpty()) {
-            val targetIndex = feedItems.indexOfFirst { it is ReelsFeedItem.Video && it.reel.id == startReelId }
+    // Auto-scroll once to the clicked reel (prefer exact mediaUrl match, fallback to startReelId)
+    var hasScrolledToTarget by remember(startReelId, startMediaUrl) { mutableStateOf(false) }
+    LaunchedEffect(startReelId, startMediaUrl, feedItems) {
+        if (!hasScrolledToTarget && (startReelId != null || !startMediaUrl.isNullOrBlank()) && feedItems.isNotEmpty()) {
+            val targetIndex = feedItems.indexOfFirst { item ->
+                item is ReelsFeedItem.Video && (
+                    (!startMediaUrl.isNullOrBlank() && item.reel.mediaUrl == startMediaUrl) ||
+                        (startMediaUrl.isNullOrBlank() && startReelId != null && item.reel.id == startReelId)
+                    )
+            }.let { matched ->
+                if (matched >= 0 || startReelId == null) matched
+                else feedItems.indexOfFirst { it is ReelsFeedItem.Video && it.reel.id == startReelId }
+            }
             if (targetIndex >= 0) {
                 pagerState.scrollToPage(targetIndex)
+                hasScrolledToTarget = true
             }
         }
     }
@@ -216,7 +227,7 @@ fun ReelsScreen(
                     beyondViewportPageCount = 1,
                     key = { index ->
                         when (val item = feedItems[index]) {
-                            is ReelsFeedItem.Video -> "reel_${item.reel.id}"
+                            is ReelsFeedItem.Video -> "reel_${item.reel.id}_${item.reel.timestamp}_${item.reel.mediaUrl.hashCode()}"
                             is ReelsFeedItem.Ad -> "ad_${item.adSlotId}"
                         }
                     }

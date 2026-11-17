@@ -213,7 +213,7 @@ fun EditProfileScreen(
             Button(
                 onClick = {
                     if (username.trim().isEmpty() || name.trim().isEmpty()) {
-                        android.widget.Toast.makeText(viewModel.app, "Fields cannot be empty!", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, "Fields cannot be empty!", Toast.LENGTH_SHORT).show()
                     } else {
                         viewModel.updateProfile(name, username, bio, category, profilePic) {
                             onBack()
@@ -299,9 +299,9 @@ fun PrivacySecurityScreen(
                             currentPassword = ""
                             newPassword = ""
                             confirmPassword = ""
-                            android.widget.Toast.makeText(viewModel.app, "Password updated successfully! 🔒", android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "Password updated successfully! 🔒", Toast.LENGTH_SHORT).show()
                         } else {
-                            android.widget.Toast.makeText(viewModel.app, "Passwords do not match or are empty!", android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "Passwords do not match or are empty!", Toast.LENGTH_SHORT).show()
                         }
                     }
                 ) {
@@ -348,7 +348,7 @@ fun PrivacySecurityScreen(
                     checked = settings.isPrivateAccount,
                     onCheckedChange = {
                         viewModel.togglePrivateAccount()
-                        android.widget.Toast.makeText(viewModel.app, if (!settings.isPrivateAccount) "Account is now Private" else "Account is now Public", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, if (!settings.isPrivateAccount) "Account is now Private" else "Account is now Public", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("private_account_switch")
                 )
@@ -385,9 +385,9 @@ fun PrivacySecurityScreen(
                                     viewModel.setAppPin(newPin, true)
                                     showPinDialog = false
                                     newPin = ""
-                                    android.widget.Toast.makeText(viewModel.app, "PIN Updated Successfully!", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "PIN Updated Successfully!", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    android.widget.Toast.makeText(viewModel.app, "PIN must be 6 digits", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "PIN must be 6 digits", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         ) { Text("Save") }
@@ -419,7 +419,7 @@ fun PrivacySecurityScreen(
                             showPinDialog = true
                         } else {
                             viewModel.setAppPin("", false)
-                            android.widget.Toast.makeText(viewModel.app, "PIN Lock Disabled", android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "PIN Lock Disabled", Toast.LENGTH_SHORT).show()
                         }
                     },
                     modifier = Modifier.testTag("app_pin_switch")
@@ -455,7 +455,7 @@ fun PrivacySecurityScreen(
                         TextButton(onClick = {
                             viewModel.clearSearchHistory()
                             showClearSearchDialog = false
-                            android.widget.Toast.makeText(viewModel.app, "Search History Cleared", android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "Search History Cleared", Toast.LENGTH_SHORT).show()
                         }) { Text("Clear") }
                     },
                     dismissButton = {
@@ -1258,7 +1258,7 @@ fun ContentPreferencesScreen(
                                 .clickable {
                                     autoplaySetting = option
                                     showAutoplayDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "Autoplay set to: $option", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Autoplay set to: $option", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(vertical = 10.dp, horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1268,7 +1268,7 @@ fun ContentPreferencesScreen(
                                 onClick = {
                                     autoplaySetting = option
                                     showAutoplayDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "Autoplay set to: $option", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Autoplay set to: $option", Toast.LENGTH_SHORT).show()
                                 }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -1300,7 +1300,7 @@ fun ContentPreferencesScreen(
                                 .clickable {
                                     sensitiveSetting = label
                                     showSensitiveDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "Sensitive content control: $label", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Sensitive content control: $label", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(vertical = 10.dp, horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1310,7 +1310,7 @@ fun ContentPreferencesScreen(
                                 onClick = {
                                     sensitiveSetting = label
                                     showSensitiveDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "Sensitive content control: $label", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Sensitive content control: $label", Toast.LENGTH_SHORT).show()
                                 }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -1362,7 +1362,7 @@ fun ContentPreferencesScreen(
             confirmButton = {
                 Button(onClick = {
                     showContentLangDialog = false
-                    android.widget.Toast.makeText(viewModel.app, "Content preferences updated!", android.widget.Toast.LENGTH_SHORT).show()
+                    Toast.makeText(viewModel.app, "Content preferences updated!", Toast.LENGTH_SHORT).show()
                 }) {
                     Text("Save")
                 }
@@ -1587,237 +1587,7 @@ fun CreatorToolsScreen(
     }
 }
 
-@Composable
-fun MonetizationRulesScreen(
-    onNavigateTo: (Screen) -> Unit,
-    onBack: () -> Unit
-) {
-    Scaffold(
-        topBar = { SubScreenTopBar("Monetization Policy & Rules", onBack) }
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            item {
-                Text(
-                    text = "YouSnap Creator Monetization Rules & Guidelines",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Please read and understand the following monetization policies. Violating these rules will result in immediate demonetization or account termination.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-            }
 
-            // 1. Eligibility
-            item {
-                MonetizationSection("★ 1. Monetization Eligibility Rules", listOf(
-                    "1. Age Requirement: Users must be at least 18 years old to apply for monetization.",
-                    "2. Followers Requirement: Must have a minimum of 500 followers.",
-                    "3. Views Requirement: Must achieve at least 5,000 qualified video views.",
-                    "4. Community Guidelines: The account must not have any active community guidelines violations.",
-                    "5. Application Process: Users can apply for monetization only after meeting all the specified criteria."
-                ))
-            }
-
-            // 2. Earning
-            item {
-                MonetizationSection("★ 2. Monetization Earning Rules", listOf(
-                    "1. Revenue Source: Creators will not be paid directly for raw video views; earnings will be generated through advertisements (Ads).",
-                    "2. Fraud Prevention: Earnings generated from fake views, bots, and fake engagement will be canceled and forfeited.",
-                    "3. Revenue Share: Creator earnings will be determined in accordance with YouSnap's official Revenue Sharing Policy."
-                ))
-            }
-
-            // 3. Suspension & Violation
-            item {
-                Column {
-                    Text("★ 3. Account Suspension & Violation Rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Violating any of the following rules on YouSnap may result in video removal, account warnings, temporary suspension, or a permanent ban.", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("🚫 Rule 1: Sexual Content & Nudity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
-                    val rule1 = listOf(
-                        "1. Uploading obscene or pornographic photos and videos is strictly prohibited.",
-                        "2. Videos clearly depicting sexual acts are prohibited.",
-                        "3. Publishing nude photos or videos with sexual intent is banned.",
-                        "4. Sharing any individual's private or intimate photos/videos without their explicit consent is strictly forbidden.",
-                        "5. Uploading child sexual abuse material (CSAM) will lead to an immediate account ban and reporting to the appropriate legal authorities.",
-                        "6. Penalty: Serious violations will result in an immediate permanent ban along with legal action."
-                    )
-                    rule1.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("🚫 Rule 2: Abusive Language & Harassment", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
-                    val rule2 = listOf(
-                        "1. Using extremely obscene or sexually suggestive profanity in videos, comments, or captions is prohibited.",
-                        "2. Insulting, harassing, or threatening other users with abusive language is forbidden.",
-                        "3. Repeatedly targeting any individual with abuse or bullying is strictly banned.",
-                        "4. Hate speech based on race, religion, gender, or identity is prohibited.",
-                        "5. Penalty:\n   - First Offense: Warning or video removal.\n   - Second Offense: Temporary suspension.\n   - Repeated/Severe Violations: Permanent ban."
-                    )
-                    rule2.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("🚫 Rule 3: Fake Views & Spam", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
-                    val rule3 = listOf(
-                        "1. Purchasing fake followers or fake views is prohibited.",
-                        "2. Using bots to artificially increase likes, views, or comments is banned.",
-                        "3. Creating spam by repeatedly uploading the exact same video is forbidden.",
-                        "4. Misusing the monetization system by creating fake accounts is strictly restricted.",
-                        "5. Penalty: Monetization suspension, earnings review, or full account suspension."
-                    )
-                    rule3.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("🚫 Rule 4: Copyright Violation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
-                    val rule4 = listOf(
-                        "1. Uploading someone else's video as your own is prohibited.",
-                        "2. Using copyrighted movies, music, or videos without proper permission or legal exemptions is banned.",
-                        "3. Stealing content from other creators to gain monetization is strictly forbidden.",
-                        "4. Penalty: Video removal, copyright strikes, or account suspension for severe/repeated violations."
-                    )
-                    rule4.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-
-            // Summary
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("📌 General Policy Summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "All YouSnap users must strictly adhere to the Community Guidelines. YouSnap takes strong action against sexual exploitation, pornography, harassment, hate speech, fraud, and other serious violations. Suspension decisions will depend on the severity of the violation, available evidence, and the user's prior infraction history.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-            }
-
-            item {
-                Button(
-                    onClick = { onNavigateTo(Screen.MonetizationScreen) },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE1306C)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Text(
-                        text = "Check Eligibility Tracker 📊",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = Color.White
-                    )
-                }
-            }
-            
-            item { Spacer(modifier = Modifier.height(24.dp)) }
-        }
-    }
-}
-
-@Composable
-fun MonetizationRuleCard(
-    title: String,
-    description: String,
-    icon: ImageVector,
-    bulletPoints: List<String>,
-    isWarning: Boolean = false
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isWarning) {
-                Color(0xFFFFECEF)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-            }
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (isWarning) Color(0xFFFF4D4D) else Color(0xFFE1306C),
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = if (isWarning) Color(0xFF9E1B1B) else MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Text(
-                text = description,
-                fontSize = 11.sp,
-                color = if (isWarning) Color(0xFF7A1414) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
-                lineHeight = 15.sp
-            )
-            Column(
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-            ) {
-                bulletPoints.forEach { point ->
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "•",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Black,
-                            color = if (isWarning) Color(0xFFFF4D4D) else Color(0xFFE1306C)
-                        )
-                        Text(
-                            text = point,
-                            fontSize = 10.sp,
-                            color = if (isWarning) Color(0xFF8F1E1E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                            lineHeight = 13.sp
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
 
 // 8. INSIGHTS & ANALYTICS SCREEN (PROFESSIONAL DASHBOARD UI)
 @Composable
@@ -2157,10 +1927,10 @@ fun InsightsScreen(
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable {
                                         selectedDay = day
-                                        android.widget.Toast.makeText(
+                                        Toast.makeText(
                                             viewModel.app,
                                             "$day Reach: $dayCount",
-                                            android.widget.Toast.LENGTH_SHORT
+                                            Toast.LENGTH_SHORT
                                         ).show()
                                     }
                                     .padding(vertical = 4.dp)
@@ -3001,10 +2771,10 @@ fun MonetizationFormScreen(
                         } else {
                             "Please fill all fields and accept the declaration."
                         }
-                        android.widget.Toast.makeText(
+                        Toast.makeText(
                             viewModel.app,
                             errorMsg,
-                            android.widget.Toast.LENGTH_SHORT
+                            Toast.LENGTH_SHORT
                         ).show()
                     }
                 },
@@ -3246,7 +3016,7 @@ fun AppPreferencesScreen(
                                 .clickable {
                                     selectedLanguage = language
                                     showLanguageDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "App language changed to $language", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "App language changed to $language", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(vertical = 10.dp, horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -3256,7 +3026,7 @@ fun AppPreferencesScreen(
                                 onClick = {
                                     selectedLanguage = language
                                     showLanguageDialog = false
-                                    android.widget.Toast.makeText(viewModel.app, "App language changed to $language", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "App language changed to $language", Toast.LENGTH_SHORT).show()
                                 }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -3292,7 +3062,7 @@ fun AppPreferencesScreen(
                                     if (theme.contains("Dark")) {
                                         if (!settings.darkMode) viewModel.toggleDarkMode()
                                     }
-                                    android.widget.Toast.makeText(viewModel.app, "Theme set to $theme", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Theme set to $theme", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(vertical = 10.dp, horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -3305,7 +3075,7 @@ fun AppPreferencesScreen(
                                     if (theme.contains("Dark")) {
                                         if (!settings.darkMode) viewModel.toggleDarkMode()
                                     }
-                                    android.widget.Toast.makeText(viewModel.app, "Theme set to $theme", android.widget.Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(viewModel.app, "Theme set to $theme", Toast.LENGTH_SHORT).show()
                                 }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -3486,7 +3256,7 @@ fun AppPreferencesScreen(
                     checked = reduceMotionEnabled,
                     onCheckedChange = {
                         reduceMotionEnabled = it
-                        android.widget.Toast.makeText(viewModel.app, if (it) "Reduce motion enabled" else "Reduce motion disabled", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, if (it) "Reduce motion enabled" else "Reduce motion disabled", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("reduce_motion_switch")
                 )
@@ -3526,7 +3296,7 @@ fun AppPreferencesScreen(
                     checked = orientationLockEnabled,
                     onCheckedChange = {
                         orientationLockEnabled = it
-                        android.widget.Toast.makeText(viewModel.app, if (it) "Orientation locked to portrait" else "Orientation auto-rotate enabled", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, if (it) "Orientation locked to portrait" else "Orientation auto-rotate enabled", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("orientation_lock_switch")
                 )
@@ -3596,7 +3366,7 @@ fun DataStorageScreen(
                     checked = downloadWifiOnly,
                     onCheckedChange = {
                         downloadWifiOnly = it
-                        android.widget.Toast.makeText(viewModel.app, if (it) "Download on Wi-Fi only enabled" else "Cellular downloads allowed", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, if (it) "Download on Wi-Fi only enabled" else "Cellular downloads allowed", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("download_wifi_switch")
                 )
@@ -3616,7 +3386,7 @@ fun DataStorageScreen(
                     checked = autoSaveGallery,
                     onCheckedChange = {
                         autoSaveGallery = it
-                        android.widget.Toast.makeText(viewModel.app, if (it) "Auto-save to gallery enabled" else "Auto-save disabled", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(viewModel.app, if (it) "Auto-save to gallery enabled" else "Auto-save disabled", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.testTag("autosave_gallery_switch")
                 )
@@ -3695,9 +3465,9 @@ fun DataStorageScreen(
                             val cleared = cacheSizeMb
                             cacheSizeMb = 0f
                             viewModel.clearAppCache()
-                            android.widget.Toast.makeText(viewModel.app, "Cleared %.1f MB of app cache! 🧹".format(cleared), android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "Cleared %.1f MB of app cache! 🧹".format(cleared), Toast.LENGTH_SHORT).show()
                         } else {
-                            android.widget.Toast.makeText(viewModel.app, "Cache is already empty! ✨", android.widget.Toast.LENGTH_SHORT).show()
+                            Toast.makeText(viewModel.app, "Cache is already empty! ✨", Toast.LENGTH_SHORT).show()
                         }
                     }
                     .padding(14.dp),
@@ -3952,10 +3722,10 @@ fun BoostReelScreen(
 
             Button(
                 onClick = {
-                    android.widget.Toast.makeText(
+                    Toast.makeText(
                         context,
                         "This feature is currently under development. Coming Soon!",
-                        android.widget.Toast.LENGTH_LONG
+                        Toast.LENGTH_LONG
                     ).show()
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -3967,17 +3737,4 @@ fun BoostReelScreen(
 }
 
 
-@Composable
-fun MonetizationSection(title: String, items: List<String>) {
-    Column {
-        Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Spacer(modifier = Modifier.height(8.dp))
-        items.forEach { item ->
-            Text(
-                text = item,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(vertical = 4.dp)
-            )
-        }
-    }
-}
+

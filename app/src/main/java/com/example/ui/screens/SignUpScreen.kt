@@ -1,6 +1,6 @@
 package com.example.ui.screens
 
-import android.widget.Toast
+import com.example.ui.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background

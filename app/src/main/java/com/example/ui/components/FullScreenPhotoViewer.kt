@@ -2,7 +2,7 @@ package com.example.ui.components
 
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import com.example.ui.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut

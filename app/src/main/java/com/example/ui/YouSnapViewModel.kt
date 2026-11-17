@@ -42,7 +42,7 @@ sealed class Screen {
     object SignUp : Screen()
     object ForgotPassword : Screen()
     object Home : Screen()
-    data class Reels(val startReelId: Int? = null) : Screen()
+    data class Reels(val startReelId: Int? = null, val startMediaUrl: String? = null) : Screen()
     object Search : Screen()
     object Create : Screen()
     object Notifications : Screen()
@@ -703,14 +703,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                 } catch (firestoreEx: Exception) {
                     android.util.Log.e("YouSnapViewModel", "Firestore sync warning: ${firestoreEx.message}")
-                    val syncNote = if (auth.currentUser == null) {
-                        "Uploaded! Sign in with Google & allow Firestore Rules for cloud sync."
-                    } else {
-                        "Uploaded! Allow write access in Firebase Console Firestore Rules for cloud sync."
-                    }
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        android.widget.Toast.makeText(app, syncNote, android.widget.Toast.LENGTH_LONG).show()
-                    }
+                    android.util.Log.w("YouSnapViewModel", "Firestore sync notice (suppressed from UI)")
                 }
 
                 b2UploadProgress.value = 1.0f
@@ -1210,11 +1203,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
 
             if (effectiveUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
-                val msg = supabaseDeleteResult.errorMessage
-                    ?: "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket."
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(app, msg, android.widget.Toast.LENGTH_LONG).show()
-                }
+                android.util.Log.w("YouSnapViewModel", "Supabase photo delete notice: ${supabaseDeleteResult.errorMessage}")
             }
 
             refreshHomeFeed(showIndicator = false)
@@ -1279,11 +1268,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
 
             if (reel.mediaUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
-                val msg = supabaseDeleteResult.errorMessage
-                    ?: "Removed from app. Supabase Storage blocked remote delete — allow DELETE RLS on 'YouSnap' bucket."
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(app, msg, android.widget.Toast.LENGTH_LONG).show()
-                }
+                android.util.Log.w("YouSnapViewModel", "Supabase reel delete notice: ${supabaseDeleteResult.errorMessage}")
             }
 
             refreshHomeFeed(showIndicator = false)
@@ -1533,13 +1518,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
 
             if (storyDeleteError != null) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(
-                        app,
-                        storyDeleteError ?: "Story removed from app. Supabase Storage blocked remote delete.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
+                android.util.Log.w("YouSnapViewModel", "Supabase story delete notice: $storyDeleteError")
             }
 
             refreshHomeFeed(showIndicator = false)

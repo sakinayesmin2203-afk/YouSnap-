@@ -841,7 +841,14 @@ fun HomeScreen(
                                     onNavigateTo(Screen.OtherProfile(reel.creatorUsername))
                                 }
                             },
-                            onReelClick = { onNavigateTo(Screen.Reels(startReelId = reel.id)) }
+                            onReelClick = {
+                                onNavigateTo(
+                                    Screen.Reels(
+                                        startReelId = reel.id,
+                                        startMediaUrl = reel.mediaUrl
+                                    )
+                                )
+                            }
                         )
                     }
                 }
@@ -1403,7 +1410,8 @@ private data class UserStoryItem(
     val imageRes: Int
 )
 
-// Custom Composable rendering feed items with automatic ExoPlayer video playback
+// Custom Composable rendering feed items as a sleek inline Video Player card
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun InstagramFeedPost(
     reel: ReelEntity,
@@ -1419,15 +1427,6 @@ fun InstagramFeedPost(
     onProfileClick: () -> Unit,
     onReelClick: () -> Unit
 ) {
-    val presetStart = remember(reel.bgGradientStart) {
-        try { Color(android.graphics.Color.parseColor(reel.bgGradientStart)) }
-        catch (e: Exception) { Color(0xFFFF1A75) }
-    }
-    val presetEnd = remember(reel.bgGradientEnd) {
-        try { Color(android.graphics.Color.parseColor(reel.bgGradientEnd)) }
-        catch (e: Exception) { Color(0xFF8A3AB9) }
-    }
-
     var showBigHeartOverlay by remember { mutableStateOf(false) }
     var isBookmarked by remember { mutableStateOf(false) }
     var showPostMenu by remember { mutableStateOf(false) }
@@ -1438,20 +1437,30 @@ fun InstagramFeedPost(
     var localCommentsCount by remember(reel.id, reel.commentsCount) { mutableStateOf(reel.commentsCount) }
     var localShareCount by remember(reel.id) { mutableStateOf(0) }
 
-    Column(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 16.dp)
-            .background(WarmCreamBackground)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .testTag("home_video_post_card_${reel.id}"),
+        shape = RoundedCornerShape(20.dp),
+        color = WarmCreamBackground,
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, Color(0xFFE8DFC8))
     ) {
-        // Post Header Row
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(bottom = 12.dp)
         ) {
+            // Post Header Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -1621,7 +1630,7 @@ fun InstagramFeedPost(
             }
         }
 
-        // Post Video Player + Thumbnail Poster Box (Auto-plays smoothly via Media3 ExoPlayer when visible)
+        // Inline Video Player View with true aspect ratio, Mute/Unmute, progress strip & tap-to-Reels
         val mediaToDisplay = reel.thumbnailUrl.takeIf {
             it.isNotBlank() && ((!it.startsWith("/") && !it.startsWith("file:")) || java.io.File(it.removePrefix("file://")).exists())
         } ?: reel.mediaUrl
@@ -1640,13 +1649,24 @@ fun InstagramFeedPost(
         }
         var isFirstFrameRendered by remember(reel.mediaUrl, isAutoPlayActive) { mutableStateOf(false) }
         var isBuffering by remember(reel.mediaUrl, isAutoPlayActive) { mutableStateOf(false) }
+        var detectedAspectRatio by remember(reel.mediaUrl) { mutableStateOf<Float?>(null) }
+        var playbackProgress by remember(reel.mediaUrl, isAutoPlayActive) { mutableStateOf(0f) }
+
+        val targetAspectRatio = (detectedAspectRatio ?: (16f / 9f)).coerceIn(0.75f, 1.78f)
+        val animatedAspectRatio by animateFloatAsState(
+            targetValue = targetAspectRatio,
+            animationSpec = tween(durationMillis = 220),
+            label = "inline_video_aspect_ratio"
+        )
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(380.dp)
-                .background(Color(0xFF161616))
-                .pointerInput(reel.id) {
+                .padding(horizontal = 12.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .aspectRatio(animatedAspectRatio)
+                .background(Color(0xFF0E0E12))
+                .pointerInput(reel.id, reel.mediaUrl) {
                     detectTapGestures(
                         onDoubleTap = {
                             if (!localIsLiked) {
@@ -1660,7 +1680,8 @@ fun InstagramFeedPost(
                             onReelClick()
                         }
                     )
-                },
+                }
+                .testTag("home_video_player_view_${reel.id}"),
             contentAlignment = Alignment.Center
         ) {
             if (isAutoPlayActive && reel.mediaUrl.isNotBlank()) {
@@ -1670,12 +1691,24 @@ fun InstagramFeedPost(
                     autoPlay = true,
                     isLooping = true,
                     isMuted = isMuted,
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                    trackProgress = true,
                     onFirstFrameRendered = {
                         isFirstFrameRendered = true
                         isBuffering = false
                     },
                     onBufferingChanged = { buffering ->
                         isBuffering = buffering
+                    },
+                    onVideoSizeChanged = { width, height ->
+                        if (width > 0 && height > 0) {
+                            detectedAspectRatio = width.toFloat() / height.toFloat()
+                        }
+                    },
+                    onProgressChanged = { positionMs, durationMs ->
+                        if (durationMs > 0L) {
+                            playbackProgress = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                        }
                     }
                 )
             }
@@ -1685,11 +1718,48 @@ fun InstagramFeedPost(
                 AsyncImage(
                     model = mediaRequestModel,
                     contentDescription = reel.caption,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
+                    onSuccess = { state ->
+                        if (detectedAspectRatio == null) {
+                            val intrinsic = state.painter.intrinsicSize
+                            if (intrinsic.width > 0f && intrinsic.height > 0f) {
+                                detectedAspectRatio = intrinsic.width / intrinsic.height
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
+            // Top-left subtle Reels badge hinting tap-to-open Reels screen
+            Surface(
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(50.dp),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (isAutoPlayActive) "Playing • Tap for Reels" else "Reels",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            // Center buffering or paused play badge
             if (isAutoPlayActive && isBuffering && !isFirstFrameRendered) {
                 CircularProgressIndicator(
                     color = Color.White,
@@ -1701,7 +1771,7 @@ fun InstagramFeedPost(
                     modifier = Modifier
                         .size(52.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.45f)),
+                        .background(Color.Black.copy(alpha = 0.52f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -1713,12 +1783,13 @@ fun InstagramFeedPost(
                 }
             }
 
+            // Mute / Unmute Button directly on the Video Player View
             if (reel.mediaUrl.isNotBlank()) {
                 IconButton(
                     onClick = onToggleMute,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(6.dp)
+                        .padding(end = 6.dp, bottom = 8.dp)
                         .size(48.dp)
                         .testTag("home_video_mute_button_${reel.id}")
                 ) {
@@ -1726,7 +1797,7 @@ fun InstagramFeedPost(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.6f)),
+                            .background(Color.Black.copy(alpha = 0.65f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -1736,6 +1807,24 @@ fun InstagramFeedPost(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                }
+            }
+
+            // Subtle playback progress strip along bottom of the inline player
+            if (isAutoPlayActive && reel.mediaUrl.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(Color.White.copy(alpha = 0.22f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(playbackProgress)
+                            .background(Color(0xFFE1306C))
+                    )
                 }
             }
 
@@ -1759,142 +1848,157 @@ fun InstagramFeedPost(
             }
         }
 
-        // Facebook Style Action Buttons Layout (Bottom Bar)
-        HorizontalDivider(color = Color(0xFFE8DFC8), thickness = 1.dp, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
-
+        // Inbuilt Bottom Action Bar directly beneath the Video Player View
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Like Button (Thumbs Up 👍)
             Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable {
-                        localIsLiked = !localIsLiked
-                        if (localIsLiked) localLikesCount++ else localLikesCount--
-                        onLikeToggle()
-                    }
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
             ) {
-                Icon(
-                    imageVector = if (localIsLiked) Icons.Filled.ThumbUp else Icons.Outlined.ThumbUpAlt,
-                    contentDescription = "Like",
-                    tint = if (localIsLiked) Color(0xFF1877F2) else WarmCreamTextSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Like (${formatEngCount(localLikesCount)})",
-                    fontSize = 13.sp,
-                    fontWeight = if (localIsLiked) FontWeight.Bold else FontWeight.SemiBold,
-                    color = if (localIsLiked) Color(0xFF1877F2) else WarmCreamTextSecondary
-                )
+                // Like Button
+                Row(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable {
+                            localIsLiked = !localIsLiked
+                            if (localIsLiked) localLikesCount++ else localLikesCount--
+                            onLikeToggle()
+                        }
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = if (localIsLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = "Like",
+                        tint = if (localIsLiked) Color(0xFFE1306C) else WarmCreamTextPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = formatEngCount(localLikesCount),
+                        fontSize = 13.sp,
+                        fontWeight = if (localIsLiked) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (localIsLiked) Color(0xFFE1306C) else WarmCreamTextPrimary
+                    )
+                }
+
+                // Comment Button
+                Row(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onCommentClick() }
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ModeComment,
+                        contentDescription = "Comment",
+                        tint = WarmCreamTextPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Text(
+                        text = localCommentsCount.toString(),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = WarmCreamTextPrimary
+                    )
+                }
+
+                // Share Button
+                Row(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable {
+                            localShareCount++
+                            onShareClick()
+                        }
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.Reply,
+                        contentDescription = "Share",
+                        tint = WarmCreamTextPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    if (localShareCount > 0) {
+                        Text(
+                            text = localShareCount.toString(),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = WarmCreamTextPrimary
+                        )
+                    }
+                }
             }
 
-            // Comment Button (Speech Bubble 💬)
-            Row(
+            // Open in Full Reels Screen shortcut
+            IconButton(
+                onClick = onReelClick,
                 modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onCommentClick() }
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                    .size(48.dp)
+                    .testTag("home_video_open_reels_${reel.id}")
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.ModeComment,
-                    contentDescription = "Comment",
+                    imageVector = Icons.Default.Fullscreen,
+                    contentDescription = "Watch in Reels",
                     tint = WarmCreamTextSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Comment (${localCommentsCount})",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = WarmCreamTextSecondary
-                )
-            }
-
-            // Share Button (Forward Curved Arrow)
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable {
-                        localShareCount++
-                        onShareClick()
-                    }
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.Reply,
-                    contentDescription = "Share",
-                    tint = WarmCreamTextSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Share (${localShareCount})",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = WarmCreamTextSecondary
+                    modifier = Modifier.size(22.dp)
                 )
             }
         }
 
-        HorizontalDivider(color = Color(0xFFE8DFC8), thickness = 1.dp, modifier = Modifier.padding(bottom = 6.dp))
+        HorizontalDivider(
+            color = Color(0xFFE8DFC8).copy(alpha = 0.7f),
+            thickness = 1.dp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+        )
 
         // Caption block
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp)
+                .padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
-            Text(
-                text = "Liked by ${formatEngCount(localLikesCount)} people",
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = WarmCreamTextPrimary
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "${reel.creatorUsername} ",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = WarmCreamTextPrimary,
-                    modifier = Modifier.clickable { onProfileClick() }
-                )
-                Text(
-                    text = reel.caption,
-                    fontSize = 13.sp,
-                    color = WarmCreamTextPrimary.copy(alpha = 0.85f),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
+            if (reel.caption.isNotBlank()) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "${reel.creatorUsername} ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = WarmCreamTextPrimary,
+                        modifier = Modifier.clickable { onProfileClick() }
+                    )
+                    Text(
+                        text = reel.caption,
+                        fontSize = 13.sp,
+                        color = WarmCreamTextPrimary.copy(alpha = 0.85f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-
             Text(
-                text = "View all ${localCommentsCount} comments",
+                text = if (localCommentsCount > 0) "View all $localCommentsCount comments" else "Add a comment...",
                 fontSize = 12.sp,
                 color = WarmCreamTextSecondary,
                 modifier = Modifier
                     .clickable { onCommentClick() }
                     .padding(vertical = 2.dp)
             )
+        }
         }
     }
 }

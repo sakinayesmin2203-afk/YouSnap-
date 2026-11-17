@@ -208,6 +208,7 @@ class MainActivity : ComponentActivity() {
                                 viewModel = viewModel,
                                 reels = reels,
                                 startReelId = activeScreen.startReelId,
+                                startMediaUrl = activeScreen.startMediaUrl,
                                 onNavigateBack = { viewModel.navigateBack() },
                                 onNavigateTo = { viewModel.navigateTo(it) }
                             )

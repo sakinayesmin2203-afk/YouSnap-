@@ -610,10 +610,10 @@ fun ProfileScreen(
                         onCommentClick = { showPreviewComments = true },
                         onFollowToggle = { viewModel.toggleFollowCreator(activePreviewReel) },
                         onShareClick = {
-                            android.widget.Toast.makeText(
+                            Toast.makeText(
                                 viewModel.app,
                                 "Link copied for sharing!",
-                                android.widget.Toast.LENGTH_SHORT
+                                Toast.LENGTH_SHORT
                             ).show()
                         },
                         modifier = Modifier.fillMaxSize()
