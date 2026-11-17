@@ -809,7 +809,10 @@ fun HomeScreen(
                                 { viewModel.deleteReelVideo(reel) {} }
                             } else null,
                             onLikeToggle = { viewModel.toggleLikeReel(reel) },
-                            onCommentClick = { selectedReelForComments = reel },
+                            onCommentClick = {
+                                viewModel.loadCommentsForReel(reel.id)
+                                selectedReelForComments = reel
+                            },
                             onFollowToggle = { viewModel.toggleFollowCreator(reel) },
                             onShareClick = {
                                 try {
@@ -882,6 +885,9 @@ fun HomeScreen(
                 currentUsername = currentProfile?.username ?: "",
                 isOwner = isPhotoOwner,
                 onDismiss = { selectedPhotoForViewer = null },
+                onLikeChanged = { _, liked, count ->
+                    viewModel.notifyPhotoLikedFromViewer(photo, liked, count)
+                },
                 onDeletePhoto = if (isPhotoOwner) {
                     { photoToDelete ->
                         viewModel.deletePhotoPost(

@@ -697,6 +697,9 @@ fun ProfileScreen(
                 onLikeChanged = { photoId, liked, newCount ->
                     photoLikedStatusMap[photoId] = liked
                     photoLikesMap[photoId] = newCount
+                    updatedPhotos.find { it.id == photoId }?.let { photo ->
+                        viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
+                    }
                 },
                 onDeletePhoto = { photoToDelete ->
                     viewModel.deletePhotoPost(

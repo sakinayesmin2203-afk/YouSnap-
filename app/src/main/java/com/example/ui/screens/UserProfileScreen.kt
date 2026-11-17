@@ -26,6 +26,7 @@ import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserProfileScreen(
     username: String,
@@ -33,8 +34,137 @@ fun UserProfileScreen(
     onNavigateBack: () -> Unit,
     onNavigateTo: (Screen) -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("User Profile: $username")
+    val allUsers by viewModel.allUsers.collectAsState()
+    val followingMap by viewModel.otherUserIsFollowing.collectAsState()
+    val photos by viewModel.personalPhotosState.collectAsState()
+    val reels by viewModel.reelsState.collectAsState()
+
+    val userProfile = remember(allUsers, username) {
+        allUsers.firstOrNull { it.username.equals(username, ignoreCase = true) }
+    }
+    val userPhotos = remember(photos, username) {
+        photos.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+    }
+    val userReels = remember(reels, username) {
+        reels.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+    }
+    val isFollowing = followingMap.entries
+        .firstOrNull { it.key.equals(username, ignoreCase = true) }?.value ?: false
+    val displayName = userProfile?.name?.ifBlank { username } ?: username
+    val followersCount = userProfile?.followersCount ?: 0
+    val followingCount = userProfile?.followingCount ?: 0
+
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        text = "@$username",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                ),
+                modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(MaterialTheme.colorScheme.background)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(84.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                val pic = userProfile?.profilePic.orEmpty()
+                if (pic.isNotBlank() && (pic.startsWith("http") || pic.startsWith("content://"))) {
+                    coil.compose.AsyncImage(
+                        model = pic,
+                        contentDescription = displayName,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = displayName.take(1).uppercase().ifBlank { "U" },
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = displayName,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (!userProfile?.bio.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = userProfile!!.bio,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("${userPhotos.size + userReels.size}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Posts", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$followersCount", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Followers", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$followingCount", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Following", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+            Button(
+                onClick = { viewModel.toggleFollowUser(targetUsername = username) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isFollowing) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF0095F6),
+                    contentColor = if (isFollowing) MaterialTheme.colorScheme.onSurface else Color.White
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+            ) {
+                Text(
+                    text = if (isFollowing) "Following" else "Follow",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+            }
+        }
     }
 }
 

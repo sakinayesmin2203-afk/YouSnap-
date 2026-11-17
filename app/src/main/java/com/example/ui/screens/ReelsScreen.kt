@@ -246,7 +246,10 @@ fun ReelsScreen(
                                     viewModel = viewModel,
                                     isActive = isItemActive,
                                     onLikeToggle = { viewModel.toggleLikeReel(item.reel) },
-                                    onCommentClick = { selectedReelForComments = item.reel },
+                                    onCommentClick = {
+                                        viewModel.loadCommentsForReel(item.reel.id)
+                                        selectedReelForComments = item.reel
+                                    },
                                     onFollowToggle = { viewModel.toggleFollowCreator(item.reel) },
                                     onNavigateTo = onNavigateTo
                                 )

@@ -13,9 +13,14 @@ import com.example.ui.utils.VideoCompressor
 import com.example.data.repository.SupabaseRepository
 import com.example.data.repository.UploadResult
 import com.example.data.repository.UploadTransferState
+import com.example.notifications.YouSnapNotificationHelper
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -111,6 +116,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val currentCommentText = MutableStateFlow("")
     private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var refreshFeedJob: kotlinx.coroutines.Job? = null
+    private val pendingSyncLock = Any()
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -128,6 +134,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val bookmarkedReelIds = MutableStateFlow<Set<Int>>(emptySet())
     val isReelsRefreshing = MutableStateFlow(false)
     val notifications = MutableStateFlow<List<NotificationEntity>>(emptyList())
+    val unreadNotificationsCount = MutableStateFlow(0)
+
+    private var notifUidListener: ListenerRegistration? = null
+    private var notifUsernameListener: ListenerRegistration? = null
+    private val notifDocsByUid = java.util.concurrent.ConcurrentHashMap<String, NotificationEntity>()
+    private val notifDocsByUsername = java.util.concurrent.ConcurrentHashMap<String, NotificationEntity>()
+    private val displayedSystemNotifIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val appLaunchTimestampMs = System.currentTimeMillis()
 
     val selectedReelForPreview = MutableStateFlow<ReelEntity?>(null)
     val loginDevices = MutableStateFlow<List<LoginDeviceItem>>(listOf(
@@ -158,7 +172,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private var activeCommentsReelId: Int? = null
 
     val currentStoryState = MutableStateFlow<StoryModel?>(null)
-    private var storyListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+    private var storyListenerRegistration: ListenerRegistration? = null
     val searchQuery = MutableStateFlow("")
     val searchResultUsers = MutableStateFlow<List<ProfileEntity>>(emptyList())
     val searchResultPosts = MutableStateFlow<List<ReelEntity>>(emptyList())
@@ -167,6 +181,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         backstack.push(Screen.Splash)
+        try {
+            val savedPush = prefs.getBoolean("push_notifications_enabled", true)
+            val savedQuiet = prefs.getBoolean("quiet_mode_enabled", false)
+            pushNotificationsEnabled.value = savedPush
+            quietModeEnabled.value = savedQuiet
+            _settingsState.value = _settingsState.value.copy(
+                pushNotifications = savedPush,
+                quietMode = savedQuiet
+            )
+            YouSnapNotificationHelper.ensureChannel(app)
+        } catch (_: Throwable) {}
         try {
             currentUser.value = auth.currentUser
         } catch (e: Throwable) {
@@ -185,6 +210,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try { refreshHomeFeed() } catch (e: Throwable) {}
         try { fetchAllUsers() } catch (e: Throwable) {}
         try { loadSearchHistory() } catch (e: Throwable) {}
+        try { loadFollowingFromFirestore() } catch (e: Throwable) {}
+        try { startListeningToNotifications() } catch (e: Throwable) {}
+        try { syncFcmToken() } catch (e: Throwable) {}
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopListeningToNotifications()
+        storyListenerRegistration?.remove()
+        storyListenerRegistration = null
     }
 
     private fun profileVisitsPrefsKey(): String {
@@ -446,6 +481,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
         // Clear active session markers ONLY (keep per-email profiles and cached media intact!)
         prefs.edit().remove("active_user_email").remove("active_user_uid").apply()
+        stopListeningToNotifications()
+        notifications.value = emptyList()
+        unreadNotificationsCount.value = 0
+        otherUserIsFollowing.value = emptyMap()
         currentUser.value = null
         _profileState.value = ProfileEntity(name = "User", username = "user")
         myFollowersCount.value = 0
@@ -593,10 +632,30 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 recentlyUploadedUrls[finalUrl] = System.currentTimeMillis()
                 b2UploadProgress.value = 0.95f
 
-                // Stage 3: Save Metadata Locally & Sync to Firestore (95% -> 100%)
-                uploadStatusMessage.value = if (isStory) "Publishing story..." else "Publishing post..."
+                // Stage 3: Save Metadata Locally & Sync Directly to Firestore (95% -> 100%)
                 val profile = profileState.value
-                val creatorUid = activeUserUid().orEmpty()
+                val creatorUid = activeUserUid().orEmpty().ifBlank { safeOwner }
+                val displayName = profile.name.ifBlank { ownerUsername }
+                val creatorAvatar = profile.profilePic
+                val resolvedCategory = if (isVideo) category.ifBlank { "Entertainment" } else category.ifBlank { "Photo" }
+                val resolvedAudioTitle = songTitle.ifBlank { "Original Audio" }
+                val firestoreDocId = when {
+                    isStory -> ownerUsername
+                    !isVideo -> "post_${safeOwner}_${timestamp}"
+                    else -> "reel_${safeOwner}_${timestamp}"
+                }
+                val targetCollection = when {
+                    isStory -> "stories"
+                    !isVideo -> "posts"
+                    else -> "reels"
+                }
+
+                uploadStatusMessage.value = when {
+                    isStory -> "Saving story to Firestore..."
+                    isVideo -> "Saving reel to Firestore..."
+                    else -> "Saving post to Firestore..."
+                }
+                b2UploadProgress.value = 0.96f
 
                 if (isStory) {
                     val newStory = StoryModel(
@@ -609,35 +668,36 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         bgGradientEnd = gradientEnd,
                         timestamp = timestamp
                     )
-                    allStories.value = listOf(newStory) + allStories.value.filter { it.ownerUsername != ownerUsername }
+                    allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(ownerUsername, ignoreCase = true) }
                     saveStoriesToPrefs()
                 } else if (!isVideo) {
                     val newPhoto = FullScreenPhotoData(
                         id = timestamp.toString(),
                         title = caption,
                         imageUrl = finalUrl,
-                        creatorName = profile.name.ifEmpty { "User" },
+                        creatorName = displayName,
                         creatorUsername = ownerUsername,
-                        creatorAvatar = profile.profilePic,
+                        creatorAvatar = creatorAvatar,
                         creatorUid = creatorUid,
                         initialLikes = 0,
                         initialComments = 0,
                         initialIsLiked = false,
                         timeAgo = "Just now",
-                        firestoreDocId = null
+                        firestoreDocId = firestoreDocId
                     )
                     personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
                     savePersonalPhotosToPrefs()
                 } else {
                     val newReel = ReelEntity(
                         id = timestamp.toInt(),
-                        creatorName = profile.name.ifEmpty { "User" },
+                        creatorName = displayName,
                         creatorUsername = ownerUsername,
-                        creatorProfilePic = profile.profilePic,
+                        creatorProfilePic = creatorAvatar,
                         creatorUid = creatorUid,
                         mediaUrl = finalUrl,
                         thumbnailUrl = localThumbPath,
                         caption = caption,
+                        audioTitle = resolvedAudioTitle,
                         likesCount = 0,
                         commentsCount = 0,
                         viewsCount = 0,
@@ -650,60 +710,76 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
                 recalculateCreatorStats()
 
-                var firestoreSynced = false
-                try {
-                    withTimeoutOrNull(15000L) {
-                        if (isStory) {
-                            val storyDoc = mapOf(
-                                "storyId" to timestamp.toString(),
-                                "ownerUsername" to ownerUsername,
-                                "mediaUrl" to finalUrl,
-                                "mediaType" to if (isVideo) "video" else "image",
-                                "caption" to caption,
-                                "timestamp" to timestamp,
-                                "creatorUid" to creatorUid,
-                                "viewerIds" to emptyList<String>(),
-                                "viewsCount" to 0,
-                                "likes" to emptyList<String>(),
-                                "bgGradientStart" to gradientStart,
-                                "bgGradientEnd" to gradientEnd
-                            )
-                            awaitTask(db.collection("stories").document(ownerUsername).set(storyDoc))
-                        } else if (!isVideo) {
-                            val postDoc = mapOf(
-                                "id" to timestamp.toString(),
-                                "type" to "photo",
-                                "username" to ownerUsername,
-                                "imageUrl" to finalUrl,
-                                "caption" to caption,
-                                "timestamp" to timestamp,
-                                "creatorUid" to creatorUid,
-                                "likesCount" to 0,
-                                "commentsCount" to 0
-                            )
-                            awaitTask(db.collection("posts").add(postDoc))
-                        } else {
-                            val reelDoc = mapOf(
-                                "id" to timestamp.toString(),
-                                "type" to "reel",
-                                "username" to ownerUsername,
-                                "mediaUrl" to finalUrl,
-                                "caption" to caption,
-                                "timestamp" to timestamp,
-                                "creatorUid" to creatorUid,
-                                "likesCount" to 0,
-                                "commentsCount" to 0,
-                                "viewsCount" to 0,
-                                "bgGradientStart" to gradientStart,
-                                "bgGradientEnd" to gradientEnd
-                            )
-                            awaitTask(db.collection("reels").add(reelDoc))
-                        }
-                        firestoreSynced = true
-                    }
-                } catch (firestoreEx: Exception) {
-                    android.util.Log.e("YouSnapViewModel", "Firestore sync warning: ${firestoreEx.message}")
-                    android.util.Log.w("YouSnapViewModel", "Firestore sync notice (suppressed from UI)")
+                val basePayload: Map<String, Any> = when {
+                    isStory -> mapOf(
+                        "storyId" to timestamp.toString(),
+                        "firestoreDocId" to firestoreDocId,
+                        "userId" to creatorUid,
+                        "creatorUid" to creatorUid,
+                        "username" to ownerUsername,
+                        "ownerUsername" to ownerUsername,
+                        "name" to displayName,
+                        "creatorAvatar" to creatorAvatar,
+                        "mediaUrl" to finalUrl,
+                        "mediaType" to if (isVideo) "video" else "image",
+                        "caption" to caption,
+                        "timestamp" to timestamp,
+                        "viewerIds" to emptyList<String>(),
+                        "viewsCount" to 0,
+                        "likes" to emptyList<String>(),
+                        "bgGradientStart" to gradientStart,
+                        "bgGradientEnd" to gradientEnd
+                    )
+                    !isVideo -> mapOf(
+                        "id" to timestamp.toString(),
+                        "firestoreDocId" to firestoreDocId,
+                        "type" to "photo",
+                        "userId" to creatorUid,
+                        "creatorUid" to creatorUid,
+                        "username" to ownerUsername,
+                        "name" to displayName,
+                        "creatorAvatar" to creatorAvatar,
+                        "imageUrl" to finalUrl,
+                        "mediaUrl" to finalUrl,
+                        "caption" to caption,
+                        "title" to caption,
+                        "category" to resolvedCategory,
+                        "timestamp" to timestamp,
+                        "likesCount" to 0,
+                        "commentsCount" to 0
+                    )
+                    else -> mapOf(
+                        "id" to timestamp.toString(),
+                        "reelIntId" to timestamp.toInt(),
+                        "firestoreDocId" to firestoreDocId,
+                        "type" to "reel",
+                        "userId" to creatorUid,
+                        "creatorUid" to creatorUid,
+                        "username" to ownerUsername,
+                        "name" to displayName,
+                        "creatorAvatar" to creatorAvatar,
+                        "mediaUrl" to finalUrl,
+                        "thumbnailUrl" to "",
+                        "audioTitle" to resolvedAudioTitle,
+                        "category" to resolvedCategory,
+                        "caption" to caption,
+                        "timestamp" to timestamp,
+                        "likesCount" to 0,
+                        "commentsCount" to 0,
+                        "viewsCount" to 0,
+                        "bgGradientStart" to gradientStart,
+                        "bgGradientEnd" to gradientEnd
+                    )
+                }
+
+                val firestorePayload = basePayload + ("createdAt" to FieldValue.serverTimestamp())
+                val firestoreSynced = syncDocumentToFirestoreWithRetry(
+                    collection = targetCollection,
+                    docId = firestoreDocId,
+                    data = firestorePayload
+                )
+                if (!firestoreSynced) {
+                    savePendingFirestoreDoc(targetCollection, firestoreDocId, basePayload)
                 }
 
                 b2UploadProgress.value = 1.0f
@@ -713,7 +789,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 isB2Uploading.value = false
                 b2UploadProgress.value = 0f
                 if (firestoreSynced) {
-                    refreshHomeFeed()
+                    refreshHomeFeed(showIndicator = false)
                 }
                 onComplete()
             } catch (e: Exception) {
@@ -724,6 +800,158 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             } finally {
                 try { fileToUpload?.delete() } catch (_: Exception) {}
             }
+        }
+    }
+
+    private suspend fun syncDocumentToFirestoreWithRetry(
+        collection: String,
+        docId: String,
+        data: Map<String, Any>,
+        maxAttempts: Int = 3
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            db.enableNetwork()
+        } catch (_: Exception) {}
+
+        var lastError: Throwable? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                val writeConfirmed = withTimeoutOrNull(25_000L) {
+                    awaitTask(db.collection(collection).document(docId).set(data))
+                    true
+                } ?: false
+
+                if (writeConfirmed) {
+                    removePendingFirestoreDoc(collection, docId)
+                    android.util.Log.d("YouSnapViewModel", "Firestore sync confirmed: $collection/$docId (attempt $attempt)")
+                    return@withContext true
+                } else {
+                    android.util.Log.w("YouSnapViewModel", "Firestore write timed out waiting for server ack: $collection/$docId (attempt $attempt/$maxAttempts)")
+                }
+            } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
+                lastError = e
+                android.util.Log.e(
+                    "YouSnapViewModel",
+                    "Firestore write rejected [$collection/$docId] code=${e.code} attempt=$attempt: ${e.message}"
+                )
+                if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED ||
+                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAUTHENTICATED ||
+                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.INVALID_ARGUMENT
+                ) {
+                    break
+                }
+            } catch (e: Exception) {
+                lastError = e
+                android.util.Log.e(
+                    "YouSnapViewModel",
+                    "Firestore write error [$collection/$docId] attempt=$attempt: ${e.message}"
+                )
+            }
+            if (attempt < maxAttempts) {
+                delay(attempt * 800L)
+            }
+        }
+        android.util.Log.e(
+            "YouSnapViewModel",
+            "Firestore write queued/pending for retry [$collection/$docId]: ${lastError?.message ?: "timeout"}"
+        )
+        false
+    }
+
+    private fun savePendingFirestoreDoc(collection: String, docId: String, basePayload: Map<String, Any>) {
+        synchronized(pendingSyncLock) {
+            try {
+                val currentRaw = prefs.getString("pending_firestore_docs", null)
+                val currentArray = if (!currentRaw.isNullOrBlank()) JSONArray(currentRaw) else JSONArray()
+                val updatedArray = JSONArray()
+                for (i in 0 until currentArray.length()) {
+                    val item = currentArray.optJSONObject(i) ?: continue
+                    if (item.optString("collection") == collection && item.optString("docId") == docId) continue
+                    updatedArray.put(item)
+                }
+                val dataJson = JSONObject()
+                basePayload.forEach { (k, v) ->
+                    when (v) {
+                        is List<*> -> dataJson.put(k, JSONArray(v))
+                        else -> dataJson.put(k, v)
+                    }
+                }
+                val entry = JSONObject().apply {
+                    put("collection", collection)
+                    put("docId", docId)
+                    put("data", dataJson)
+                }
+                updatedArray.put(entry)
+                prefs.edit().putString("pending_firestore_docs", updatedArray.toString()).apply()
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Failed to save pending Firestore sync item: ${e.message}")
+            }
+        }
+    }
+
+    private fun removePendingFirestoreDoc(collection: String, docId: String) {
+        synchronized(pendingSyncLock) {
+            try {
+                val currentRaw = prefs.getString("pending_firestore_docs", null) ?: return
+                val currentArray = JSONArray(currentRaw)
+                if (currentArray.length() == 0) return
+                val updatedArray = JSONArray()
+                var changed = false
+                for (i in 0 until currentArray.length()) {
+                    val item = currentArray.optJSONObject(i) ?: continue
+                    if (item.optString("collection") == collection && item.optString("docId") == docId) {
+                        changed = true
+                        continue
+                    }
+                    updatedArray.put(item)
+                }
+                if (changed) {
+                    prefs.edit().putString("pending_firestore_docs", updatedArray.toString()).apply()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun flushPendingFirestoreDocs() {
+        val snapshotEntries: List<Triple<String, String, Map<String, Any>>> = synchronized(pendingSyncLock) {
+            val raw = prefs.getString("pending_firestore_docs", null)
+            if (raw.isNullOrBlank()) return
+            try {
+                val arr = JSONArray(raw)
+                val list = mutableListOf<Triple<String, String, Map<String, Any>>>()
+                for (i in 0 until arr.length()) {
+                    val entry = arr.optJSONObject(i) ?: continue
+                    val col = entry.optString("collection", "")
+                    val id = entry.optString("docId", "")
+                    val dataObj = entry.optJSONObject("data") ?: continue
+                    if (col.isBlank() || id.isBlank()) continue
+                    val map = mutableMapOf<String, Any>()
+                    val keys = dataObj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        when (val value = dataObj.opt(key)) {
+                            is JSONArray -> {
+                                val strList = mutableListOf<String>()
+                                for (j in 0 until value.length()) {
+                                    strList.add(value.optString(j, ""))
+                                }
+                                map[key] = strList
+                            }
+                            JSONObject.NULL, null -> Unit
+                            else -> map[key] = value
+                        }
+                    }
+                    map["createdAt"] = FieldValue.serverTimestamp()
+                    list.add(Triple(col, id, map))
+                }
+                list
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
+        for ((col, id, payload) in snapshotEntries) {
+            syncDocumentToFirestoreWithRetry(collection = col, docId = id, data = payload, maxAttempts = 2)
         }
     }
 
@@ -784,12 +1012,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 isHomeRefreshing.value = true
             }
             try {
+                flushPendingFirestoreDocs()
                 val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
 
                 val storiesSnapshot = withContext(Dispatchers.IO) {
                     try {
                         withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("stories").limit(100).get())
+                            awaitTask(db.collection("stories").limit(200).get())
                         }
                     } catch (e: Exception) {
                         android.util.Log.w("YouSnapViewModel", "Firestore stories fetch notice: ${e.message}")
@@ -800,7 +1029,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val postsSnapshot = withContext(Dispatchers.IO) {
                     try {
                         withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("posts").limit(100).get())
+                            awaitTask(db.collection("posts").limit(200).get())
                         }
                     } catch (e: Exception) {
                         android.util.Log.w("YouSnapViewModel", "Firestore posts fetch notice: ${e.message}")
@@ -811,7 +1040,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val reelsSnapshot = withContext(Dispatchers.IO) {
                     try {
                         withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("reels").limit(100).get())
+                            awaitTask(db.collection("reels").limit(200).get())
                         }
                     } catch (e: Exception) {
                         android.util.Log.w("YouSnapViewModel", "Firestore reels fetch notice: ${e.message}")
@@ -941,14 +1170,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val id = doc.getString("id") ?: ts.takeIf { it > 0L }?.toString() ?: doc.id
                     val ownerFromUrl = supabaseOwnerByUrl[fixedUrl]
                     val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: ownerFromUrl ?: "user"
+                    val display = doc.getString("name")?.takeIf { it.isNotBlank() } ?: uname
+                    val avatar = doc.getString("creatorAvatar") ?: ""
                     FullScreenPhotoData(
                         id = id,
                         title = doc.getString("caption") ?: doc.getString("title") ?: "",
                         imageUrl = fixedUrl,
-                        creatorName = uname,
+                        creatorName = display,
                         creatorUsername = uname,
-                        creatorAvatar = "",
-                        creatorUid = doc.getString("creatorUid") ?: "",
+                        creatorAvatar = avatar,
+                        creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: "",
                         initialLikes = (doc.getLong("likesCount") ?: 0).toInt(),
                         initialComments = (doc.getLong("commentsCount") ?: 0).toInt(),
                         initialIsLiked = false,
@@ -1029,20 +1260,25 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         return@mapNotNull null
                     }
                     val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
-                    val reelId = doc.getString("id")?.toLongOrNull()?.toInt()
+                    val reelId = doc.getLong("reelIntId")?.toInt()
+                        ?: doc.getString("id")?.toLongOrNull()?.toInt()
                         ?: ts.takeIf { it > 0L }?.toInt()
                         ?: fixedUrl.hashCode()
                     val ownerFromUrl = supabaseOwnerByUrl[fixedUrl]
                     val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: ownerFromUrl ?: "user"
+                    val display = doc.getString("name")?.takeIf { it.isNotBlank() } ?: uname
+                    val avatar = doc.getString("creatorAvatar") ?: ""
+                    val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
                     ReelEntity(
                         id = reelId,
-                        creatorName = uname,
+                        creatorName = display,
                         creatorUsername = uname,
-                        creatorProfilePic = "",
-                        creatorUid = doc.getString("creatorUid") ?: existingUidByUrl[fixedUrl] ?: "",
+                        creatorProfilePic = avatar,
+                        creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: existingUidByUrl[fixedUrl] ?: "",
                         mediaUrl = fixedUrl,
-                        thumbnailUrl = doc.getString("thumbnailUrl") ?: existingThumbByUrl[fixedUrl] ?: "",
+                        thumbnailUrl = doc.getString("thumbnailUrl").orEmpty().ifBlank { existingThumbByUrl[fixedUrl] ?: "" },
                         caption = doc.getString("caption") ?: "",
+                        audioTitle = audioTitle,
                         likesCount = (doc.getLong("likesCount") ?: 0).toInt(),
                         commentsCount = (doc.getLong("commentsCount") ?: 0).toInt(),
                         viewsCount = (doc.getLong("viewsCount") ?: 0).toInt(),
@@ -1129,15 +1365,78 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val newLiked = !isCurrentlyLiked
         homePostLikedState.value = homePostLikedState.value + (postId to newLiked)
         val cleanId = postId.removePrefix("photo_")
-        val baseCount = homePostLikesCount.value[postId]
-            ?: personalPhotosState.value.find { it.id == cleanId || it.id == postId }?.initialLikes
-            ?: 0
+        val targetPhoto = personalPhotosState.value.find { it.id == cleanId || it.id == postId }
+        val baseCount = homePostLikesCount.value[postId] ?: targetPhoto?.initialLikes ?: 0
         val newCount = if (newLiked) baseCount + 1 else (baseCount - 1).coerceAtLeast(0)
         homePostLikesCount.value = homePostLikesCount.value + (postId to newCount)
         personalPhotosState.value = personalPhotosState.value.map { p ->
             if (p.id == cleanId || p.id == postId) p.copy(initialLikes = newCount, initialIsLiked = newLiked) else p
         }
         savePersonalPhotosToPrefs()
+
+        syncPostLikeToFirestore(targetPhoto, cleanId, newLiked)
+    }
+
+    fun notifyPhotoLikedFromViewer(photo: FullScreenPhotoData, isLiked: Boolean, newCount: Int) {
+        val keys = listOf(photo.id, "photo_${photo.id}").distinct()
+        homePostLikedState.value = homePostLikedState.value + keys.associateWith { isLiked }
+        homePostLikesCount.value = homePostLikesCount.value + keys.associateWith { newCount }
+        personalPhotosState.value = personalPhotosState.value.map { p ->
+            if (p.id == photo.id || p.imageUrl == photo.imageUrl) {
+                p.copy(initialLikes = newCount, initialIsLiked = isLiked)
+            } else p
+        }
+        savePersonalPhotosToPrefs()
+
+        syncPostLikeToFirestore(photo, photo.id, isLiked)
+    }
+
+    private fun syncPostLikeToFirestore(targetPhoto: FullScreenPhotoData?, cleanId: String, newLiked: Boolean) {
+        val myUid = activeUserUid().orEmpty().ifBlank { _profileState.value.username.ifBlank { "user" } }
+        val docId = targetPhoto?.firestoreDocId
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val delta = if (newLiked) 1L else -1L
+                var updated = false
+                if (!docId.isNullOrBlank()) {
+                    awaitTask(
+                        db.collection("posts").document(docId).update(
+                            mapOf(
+                                "likesCount" to FieldValue.increment(delta),
+                                "likedBy" to if (newLiked) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
+                            )
+                        )
+                    )
+                    updated = true
+                }
+                if (!updated && cleanId.isNotBlank()) {
+                    val snap = awaitTask(db.collection("posts").whereEqualTo("id", cleanId).limit(1).get())
+                    for (doc in snap.documents) {
+                        doc.reference.update(
+                            mapOf(
+                                "likesCount" to FieldValue.increment(delta),
+                                "likedBy" to if (newLiked) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Post like sync notice: ${e.message}")
+            }
+        }
+
+        if (newLiked && targetPhoto != null) {
+            val safeSender = _profileState.value.username.lowercase().replace(Regex("[^a-z0-9_]"), "").ifBlank { "user" }
+            createAndPushFirestoreNotification(
+                type = "like",
+                recipientUsername = targetPhoto.creatorUsername,
+                recipientUid = targetPhoto.creatorUid,
+                detail = "liked your photo.",
+                postId = targetPhoto.firestoreDocId ?: targetPhoto.id,
+                postMediaUrl = targetPhoto.imageUrl,
+                fixedDocId = "notif_like_${safeSender}_${targetPhoto.id}"
+            )
+        }
     }
 
     fun toggleBookmarkHomePost(postId: String): Boolean {
@@ -1280,6 +1579,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return
         val user = profileState.value
+        val cleanId = postId.removePrefix("photo_")
+        val targetPhoto = personalPhotosState.value.find { it.id == cleanId || it.id == postId }
         val comment = CommentEntity(
             id = System.currentTimeMillis().toInt(),
             postId = postId,
@@ -1293,7 +1594,6 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         currentMap[postId] = currentList
         homePostComments.value = currentMap
 
-        val cleanId = postId.removePrefix("photo_")
         personalPhotosState.value = personalPhotosState.value.map { p ->
             if (p.id == cleanId || p.id == postId) p.copy(initialComments = p.initialComments + 1) else p
         }
@@ -1306,14 +1606,38 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "timestamp" to System.currentTimeMillis()
         )
         db.collection("comments").add(doc)
+
+        val docId = targetPhoto?.firestoreDocId
+        if (!docId.isNullOrBlank()) {
+            db.collection("posts").document(docId).update("commentsCount", FieldValue.increment(1))
+        } else if (cleanId.isNotBlank()) {
+            db.collection("posts").whereEqualTo("id", cleanId).limit(1).get().addOnSuccessListener { snap ->
+                snap.documents.forEach { it.reference.update("commentsCount", FieldValue.increment(1)) }
+            }
+        }
+
+        if (targetPhoto != null) {
+            val preview = cleanText.take(80)
+            createAndPushFirestoreNotification(
+                type = "comment",
+                recipientUsername = targetPhoto.creatorUsername,
+                recipientUid = targetPhoto.creatorUid,
+                detail = "commented: \"$preview\"",
+                postId = targetPhoto.firestoreDocId ?: targetPhoto.id,
+                postMediaUrl = targetPhoto.imageUrl
+            )
+        }
     }
 
     fun uploadTextStory(text: String, gradientStart: String, gradientEnd: String, onComplete: () -> Unit) {
         val profile = profileState.value
+        val ownerUsername = profile.username.ifBlank { "user" }
+        val displayName = profile.name.ifBlank { ownerUsername }
+        val creatorUid = activeUserUid().orEmpty().ifBlank { ownerUsername }
         val timestamp = System.currentTimeMillis()
         val newStory = StoryModel(
             storyId = timestamp.toString(),
-            ownerUsername = profile.username,
+            ownerUsername = ownerUsername,
             mediaUrl = "",
             mediaType = "text",
             caption = text,
@@ -1321,27 +1645,42 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             bgGradientEnd = gradientEnd,
             timestamp = timestamp
         )
-        allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(profile.username, ignoreCase = true) }
+        allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(ownerUsername, ignoreCase = true) }
         saveStoriesToPrefs()
         recalculateCreatorStats()
 
-        val storyDoc = mapOf(
+        val baseStoryDoc = mapOf(
             "storyId" to timestamp.toString(),
-            "ownerUsername" to profile.username,
+            "firestoreDocId" to ownerUsername,
+            "userId" to creatorUid,
+            "creatorUid" to creatorUid,
+            "username" to ownerUsername,
+            "ownerUsername" to ownerUsername,
+            "name" to displayName,
+            "creatorAvatar" to profile.profilePic,
             "mediaUrl" to "",
             "mediaType" to "text",
             "caption" to text,
             "timestamp" to timestamp,
-            "creatorUid" to (auth.currentUser?.uid ?: ""),
             "bgGradientStart" to gradientStart,
             "bgGradientEnd" to gradientEnd,
             "viewerIds" to emptyList<String>(),
             "viewsCount" to 0,
             "likes" to emptyList<String>()
         )
-        db.collection("stories").document(profile.username).set(storyDoc).addOnCompleteListener {
+        viewModelScope.launch {
+            val synced = syncDocumentToFirestoreWithRetry(
+                collection = "stories",
+                docId = ownerUsername,
+                data = baseStoryDoc + ("createdAt" to FieldValue.serverTimestamp())
+            )
+            if (!synced) {
+                savePendingFirestoreDoc("stories", ownerUsername, baseStoryDoc)
+            }
+            if (synced) {
+                refreshHomeFeed(showIndicator = false)
+            }
             onComplete()
-            refreshHomeFeed(showIndicator = false)
         }
     }
 
@@ -1365,28 +1704,155 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
         saveReelsToPrefs()
 
-        val uid = auth.currentUser?.uid ?: return
-        db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { snapshot ->
-            for (doc in snapshot.documents) {
-                val likes = doc.get("likedBy") as? List<String> ?: emptyList()
-                if (likes.contains(uid)) {
-                    doc.reference.update("likedBy", FieldValue.arrayRemove(uid), "likesCount", FieldValue.increment(-1))
-                } else {
-                    doc.reference.update("likedBy", FieldValue.arrayUnion(uid), "likesCount", FieldValue.increment(1))
+        val uid = activeUserUid().orEmpty().ifBlank { _profileState.value.username.ifBlank { "user" } }
+        val updateLikes: (com.google.firebase.firestore.DocumentSnapshot) -> Unit = { doc ->
+            val likes = doc.get("likedBy") as? List<*> ?: emptyList<String>()
+            if (likes.contains(uid)) {
+                doc.reference.update("likedBy", FieldValue.arrayRemove(uid), "likesCount", FieldValue.increment(-1))
+            } else {
+                doc.reference.update("likedBy", FieldValue.arrayUnion(uid), "likesCount", FieldValue.increment(1))
+            }
+        }
+        val query = if (reel.mediaUrl.isNotBlank()) {
+            db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl)
+        } else {
+            db.collection("reels").whereEqualTo("reelIntId", reel.id)
+        }
+        query.get().addOnSuccessListener { snapshot ->
+            if (!snapshot.isEmpty) {
+                snapshot.documents.forEach(updateLikes)
+            } else {
+                db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { fallback ->
+                    fallback.documents.forEach(updateLikes)
                 }
             }
+        }
+
+        if (newLiked) {
+            val safeSender = _profileState.value.username.lowercase().replace(Regex("[^a-z0-9_]"), "").ifBlank { "user" }
+            createAndPushFirestoreNotification(
+                type = "like",
+                recipientUsername = reel.creatorUsername,
+                recipientUid = reel.creatorUid,
+                detail = "liked your reel.",
+                postId = reel.id.toString(),
+                postMediaUrl = reel.mediaUrl,
+                fixedDocId = "notif_like_reel_${safeSender}_${reel.id}"
+            )
         }
     }
 
     fun toggleFollowCreator(reel: ReelEntity) {
-        val uid = auth.currentUser?.uid ?: return
-        // Implement follow logic
+        toggleFollowUser(targetUsername = reel.creatorUsername, targetUid = reel.creatorUid)
+    }
+
+    fun toggleFollowUser(targetUsername: String, targetUid: String = "") {
+        val cleanTarget = targetUsername.trim()
+        if (cleanTarget.isBlank()) return
+        val myProfile = _profileState.value
+        val myUsername = myProfile.username.ifBlank { "user" }
+        val myUid = activeUserUid().orEmpty().ifBlank { myUsername }
+        if (cleanTarget.equals(myUsername, ignoreCase = true) || (targetUid.isNotBlank() && targetUid == myUid)) {
+            return
+        }
+
+        val currentFollowing = otherUserIsFollowing.value.entries
+            .firstOrNull { it.key.equals(cleanTarget, ignoreCase = true) }?.value ?: false
+        val newFollowing = !currentFollowing
+
+        val updatedMap = otherUserIsFollowing.value.toMutableMap()
+        updatedMap[cleanTarget] = newFollowing
+        otherUserIsFollowing.value = updatedMap
+
+        _reelsState.value = _reelsState.value.map { reel ->
+            if (reel.creatorUsername.equals(cleanTarget, ignoreCase = true)) {
+                reel.copy(isFollowingCreator = newFollowing)
+            } else reel
+        }
+        saveReelsToPrefs()
+
+        notifications.value = notifications.value.map { notif ->
+            if (notif.type.equals("follow", ignoreCase = true) && notif.username.equals(cleanTarget, ignoreCase = true)) {
+                notif.copy(isFollowingBack = newFollowing)
+            } else notif
+        }
+
+        val nextFollowingCount = (myFollowingCount.value + if (newFollowing) 1 else -1).coerceAtLeast(0)
+        myFollowingCount.value = nextFollowingCount
+        val updatedMyProfile = myProfile.copy(followingCount = nextFollowingCount)
+        _profileState.value = updatedMyProfile
+        saveProfileToPrefs(updatedMyProfile, myUid)
+
+        val safeMyKey = myUid.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
+        val safeTargetKey = cleanTarget.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
+        val followDocId = "follow_${safeMyKey}_${safeTargetKey}"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var resolvedTargetUid = targetUid
+                if (resolvedTargetUid.isBlank()) {
+                    val userSnap = withTimeoutOrNull(4000L) {
+                        awaitTask(db.collection("users").whereEqualTo("username", cleanTarget).limit(1).get())
+                    }
+                    resolvedTargetUid = userSnap?.documents?.firstOrNull()?.id.orEmpty()
+                }
+
+                if (newFollowing) {
+                    val followDoc = mapOf(
+                        "id" to followDocId,
+                        "followerUid" to myUid,
+                        "followerUsername" to myUsername,
+                        "targetUid" to resolvedTargetUid,
+                        "targetUsername" to cleanTarget,
+                        "timestamp" to System.currentTimeMillis(),
+                        "createdAt" to FieldValue.serverTimestamp()
+                    )
+                    awaitTask(db.collection("follows").document(followDocId).set(followDoc))
+                } else {
+                    awaitTask(db.collection("follows").document(followDocId).delete())
+                }
+
+                if (myUid.isNotBlank()) {
+                    db.collection("users").document(myUid)
+                        .set(mapOf("followingCount" to nextFollowingCount), SetOptions.merge())
+                }
+                if (resolvedTargetUid.isNotBlank()) {
+                    db.collection("users").document(resolvedTargetUid)
+                        .update("followersCount", FieldValue.increment(if (newFollowing) 1L else -1L))
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Follow sync notice: ${e.message}")
+            }
+        }
+
+        if (newFollowing) {
+            createAndPushFirestoreNotification(
+                type = "follow",
+                recipientUsername = cleanTarget,
+                recipientUid = targetUid,
+                detail = "started following you.",
+                fixedDocId = "notif_follow_${safeMyKey}_${safeTargetKey}"
+            )
+        }
     }
 
     fun incrementReelShares(reel: ReelEntity) {
-        db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { snapshot ->
-            for (doc in snapshot.documents) {
-                doc.reference.update("sharesCount", FieldValue.increment(1))
+        val query = if (reel.mediaUrl.isNotBlank()) {
+            db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl)
+        } else {
+            db.collection("reels").whereEqualTo("reelIntId", reel.id)
+        }
+        query.get().addOnSuccessListener { snapshot ->
+            if (!snapshot.isEmpty) {
+                for (doc in snapshot.documents) {
+                    doc.reference.update("sharesCount", FieldValue.increment(1))
+                }
+            } else {
+                db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { fallback ->
+                    for (doc in fallback.documents) {
+                        doc.reference.update("sharesCount", FieldValue.increment(1))
+                    }
+                }
             }
         }
     }
@@ -1396,6 +1862,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         if (text.isEmpty()) return
         val user = profileState.value
         val reelId = activeCommentsReelId ?: selectedReelForPreview.value?.id ?: return
+        val activeReel = _reelsState.value.find { it.id == reelId } ?: selectedReelForPreview.value
         val newComment = CommentEntity(
             id = System.currentTimeMillis().toInt(),
             reelId = reelId,
@@ -1418,6 +1885,27 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         )
         db.collection("reels_comments").add(comment).addOnSuccessListener {
             loadCommentsForReel(reelId)
+        }
+
+        if (activeReel != null) {
+            val query = if (activeReel.mediaUrl.isNotBlank()) {
+                db.collection("reels").whereEqualTo("mediaUrl", activeReel.mediaUrl)
+            } else {
+                db.collection("reels").whereEqualTo("reelIntId", activeReel.id)
+            }
+            query.get().addOnSuccessListener { snapshot ->
+                snapshot.documents.forEach { it.reference.update("commentsCount", FieldValue.increment(1)) }
+            }
+
+            val preview = text.take(80)
+            createAndPushFirestoreNotification(
+                type = "comment",
+                recipientUsername = activeReel.creatorUsername,
+                recipientUid = activeReel.creatorUid,
+                detail = "commented on your reel: \"$preview\"",
+                postId = activeReel.id.toString(),
+                postMediaUrl = activeReel.mediaUrl
+            )
         }
     }
 
@@ -1555,11 +2043,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val newVal = !pushNotificationsEnabled.value
         pushNotificationsEnabled.value = newVal
         _settingsState.value = _settingsState.value.copy(pushNotifications = newVal)
+        prefs.edit().putBoolean("push_notifications_enabled", newVal).apply()
     }
     fun toggleQuietMode() {
         val newVal = !quietModeEnabled.value
         quietModeEnabled.value = newVal
         _settingsState.value = _settingsState.value.copy(quietMode = newVal)
+        prefs.edit().putBoolean("quiet_mode_enabled", newVal).apply()
     }
     fun setFontScale(scale: Float) {
         _fontScaleFlow.value = scale
@@ -1606,15 +2096,29 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun clearWatchHistory() { watchHistory.value = emptyList() }
     fun addToWatchHistory(reel: ReelEntity) { watchHistory.value = (listOf(reel) + watchHistory.value.filter { it.id != reel.id }).take(20) }
     fun recordReelViewOnce(id: Int) {
+        val matchedReel = _reelsState.value.find { it.id == id }
         _reelsState.value = _reelsState.value.map { reel ->
             if (reel.id == id) reel.copy(viewsCount = reel.viewsCount + 1) else reel
         }
         saveReelsToPrefs()
         recalculateCreatorStats()
 
-        db.collection("reels").whereEqualTo("id", id.toString()).get().addOnSuccessListener { snapshot ->
-            for (doc in snapshot.documents) {
-                doc.reference.update("viewsCount", FieldValue.increment(1))
+        val query = if (matchedReel != null && matchedReel.mediaUrl.isNotBlank()) {
+            db.collection("reels").whereEqualTo("mediaUrl", matchedReel.mediaUrl)
+        } else {
+            db.collection("reels").whereEqualTo("reelIntId", id)
+        }
+        query.get().addOnSuccessListener { snapshot ->
+            if (!snapshot.isEmpty) {
+                for (doc in snapshot.documents) {
+                    doc.reference.update("viewsCount", FieldValue.increment(1))
+                }
+            } else {
+                db.collection("reels").whereEqualTo("id", id.toString()).get().addOnSuccessListener { fallback ->
+                    for (doc in fallback.documents) {
+                        doc.reference.update("viewsCount", FieldValue.increment(1))
+                    }
+                }
             }
         }
     }
@@ -1653,24 +2157,306 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loginAsDemoUser(onSuccess: () -> Unit) {
-        _profileState.value = ProfileEntity(name = "Demo User", username = "demouser", email = "demo@yousnap.app")
+        val demoProfile = ProfileEntity(name = "Demo User", username = "demouser", email = "demo@yousnap.app")
+        _profileState.value = demoProfile
+        saveProfileToPrefs(demoProfile, "demouser")
+        loadFollowingFromFirestore()
+        startListeningToNotifications()
+        syncFcmToken()
         onSuccess()
     }
 
     fun followBackUser(notifId: String, username: String) {
+        val alreadyFollowing = otherUserIsFollowing.value.entries
+            .firstOrNull { it.key.equals(username, ignoreCase = true) }?.value ?: false
+        if (!alreadyFollowing) {
+            toggleFollowUser(targetUsername = username)
+        }
         notifications.value = notifications.value.map {
-            if (it.id == notifId) it.copy(isFollowingBack = true) else it
+            if (it.id == notifId) it.copy(isFollowingBack = true, isRead = true) else it
+        }
+        unreadNotificationsCount.value = notifications.value.count { !it.isRead }
+        if (notifId.isNotBlank()) {
+            db.collection("notifications").document(notifId)
+                .update(mapOf("isFollowingBack" to true, "isRead" to true))
         }
     }
     fun followBackUser(notifId: Int, username: String) {
         followBackUser(notifId.toString(), username)
     }
 
+    fun markNotificationAsRead(notifId: String) {
+        if (notifId.isBlank()) return
+        notifications.value = notifications.value.map {
+            if (it.id == notifId) it.copy(isRead = true) else it
+        }
+        unreadNotificationsCount.value = notifications.value.count { !it.isRead }
+        db.collection("notifications").document(notifId).update("isRead", true)
+    }
+
+    fun markAllNotificationsAsRead() {
+        val unreadIds = notifications.value.filter { !it.isRead }.map { it.id }
+        if (unreadIds.isEmpty()) return
+        notifications.value = notifications.value.map { it.copy(isRead = true) }
+        unreadNotificationsCount.value = 0
+        unreadIds.forEach { id ->
+            if (id.isNotBlank()) {
+                db.collection("notifications").document(id).update("isRead", true)
+            }
+        }
+    }
+
     fun removeNotification(notifId: String) {
+        notifDocsByUid.remove(notifId)
+        notifDocsByUsername.remove(notifId)
         notifications.value = notifications.value.filter { it.id != notifId }
+        unreadNotificationsCount.value = notifications.value.count { !it.isRead }
+        if (notifId.isNotBlank()) {
+            db.collection("notifications").document(notifId).delete()
+        }
     }
     fun removeNotification(notifId: Int) {
         removeNotification(notifId.toString())
+    }
+
+    fun syncFcmToken() {
+        try {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                if (!token.isNullOrBlank()) {
+                    prefs.edit().putString("fcm_token", token).apply()
+                    val uid = activeUserUid()
+                    val profile = _profileState.value
+                    if (!uid.isNullOrBlank()) {
+                        db.collection("users").document(uid).set(
+                            mapOf(
+                                "fcmToken" to token,
+                                "fcmUpdatedAt" to System.currentTimeMillis(),
+                                "username" to profile.username,
+                                "name" to profile.name
+                            ),
+                            SetOptions.merge()
+                        )
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("YouSnapViewModel", "FCM token sync notice: ${t.message}")
+        }
+    }
+
+    private fun loadFollowingFromFirestore() {
+        val myUid = activeUserUid().orEmpty()
+        val myUsername = _profileState.value.username.ifBlank { "user" }
+        val followerKey = myUid.ifBlank { myUsername }
+        if (followerKey.isBlank()) return
+
+        db.collection("follows").whereEqualTo("followerUid", followerKey).get()
+            .addOnSuccessListener { snapshot ->
+                val map = otherUserIsFollowing.value.toMutableMap()
+                snapshot.documents.forEach { doc ->
+                    val target = doc.getString("targetUsername").orEmpty()
+                    if (target.isNotBlank()) map[target] = true
+                }
+                otherUserIsFollowing.value = map
+                _reelsState.value = _reelsState.value.map { reel ->
+                    val following = map.entries.firstOrNull {
+                        it.key.equals(reel.creatorUsername, ignoreCase = true)
+                    }?.value ?: false
+                    reel.copy(isFollowingCreator = following)
+                }
+            }
+    }
+
+    private fun createAndPushFirestoreNotification(
+        type: String,
+        recipientUsername: String,
+        recipientUid: String = "",
+        detail: String,
+        postId: String = "",
+        postMediaUrl: String = "",
+        fixedDocId: String? = null
+    ) {
+        val sender = _profileState.value
+        val senderUsername = sender.username.ifBlank { "user" }
+        val senderUid = activeUserUid().orEmpty().ifBlank { senderUsername }
+        val cleanRecipient = recipientUsername.trim()
+
+        if ((recipientUid.isNotBlank() && recipientUid == senderUid) ||
+            (cleanRecipient.isNotBlank() && cleanRecipient.equals(senderUsername, ignoreCase = true))
+        ) {
+            return
+        }
+        if (cleanRecipient.isBlank() && recipientUid.isBlank()) return
+
+        val nowMs = System.currentTimeMillis()
+        val docId = fixedDocId ?: "notif_${type.lowercase()}_${senderUsername.lowercase().replace(Regex("[^a-z0-9_]"), "")}_$nowMs"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var resolvedRecipientUid = recipientUid.trim()
+                if (resolvedRecipientUid.isBlank() && cleanRecipient.isNotBlank()) {
+                    val userSnap = withTimeoutOrNull(4000L) {
+                        awaitTask(db.collection("users").whereEqualTo("username", cleanRecipient).limit(1).get())
+                    }
+                    resolvedRecipientUid = userSnap?.documents?.firstOrNull()?.id.orEmpty()
+                }
+
+                val payload = mapOf(
+                    "id" to docId,
+                    "type" to type.lowercase(),
+                    "senderUid" to senderUid,
+                    "senderUsername" to senderUsername,
+                    "senderName" to sender.name.ifBlank { senderUsername },
+                    "senderAvatar" to sender.profilePic,
+                    "recipientUid" to resolvedRecipientUid,
+                    "recipientUsername" to cleanRecipient,
+                    "postId" to postId,
+                    "postMediaUrl" to postMediaUrl,
+                    "detail" to detail,
+                    "isFollowingBack" to (otherUserIsFollowing.value.entries.firstOrNull {
+                        it.key.equals(cleanRecipient, ignoreCase = true)
+                    }?.value ?: false),
+                    "isRead" to false,
+                    "timestamp" to nowMs,
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+                awaitTask(db.collection("notifications").document(docId).set(payload))
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Notification write notice: ${e.message}")
+            }
+        }
+    }
+
+    private fun stopListeningToNotifications() {
+        notifUidListener?.remove()
+        notifUidListener = null
+        notifUsernameListener?.remove()
+        notifUsernameListener = null
+        notifDocsByUid.clear()
+        notifDocsByUsername.clear()
+    }
+
+    fun startListeningToNotifications() {
+        stopListeningToNotifications()
+        val myUid = activeUserUid().orEmpty()
+        val myUsername = _profileState.value.username.trim()
+        if (myUid.isBlank() && (myUsername.isBlank() || myUsername == "user")) return
+
+        fun parseNotif(doc: com.google.firebase.firestore.DocumentSnapshot): NotificationEntity? {
+            val senderUsername = doc.getString("senderUsername") ?: doc.getString("username") ?: ""
+            if (senderUsername.isBlank()) return null
+            val ts = doc.getLong("timestamp") ?: System.currentTimeMillis()
+            val type = (doc.getString("type") ?: "activity").lowercase()
+            val followingMap = otherUserIsFollowing.value
+            val isFollowingBack = doc.getBoolean("isFollowingBack") == true ||
+                (followingMap.entries.firstOrNull { it.key.equals(senderUsername, ignoreCase = true) }?.value == true)
+            return NotificationEntity(
+                id = doc.id,
+                type = type,
+                username = senderUsername,
+                senderUid = doc.getString("senderUid").orEmpty(),
+                senderName = doc.getString("senderName").orEmpty().ifBlank { senderUsername },
+                userAvatarUrl = doc.getString("senderAvatar").orEmpty(),
+                recipientUid = doc.getString("recipientUid").orEmpty(),
+                recipientUsername = doc.getString("recipientUsername").orEmpty(),
+                postId = doc.getString("postId").orEmpty(),
+                postMediaUrl = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("postMediaUrl").orEmpty()),
+                time = formatRelativeTime(ts),
+                detail = doc.getString("detail").orEmpty(),
+                isFollowingBack = isFollowingBack,
+                isRead = doc.getBoolean("isRead") ?: false,
+                timestamp = ts
+            )
+        }
+
+        fun publishMerged() {
+            val combined = LinkedHashMap<String, NotificationEntity>()
+            notifDocsByUid.forEach { (id, item) -> combined[id] = item }
+            notifDocsByUsername.forEach { (id, item) -> combined[id] = item }
+            val sorted = combined.values.sortedByDescending { it.timestamp }
+            notifications.value = sorted
+            unreadNotificationsCount.value = sorted.count { !it.isRead }
+        }
+
+        fun handleSnapshot(
+            targetMap: java.util.concurrent.ConcurrentHashMap<String, NotificationEntity>,
+            snapshot: com.google.firebase.firestore.QuerySnapshot?
+        ) {
+            if (snapshot == null) return
+            targetMap.clear()
+            snapshot.documents.forEach { doc ->
+                parseNotif(doc)?.let { targetMap[doc.id] = it }
+            }
+            publishMerged()
+
+            snapshot.documentChanges.forEach { change ->
+                if (change.type == DocumentChange.Type.ADDED) {
+                    val notif = parseNotif(change.document) ?: return@forEach
+                    val isSelf = (notif.senderUid.isNotBlank() && notif.senderUid == myUid) ||
+                        notif.username.equals(myUsername, ignoreCase = true)
+                    val isFresh = notif.timestamp >= (appLaunchTimestampMs - 5_000L)
+                    if (!isSelf && !notif.isRead && isFresh && displayedSystemNotifIds.add(notif.id)) {
+                        val title = when (notif.type.lowercase()) {
+                            "follow" -> "New Follower"
+                            "like" -> "New Like"
+                            "comment" -> "New Comment"
+                            else -> "YouSnap"
+                        }
+                        val body = "@${notif.username} ${notif.detail}".trim()
+                        YouSnapNotificationHelper.showNotification(
+                            context = app,
+                            title = title,
+                            body = body,
+                            type = notif.type,
+                            senderUsername = notif.username,
+                            postId = notif.postId,
+                            notificationKey = notif.id
+                        )
+                    }
+                }
+            }
+        }
+
+        if (myUid.isNotBlank()) {
+            notifUidListener = db.collection("notifications")
+                .whereEqualTo("recipientUid", myUid)
+                .limit(100)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Notif UID listener notice: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    handleSnapshot(notifDocsByUid, snapshot)
+                }
+        }
+
+        if (myUsername.isNotBlank() && myUsername != "user") {
+            notifUsernameListener = db.collection("notifications")
+                .whereEqualTo("recipientUsername", myUsername)
+                .limit(100)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Notif username listener notice: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    handleSnapshot(notifDocsByUsername, snapshot)
+                }
+        }
+    }
+
+    private fun formatRelativeTime(timestampMs: Long): String {
+        val diff = (System.currentTimeMillis() - timestampMs).coerceAtLeast(0L)
+        val seconds = diff / 1000L
+        val minutes = seconds / 60L
+        val hours = minutes / 60L
+        val days = hours / 24L
+        return when {
+            seconds < 60L -> "Just now"
+            minutes < 60L -> "${minutes}m"
+            hours < 24L -> "${hours}h"
+            days < 7L -> "${days}d"
+            else -> "${days / 7L}w"
+        }
     }
 
     fun terminateSession(id: String, deviceName: String) {
@@ -1839,7 +2625,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         db.collection("users").document(uid)
             .set(updates, com.google.firebase.firestore.SetOptions.merge())
             .addOnCompleteListener {
-                if (it.isSuccessful) fetchAndSyncUserProfile()
+                if (it.isSuccessful) {
+                    fetchAndSyncUserProfile()
+                    startListeningToNotifications()
+                    syncFcmToken()
+                }
                 onComplete(true)
             }
     }
@@ -1899,6 +2689,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             _profileState.value = initialProfile
                             saveProfileToPrefs(initialProfile, uid)
                             recalculateCreatorStats()
+                            loadFollowingFromFirestore()
+                            startListeningToNotifications()
+                            syncFcmToken()
                             refreshHomeFeed()
                             onSuccess()
                         }
@@ -1916,14 +2709,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         monetizationStatus.value = resolvedProfile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
                         saveProfileToPrefs(resolvedProfile, uid)
                         recalculateCreatorStats()
+                        loadFollowingFromFirestore()
+                        startListeningToNotifications()
+                        syncFcmToken()
                         refreshHomeFeed()
                         onSuccess()
                     }
                 }.addOnFailureListener {
+                    loadFollowingFromFirestore()
+                    startListeningToNotifications()
+                    syncFcmToken()
                     refreshHomeFeed()
                     onSuccess()
                 }
             } catch (e: Throwable) {
+                loadFollowingFromFirestore()
+                startListeningToNotifications()
+                syncFcmToken()
                 refreshHomeFeed()
                 onSuccess()
             }
@@ -1963,6 +2765,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
             db.collection("users").document(uid).set(profile).addOnCompleteListener {
+                loadFollowingFromFirestore()
+                startListeningToNotifications()
+                syncFcmToken()
                 refreshHomeFeed()
                 onSuccess()
             }
@@ -1990,6 +2795,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
             fetchAndSyncUserProfile()
+            loadFollowingFromFirestore()
+            startListeningToNotifications()
+            syncFcmToken()
             refreshHomeFeed()
             onSuccess()
         }.addOnFailureListener { onError(it.message ?: "Login failed") }

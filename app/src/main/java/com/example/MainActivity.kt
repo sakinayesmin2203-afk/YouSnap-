@@ -1,11 +1,21 @@
 package com.example
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -61,6 +71,7 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: YouSnapViewModel by viewModels()
     private var hasPausedOnce = false
+    private var pendingOpenNotifications by mutableStateOf(false)
 
     override fun onPause() {
         super.onPause()
@@ -75,8 +86,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(com.example.notifications.YouSnapNotificationHelper.EXTRA_OPEN_NOTIFICATIONS, false) == true) {
+            intent.removeExtra(com.example.notifications.YouSnapNotificationHelper.EXTRA_OPEN_NOTIFICATIONS)
+            pendingOpenNotifications = true
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleNotificationIntent(intent)
 
         // Safe Firebase Initialization to prevent any startup crash
         try {
@@ -121,6 +146,40 @@ class MainActivity : ComponentActivity() {
             val reels by viewModel.reelsState.collectAsState()
             val currentScreen by viewModel.currentScreen.collectAsState()
             val fontScale by viewModel.fontScaleFlow.collectAsState()
+            val unreadNotifCount by viewModel.unreadNotificationsCount.collectAsState()
+
+            val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission()
+            ) { /* Permission granted or denied; in-app notifications still function */ }
+
+            val isAuthenticatedScreen = remember(currentScreen) {
+                currentScreen !is Screen.Splash &&
+                    currentScreen !is Screen.Login &&
+                    currentScreen !is Screen.SignUp &&
+                    currentScreen !is Screen.ForgotPassword
+            }
+
+            LaunchedEffect(isAuthenticatedScreen) {
+                if (isAuthenticatedScreen) {
+                    viewModel.syncFcmToken()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        val granted = ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (!granted) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                }
+            }
+
+            LaunchedEffect(pendingOpenNotifications, isAuthenticatedScreen) {
+                if (pendingOpenNotifications && isAuthenticatedScreen) {
+                    pendingOpenNotifications = false
+                    viewModel.navigateTo(Screen.Notifications)
+                }
+            }
 
             // Set lightTheme by forcing darkTheme = false as requested by the user to make the app white
             YouSnapTheme(darkTheme = false, fontScale = fontScale) {
@@ -163,6 +222,7 @@ class MainActivity : ComponentActivity() {
                             YouSnapBottomNavigation(
                                 currentScreen = currentScreen,
                                 profile = profile,
+                                unreadNotificationsCount = unreadNotifCount,
                                 onSelectScreen = { screen ->
                                     if (screen == Screen.Home) {
                                         viewModel.clearOpenedHomePost()
@@ -428,6 +488,7 @@ fun InstagramReelsIcon(isSelected: Boolean, tint: Color, modifier: Modifier = Mo
 fun YouSnapBottomNavigation(
     currentScreen: Screen,
     profile: ProfileEntity,
+    unreadNotificationsCount: Int = 0,
     onSelectScreen: (Screen) -> Unit
 ) {
     val activeColor = Color(0xFF2E2019)
@@ -519,12 +580,37 @@ fun YouSnapBottomNavigation(
                 inactiveColor = inactiveColor,
                 highlightBg = highlightBg,
                 icon = { tint ->
-                    Icon(
-                        imageVector = if (isNotifSelected) Icons.Filled.Notifications else Icons.Outlined.Notifications,
-                        contentDescription = "Alerts",
-                        tint = tint,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Icon(
+                            imageVector = if (isNotifSelected) Icons.Filled.Notifications else Icons.Outlined.Notifications,
+                            contentDescription = if (unreadNotificationsCount > 0) {
+                                "Alerts, $unreadNotificationsCount unread"
+                            } else {
+                                "Alerts"
+                            },
+                            tint = tint,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        if (unreadNotificationsCount > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = 5.dp, y = (-3).dp)
+                                    .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFFF3040))
+                                    .padding(horizontal = 3.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (unreadNotificationsCount > 9) "9+" else unreadNotificationsCount.toString(),
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    lineHeight = 9.sp
+                                )
+                            }
+                        }
+                    }
                 },
                 onClick = { onSelectScreen(Screen.Notifications) },
                 modifier = Modifier.testTag("nav_tab_notifications")
