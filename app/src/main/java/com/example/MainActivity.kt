@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity() {
             val currentScreen by viewModel.currentScreen.collectAsState()
             val fontScale by viewModel.fontScaleFlow.collectAsState()
             val unreadNotifCount by viewModel.unreadNotificationsCount.collectAsState()
+            val accountRestriction by viewModel.accountRestrictionState.collectAsState()
 
             val notificationPermissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestPermission()
@@ -159,8 +160,11 @@ class MainActivity : ComponentActivity() {
                     currentScreen !is Screen.ForgotPassword
             }
 
+            val isAccountLocked = isAuthenticatedScreen && accountRestriction.isLocked
+
             LaunchedEffect(isAuthenticatedScreen) {
                 if (isAuthenticatedScreen) {
+                    viewModel.startListeningToAccountStatus()
                     viewModel.syncFcmToken()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         val granted = ContextCompat.checkSelfPermission(
@@ -174,8 +178,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            LaunchedEffect(pendingOpenNotifications, isAuthenticatedScreen) {
-                if (pendingOpenNotifications && isAuthenticatedScreen) {
+            LaunchedEffect(pendingOpenNotifications, isAuthenticatedScreen, isAccountLocked) {
+                if (pendingOpenNotifications && isAuthenticatedScreen && !isAccountLocked) {
                     pendingOpenNotifications = false
                     viewModel.navigateTo(Screen.Notifications)
                 }
@@ -183,9 +187,14 @@ class MainActivity : ComponentActivity() {
 
             // Set lightTheme by forcing darkTheme = false as requested by the user to make the app white
             YouSnapTheme(darkTheme = false, fontScale = fontScale) {
+                // Consume back press while account is suspended/banned so the restriction screen cannot be dismissed
+                BackHandler(enabled = isAccountLocked) {
+                    // Non-dismissible lock screen
+                }
+
                 // Handle android system back button within sub settings navigation or opened photo on Home
                 val isPostOpenedOnHome = currentScreen is Screen.Home && viewModel.hasOpenedPostFromProfile()
-                BackHandler(enabled = (currentScreen != Screen.Home && currentScreen != Screen.Login && currentScreen != Screen.Splash) || isPostOpenedOnHome) {
+                BackHandler(enabled = !isAccountLocked && ((currentScreen != Screen.Home && currentScreen != Screen.Login && currentScreen != Screen.Splash) || isPostOpenedOnHome)) {
                     if (isPostOpenedOnHome) {
                         viewModel.clearOpenedHomePost()
                         val popped = viewModel.navigateBack()
@@ -204,16 +213,18 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Determine whether to display the Bottom Navigation Bar.
-                // Hide it on deep submenus of Settings to maximize screen real-estate for forms.
-                val showBottomNav = remember(currentScreen) {
-                    currentScreen is Screen.Home ||
-                    currentScreen is Screen.Reels ||
-                    currentScreen is Screen.Search ||
-                    currentScreen is Screen.Create ||
-                    currentScreen is Screen.Notifications ||
-                    currentScreen is Screen.Profile ||
-                    currentScreen is Screen.OtherProfile ||
-                    currentScreen is Screen.Settings
+                // Hide it when account is locked or on deep submenus of Settings.
+                val showBottomNav = remember(currentScreen, isAccountLocked) {
+                    !isAccountLocked && (
+                        currentScreen is Screen.Home ||
+                        currentScreen is Screen.Reels ||
+                        currentScreen is Screen.Search ||
+                        currentScreen is Screen.Create ||
+                        currentScreen is Screen.Notifications ||
+                        currentScreen is Screen.Profile ||
+                        currentScreen is Screen.OtherProfile ||
+                        currentScreen is Screen.Settings
+                    )
                 }
 
                 Scaffold(
@@ -236,8 +247,19 @@ class MainActivity : ComponentActivity() {
                     },
                     modifier = Modifier.fillMaxSize()
                 ) { innerPadding ->
-                    Box(modifier = Modifier.padding(innerPadding)) {
-                        when (val activeScreen = currentScreen) {
+                    if (isAccountLocked) {
+                        AccountRestrictedScreen(
+                            restrictionState = accountRestriction,
+                            username = profile.username,
+                            email = profile.email.ifBlank { viewModel.currentUser.value?.email.orEmpty() },
+                            onSubmitAppeal = { appealMsg ->
+                                viewModel.submitAccountAppeal(appealMsg)
+                            },
+                            onLogout = { viewModel.logout() }
+                        )
+                    } else {
+                        Box(modifier = Modifier.padding(innerPadding)) {
+                            when (val activeScreen = currentScreen) {
                             is Screen.Splash -> SplashScreen(
                                 onTimeout = { viewModel.proceedFromSplash() }
                             )
@@ -417,6 +439,7 @@ class MainActivity : ComponentActivity() {
                                 onUnlockSuccess = { viewModel.clearAndNavigateTo(Screen.Home) }
                             )
                         }
+                    }
                     }
                 }
             }

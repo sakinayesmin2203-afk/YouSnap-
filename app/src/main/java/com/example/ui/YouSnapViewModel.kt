@@ -136,6 +136,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val notifications = MutableStateFlow<List<NotificationEntity>>(emptyList())
     val unreadNotificationsCount = MutableStateFlow(0)
 
+    private val _accountRestrictionState = MutableStateFlow(AccountRestrictionState())
+    val accountRestrictionState: StateFlow<AccountRestrictionState> = _accountRestrictionState.asStateFlow()
+    private var accountStatusListener: ListenerRegistration? = null
+    private var listenedAccountUid: String? = null
+
     private var notifUidListener: ListenerRegistration? = null
     private var notifUsernameListener: ListenerRegistration? = null
     private val notifDocsByUid = java.util.concurrent.ConcurrentHashMap<String, NotificationEntity>()
@@ -212,12 +217,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try { loadSearchHistory() } catch (e: Throwable) {}
         try { loadFollowingFromFirestore() } catch (e: Throwable) {}
         try { startListeningToNotifications() } catch (e: Throwable) {}
+        try { startListeningToAccountStatus() } catch (e: Throwable) {}
         try { syncFcmToken() } catch (e: Throwable) {}
     }
 
     override fun onCleared() {
         super.onCleared()
         stopListeningToNotifications()
+        stopListeningToAccountStatus()
         storyListenerRegistration?.remove()
         storyListenerRegistration = null
     }
@@ -294,6 +301,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 currentUser.value = firebaseAuth.currentUser
                 if (firebaseAuth.currentUser != null) {
                     fetchAndSyncUserProfile()
+                    startListeningToAccountStatus()
                 }
             }
         } catch (e: Throwable) {
@@ -432,6 +440,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val hasSession = auth.currentUser != null || !prefs.getString("active_user_email", "").isNullOrBlank()
             if (hasSession) {
                 restoreCachedProfileImmediate()
+                startListeningToAccountStatus()
                 clearAndNavigateTo(Screen.Home)
             } else {
                 clearAndNavigateTo(Screen.Login)
@@ -482,6 +491,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         // Clear active session markers ONLY (keep per-email profiles and cached media intact!)
         prefs.edit().remove("active_user_email").remove("active_user_uid").apply()
         stopListeningToNotifications()
+        stopListeningToAccountStatus()
+        _accountRestrictionState.value = AccountRestrictionState()
         notifications.value = emptyList()
         unreadNotificationsCount.value = 0
         otherUserIsFollowing.value = emptyMap()
@@ -2162,6 +2173,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         saveProfileToPrefs(demoProfile, "demouser")
         loadFollowingFromFirestore()
         startListeningToNotifications()
+        startListeningToAccountStatus()
         syncFcmToken()
         onSuccess()
     }
@@ -2554,6 +2566,138 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun stopListeningToAccountStatus() {
+        accountStatusListener?.remove()
+        accountStatusListener = null
+        listenedAccountUid = null
+    }
+
+    fun startListeningToAccountStatus() {
+        val uid = activeUserUid()?.trim().orEmpty()
+        if (uid.isBlank()) return
+        if (listenedAccountUid == uid && accountStatusListener != null) return
+
+        stopListeningToAccountStatus()
+        listenedAccountUid = uid
+        try {
+            accountStatusListener = db.collection("users")
+                .document(uid)
+                .addSnapshotListener { doc, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Account status listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (doc == null || !doc.exists()) return@addSnapshotListener
+
+                    val status = doc.getString("status")?.trim().orEmpty()
+                    val isSuspendedFlag = doc.getBoolean("isSuspended") == true
+                    val isBannedFlag = doc.getBoolean("isBanned") == true
+                    val isRestrictedFlag = doc.getBoolean("isRestricted") == true
+
+                    val isStatusBanned = status.equals("Banned", ignoreCase = true)
+                    val isStatusSuspended = status.equals("Suspended", ignoreCase = true)
+                    val isStatusActive = status.equals("Active", ignoreCase = true)
+                    val hasExplicitRestrictedFalse = doc.contains("isRestricted") && doc.getBoolean("isRestricted") == false
+
+                    val lastKnownStatus = prefs.getString("last_account_status_$uid", "").orEmpty()
+                    val statusRestoredToActive = isStatusActive && hasExplicitRestrictedFalse &&
+                        (lastKnownStatus.equals("Suspended", ignoreCase = true) ||
+                            lastKnownStatus.equals("Banned", ignoreCase = true))
+
+                    val shouldLock = when {
+                        isStatusBanned || isStatusSuspended || isRestrictedFlag -> true
+                        statusRestoredToActive -> false
+                        isBannedFlag || isSuspendedFlag -> true
+                        else -> false
+                    }
+
+                    if (status.isNotBlank()) {
+                        prefs.edit().putString("last_account_status_$uid", status).apply()
+                    }
+
+                    if (shouldLock) {
+                        val restrictionType = if (isStatusBanned || isBannedFlag) "Banned" else "Suspended"
+                        val reason = listOfNotNull(
+                            doc.getString("suspendReason"),
+                            doc.getString("restrictionReason"),
+                            doc.getString("banReason")
+                        ).firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+                        val alreadySubmitted = _accountRestrictionState.value.appealSubmitted ||
+                            prefs.getBoolean("appeal_submitted_$uid", false)
+
+                        _accountRestrictionState.value = _accountRestrictionState.value.copy(
+                            isLocked = true,
+                            restrictionType = restrictionType,
+                            reason = reason,
+                            appealSubmitted = alreadySubmitted
+                        )
+                    } else {
+                        if (prefs.contains("appeal_submitted_$uid")) {
+                            prefs.edit().remove("appeal_submitted_$uid").apply()
+                        }
+                        _accountRestrictionState.value = AccountRestrictionState(isLocked = false)
+                    }
+                }
+        } catch (t: Throwable) {
+            android.util.Log.w("YouSnapViewModel", "Could not attach account status listener: ${t.message}")
+        }
+    }
+
+    fun submitAccountAppeal(message: String) {
+        val cleanMessage = message.trim()
+        if (cleanMessage.isEmpty()) {
+            _accountRestrictionState.value = _accountRestrictionState.value.copy(
+                appealError = "Please explain why your account should be restored."
+            )
+            return
+        }
+        val uid = activeUserUid()?.trim().orEmpty()
+        if (uid.isBlank()) {
+            _accountRestrictionState.value = _accountRestrictionState.value.copy(
+                appealError = "Unable to identify your account. Please sign out and log in again."
+            )
+            return
+        }
+        if (_accountRestrictionState.value.isSubmittingAppeal) return
+
+        _accountRestrictionState.value = _accountRestrictionState.value.copy(
+            isSubmittingAppeal = true,
+            appealError = null
+        )
+
+        val profile = _profileState.value
+        val email = profile.email.ifBlank { auth.currentUser?.email.orEmpty() }
+        val ticketData = hashMapOf(
+            "userId" to uid,
+            "creatorName" to profile.name,
+            "creatorUsername" to profile.username,
+            "creatorAvatar" to profile.profilePic,
+            "email" to email,
+            "category" to "Suspension Appeal",
+            "subject" to "Account Restore Request",
+            "message" to cleanMessage,
+            "status" to "Open",
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+
+        db.collection("support_tickets")
+            .add(ticketData)
+            .addOnSuccessListener {
+                prefs.edit().putBoolean("appeal_submitted_$uid", true).apply()
+                _accountRestrictionState.value = _accountRestrictionState.value.copy(
+                    isSubmittingAppeal = false,
+                    appealSubmitted = true,
+                    appealError = null
+                )
+            }
+            .addOnFailureListener { e ->
+                _accountRestrictionState.value = _accountRestrictionState.value.copy(
+                    isSubmittingAppeal = false,
+                    appealError = e.localizedMessage ?: "Failed to submit appeal. Please try again."
+                )
+            }
+    }
+
     fun submitSupportTicket(subject: String, description: String) {
         db.collection("support_tickets").add(mapOf("subject" to subject, "description" to description, "timestamp" to System.currentTimeMillis()))
     }
@@ -2691,6 +2835,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             recalculateCreatorStats()
                             loadFollowingFromFirestore()
                             startListeningToNotifications()
+                            startListeningToAccountStatus()
                             syncFcmToken()
                             refreshHomeFeed()
                             onSuccess()
@@ -2711,6 +2856,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         recalculateCreatorStats()
                         loadFollowingFromFirestore()
                         startListeningToNotifications()
+                        startListeningToAccountStatus()
                         syncFcmToken()
                         refreshHomeFeed()
                         onSuccess()
@@ -2718,6 +2864,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }.addOnFailureListener {
                     loadFollowingFromFirestore()
                     startListeningToNotifications()
+                    startListeningToAccountStatus()
                     syncFcmToken()
                     refreshHomeFeed()
                     onSuccess()
@@ -2725,6 +2872,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             } catch (e: Throwable) {
                 loadFollowingFromFirestore()
                 startListeningToNotifications()
+                startListeningToAccountStatus()
                 syncFcmToken()
                 refreshHomeFeed()
                 onSuccess()
@@ -2767,6 +2915,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             db.collection("users").document(uid).set(profile).addOnCompleteListener {
                 loadFollowingFromFirestore()
                 startListeningToNotifications()
+                startListeningToAccountStatus()
                 syncFcmToken()
                 refreshHomeFeed()
                 onSuccess()
@@ -2797,6 +2946,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             fetchAndSyncUserProfile()
             loadFollowingFromFirestore()
             startListeningToNotifications()
+            startListeningToAccountStatus()
             syncFcmToken()
             refreshHomeFeed()
             onSuccess()
@@ -2988,4 +3138,13 @@ data class LoginDeviceItem(
     val deviceName: String = "",
     val location: String = "",
     val timeAgo: String = ""
+)
+
+data class AccountRestrictionState(
+    val isLocked: Boolean = false,
+    val restrictionType: String = "Suspended",
+    val reason: String = "",
+    val appealSubmitted: Boolean = false,
+    val isSubmittingAppeal: Boolean = false,
+    val appealError: String? = null
 )
