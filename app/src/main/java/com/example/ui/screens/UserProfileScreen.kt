@@ -1,8 +1,12 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,17 +17,28 @@ import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
+import com.example.ui.components.FullScreenPhotoViewer
+import com.example.ui.components.ReportPostBottomSheet
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,25 +49,60 @@ fun UserProfileScreen(
     onNavigateBack: () -> Unit,
     onNavigateTo: (Screen) -> Unit
 ) {
+    val context = LocalContext.current
     val allUsers by viewModel.allUsers.collectAsState()
     val followingMap by viewModel.otherUserIsFollowing.collectAsState()
-    val photos by viewModel.personalPhotosState.collectAsState()
-    val reels by viewModel.reelsState.collectAsState()
+    val rawPhotos by viewModel.personalPhotosState.collectAsState()
+    val rawReels by viewModel.reelsState.collectAsState()
+    val currentProfile by viewModel.profileState.collectAsState()
+
+    LaunchedEffect(username) {
+        viewModel.fetchAllUsers()
+        viewModel.refreshHomeFeed(showIndicator = false)
+    }
 
     val userProfile = remember(allUsers, username) {
         allUsers.firstOrNull { it.username.equals(username, ignoreCase = true) }
     }
-    val userPhotos = remember(photos, username) {
-        photos.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+    val userPhotos = remember(rawPhotos, username) {
+        rawPhotos
+            .filter { it.creatorUsername.equals(username, ignoreCase = true) }
+            .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else it.id }
     }
-    val userReels = remember(reels, username) {
-        reels.filter { it.creatorUsername.equals(username, ignoreCase = true) }
+    val userReels = remember(rawReels, username) {
+        rawReels
+            .filter { it.creatorUsername.equals(username, ignoreCase = true) }
+            .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
     }
+
     val isFollowing = followingMap.entries
         .firstOrNull { it.key.equals(username, ignoreCase = true) }?.value ?: false
-    val displayName = userProfile?.name?.ifBlank { username } ?: username
+
+    val displayName = userProfile?.name?.takeIf { it.isNotBlank() }
+        ?: userPhotos.firstOrNull()?.creatorName?.takeIf { it.isNotBlank() }
+        ?: userReels.firstOrNull()?.creatorName?.takeIf { it.isNotBlank() }
+        ?: username
+    val profilePic = userProfile?.profilePic?.takeIf { it.isNotBlank() }
+        ?: userPhotos.firstOrNull()?.creatorAvatar?.takeIf { it.isNotBlank() }
+        ?: userReels.firstOrNull()?.creatorProfilePic?.takeIf { it.isNotBlank() }
+        ?: ""
+    val categoryLabel = userProfile?.category?.takeIf { it.isNotBlank() } ?: "Digital Creator"
+    val bioText = userProfile?.bio.orEmpty()
     val followersCount = userProfile?.followersCount ?: 0
     val followingCount = userProfile?.followingCount ?: 0
+    val targetUid = userProfile?.let {
+        userPhotos.firstOrNull()?.creatorUid?.takeIf { uid -> uid.isNotBlank() }
+            ?: userReels.firstOrNull()?.creatorUid?.takeIf { uid -> uid.isNotBlank() }
+            ?: ""
+    } ?: ""
+
+    var selectedProfileTab by remember { mutableIntStateOf(0) } // 0: Photos, 1: Reels
+    var selectedPhotoIndexForViewer by remember { mutableStateOf<Int?>(null) }
+    val photoLikesMap = remember { mutableStateMapOf<String, Int>() }
+    val photoLikedStatusMap = remember { mutableStateMapOf<String, Boolean>() }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showReportSheet by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -60,13 +110,84 @@ fun UserProfileScreen(
                 title = {
                     Text(
                         text = "@$username",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 17.sp
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp
                     )
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(
+                            onClick = { showMoreMenu = true },
+                            modifier = Modifier.testTag("user_profile_more_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMoreMenu,
+                            onDismissRequest = { showMoreMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Share profile",
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Share,
+                                        contentDescription = "Share profile"
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    try {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_SUBJECT, "YouSnap Profile")
+                                            putExtra(
+                                                Intent.EXTRA_TEXT,
+                                                "Check out $displayName (@$username) on YouSnap!"
+                                            )
+                                        }
+                                        val chooser = Intent.createChooser(shareIntent, "Share profile via").apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        context.startActivity(chooser)
+                                    } catch (_: Exception) {}
+                                },
+                                modifier = Modifier.testTag("menu_share_profile")
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Report",
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Flag,
+                                        contentDescription = "Report",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showReportSheet = true
+                                },
+                                modifier = Modifier.testTag("menu_report_profile")
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
@@ -75,95 +196,441 @@ fun UserProfileScreen(
                 ),
                 modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)
             )
-        }
+        },
+        modifier = Modifier.fillMaxSize()
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                isRefreshing = true
+                viewModel.fetchAllUsers()
+                viewModel.refreshHomeFeed { isRefreshing = false }
+            },
+            modifier = Modifier.padding(innerPadding)
         ) {
-            Box(
+            Column(
                 modifier = Modifier
-                    .size(84.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
             ) {
-                val pic = userProfile?.profilePic.orEmpty()
-                if (pic.isNotBlank() && (pic.startsWith("http") || pic.startsWith("content://"))) {
-                    coil.compose.AsyncImage(
-                        model = pic,
-                        contentDescription = displayName,
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
+                // Profile Header Area (Matches ProfileScreen layout & proportions)
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Profile photo circle with Instagram-style gradient ring
+                        Box(
+                            modifier = Modifier
+                                .size(80.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(Color(0xFFFCAF45), Color(0xFFF56040), Color(0xFFE1306C))
+                                    )
+                                )
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
+                                    .background(Color.DarkGray),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (profilePic.isNotEmpty() && (profilePic.startsWith("content://") || profilePic.startsWith("http"))) {
+                                    AsyncImage(
+                                        model = profilePic,
+                                        contentDescription = "Profile Photo",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Text(
+                                        text = displayName.take(1).uppercase().ifBlank { "U" },
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        fontSize = 32.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        // Stats row (Posts, Followers, Following)
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceAround,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            StatItem(count = (userPhotos.size + userReels.size).toString(), label = "Posts")
+                            StatItem(count = com.example.ui.utils.FormatUtils.formatCount(followersCount), label = "Followers")
+                            StatItem(count = com.example.ui.utils.FormatUtils.formatCount(followingCount), label = "Following")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Display Name
                     Text(
-                        text = displayName.take(1).uppercase().ifBlank { "U" },
-                        fontSize = 32.sp,
+                        text = displayName,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    // Category Badge (e.g., Digital Creator)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = categoryLabel,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    if (bioText.isNotBlank()) {
+                        Text(
+                            text = bioText,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Single Follow / Following Button (replaces Edit Profile & Creator Tools)
+                    Button(
+                        onClick = { viewModel.toggleFollowUser(targetUsername = username, targetUid = targetUid) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isFollowing) {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                            } else {
+                                Color(0xFF0095F6)
+                            },
+                            contentColor = if (isFollowing) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                Color.White
+                            }
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(vertical = 0.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp)
+                            .testTag("user_profile_follow_button")
+                    ) {
+                        Text(
+                            text = if (isFollowing) "Following" else "Follow",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // Tab bar (Photos & Reels)
+                TabRow(
+                    selectedTabIndex = selectedProfileTab,
+                    containerColor = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.onBackground,
+                    divider = { HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)) }
+                ) {
+                    Tab(
+                        selected = selectedProfileTab == 0,
+                        onClick = { selectedProfileTab = 0 },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.GridOn,
+                                contentDescription = "Photos Grid",
+                                tint = if (selectedProfileTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    )
+                    Tab(
+                        selected = selectedProfileTab == 1,
+                        onClick = { selectedProfileTab = 1 },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Outlined.VideoLibrary,
+                                contentDescription = "Reels",
+                                tint = if (selectedProfileTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = displayName,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                // Tab Content
+                when (selectedProfileTab) {
+                    0 -> {
+                        if (userPhotos.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    Text("📸", fontSize = 48.sp)
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "No uploaded Photos",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Photos shared by @$username will show up here.",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .testTag("user_profile_photo_grid"),
+                                contentPadding = PaddingValues(1.5.dp),
+                                horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.5.dp)
+                            ) {
+                                items(userPhotos, key = { it.id }) { photo ->
+                                    val currentLikes = photoLikesMap[photo.id] ?: photo.initialLikes
+
+                                    Box(
+                                        modifier = Modifier
+                                            .aspectRatio(1f)
+                                            .clip(RoundedCornerShape(2.dp))
+                                            .background(Color.DarkGray)
+                                            .clickable {
+                                                val clickedIndex = userPhotos.indexOf(photo)
+                                                if (clickedIndex >= 0) {
+                                                    selectedPhotoIndexForViewer = clickedIndex
+                                                }
+                                            }
+                                            .testTag("user_profile_photo_${photo.id}")
+                                    ) {
+                                        AsyncImage(
+                                            model = photo.imageUrl,
+                                            contentDescription = photo.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .align(Alignment.BottomStart)
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
+                                                    )
+                                                )
+                                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "❤️ %,d".format(currentLikes),
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        if (userReels.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    Text("📽️", fontSize = 48.sp)
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "No uploaded Reels",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Reels shared by @$username will show up here.",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .testTag("user_profile_reels_grid"),
+                                contentPadding = PaddingValues(1.dp),
+                                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                items(
+                                    items = userReels,
+                                    key = { it.mediaUrl.ifEmpty { "${it.id}_${it.timestamp}" } }
+                                ) { reel ->
+                                    val localThumbExists = remember(reel.thumbnailUrl) {
+                                        reel.thumbnailUrl.isNotBlank() && (
+                                            (!reel.thumbnailUrl.startsWith("/") && !reel.thumbnailUrl.startsWith("file:")) ||
+                                                java.io.File(reel.thumbnailUrl.removePrefix("file://")).exists()
+                                        )
+                                    }
+                                    val thumbnailToLoad = if (localThumbExists) reel.thumbnailUrl else reel.mediaUrl
+                                    val thumbModel = remember(thumbnailToLoad) {
+                                        if (thumbnailToLoad.isBlank()) {
+                                            null
+                                        } else if (thumbnailToLoad.startsWith("/")) {
+                                            java.io.File(thumbnailToLoad)
+                                        } else {
+                                            ImageRequest.Builder(context)
+                                                .data(thumbnailToLoad)
+                                                .videoFrameMillis(500L)
+                                                .crossfade(true)
+                                                .build()
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .aspectRatio(9f / 16f)
+                                            .clip(RoundedCornerShape(2.dp))
+                                            .background(Color(0xFF161616))
+                                            .clickable {
+                                                onNavigateTo(
+                                                    Screen.Reels(
+                                                        startReelId = reel.id,
+                                                        startMediaUrl = reel.mediaUrl
+                                                    )
+                                                )
+                                            }
+                                            .testTag("user_profile_reel_${reel.id}"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.45f),
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        if (thumbModel != null) {
+                                            AsyncImage(
+                                                model = thumbModel,
+                                                contentDescription = reel.caption,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
+                                                        startY = 100f
+                                                    )
+                                                )
+                                        )
+
+                                        Row(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PlayArrow,
+                                                contentDescription = "Views",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                text = com.example.ui.utils.FormatUtils.formatCount(reel.viewsCount),
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Full-Screen Photo Viewer
+        selectedPhotoIndexForViewer?.let { startIndex ->
+            val updatedPhotos = userPhotos.map { p ->
+                val currentLikes = photoLikesMap[p.id] ?: p.initialLikes
+                val isLiked = photoLikedStatusMap[p.id] ?: p.initialIsLiked
+                p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
+            }
+            FullScreenPhotoViewer(
+                photos = updatedPhotos,
+                initialIndex = startIndex,
+                currentUsername = currentProfile.username,
+                isOwner = false,
+                onDismiss = { selectedPhotoIndexForViewer = null },
+                onLikeChanged = { photoId, liked, newCount ->
+                    photoLikedStatusMap[photoId] = liked
+                    photoLikesMap[photoId] = newCount
+                    updatedPhotos.find { it.id == photoId }?.let { photo ->
+                        viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
+                    }
+                }
             )
-            if (!userProfile?.bio.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = userProfile!!.bio,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-            }
+        }
 
-            Spacer(modifier = Modifier.height(18.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${userPhotos.size + userReels.size}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Posts", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("$followersCount", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Followers", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("$followingCount", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Following", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(18.dp))
-            Button(
-                onClick = { viewModel.toggleFollowUser(targetUsername = username) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isFollowing) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF0095F6),
-                    contentColor = if (isFollowing) MaterialTheme.colorScheme.onSurface else Color.White
-                ),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-            ) {
-                Text(
-                    text = if (isFollowing) "Following" else "Follow",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-            }
+        // Report Profile Bottom Sheet
+        if (showReportSheet) {
+            ReportPostBottomSheet(
+                postUsername = username,
+                title = "Report Profile",
+                subtitle = "Help us understand the issue with @$username's profile. Your report is anonymous and confidential.",
+                onReportSubmit = { reason, details ->
+                    viewModel.reportPost("profile_$username", username, reason, details)
+                    showReportSheet = false
+                },
+                onDismissRequest = { showReportSheet = false }
+            )
         }
     }
 }

@@ -648,7 +648,12 @@ fun HomeScreen(
                             },
                             isOwner = isOwner,
                             onDeleteClick = {
-                                viewModel.deletePhotoPost(profilePost.id, profilePost.imageUrl, profilePost.creatorUsername, profilePost.creatorUid) {
+                                viewModel.deletePhotoPost(
+                                    postId = profilePost.firestoreDocId ?: profilePost.id,
+                                    imageUrl = profilePost.imageUrl,
+                                    creatorUsername = profilePost.creatorUsername,
+                                    creatorUid = profilePost.creatorUid
+                                ) {
                                     viewModel.clearOpenedHomePost()
                                 }
                             },

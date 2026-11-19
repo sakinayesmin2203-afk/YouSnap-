@@ -20,7 +20,9 @@ fun ReportPostBottomSheet(
     postUsername: String,
     onReportSubmit: (reason: String, details: String) -> Unit,
     onDismissRequest: () -> Unit,
-    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    title: String = "Report Post",
+    subtitle: String = "Help us understand the issue with @$postUsername's post. Your report is anonymous and confidential."
 ) {
     val reportReasons = listOf(
         "Inappropriate Content",
@@ -51,12 +53,12 @@ fun ReportPostBottomSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Report Post",
+                text = title,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Help us understand the issue with @$postUsername's post. Your report is anonymous and confidential.",
+                text = subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

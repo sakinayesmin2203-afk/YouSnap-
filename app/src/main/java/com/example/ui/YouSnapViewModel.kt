@@ -117,6 +117,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var refreshFeedJob: kotlinx.coroutines.Job? = null
     private val pendingSyncLock = Any()
+    private val reelFirestoreDocIdByMediaUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val reelFirestoreDocIdByTimestamp = java.util.concurrent.ConcurrentHashMap<Long, String>()
+    private val reelFirestoreDocIdById = java.util.concurrent.ConcurrentHashMap<Int, String>()
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -645,7 +648,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 // Stage 3: Save Metadata Locally & Sync Directly to Firestore (95% -> 100%)
                 val profile = profileState.value
-                val creatorUid = activeUserUid().orEmpty().ifBlank { safeOwner }
+                val creatorUid = resolveUploadUserId(safeOwner)
                 val displayName = profile.name.ifBlank { ownerUsername }
                 val creatorAvatar = profile.profilePic
                 val resolvedCategory = if (isVideo) category.ifBlank { "Entertainment" } else category.ifBlank { "Photo" }
@@ -677,7 +680,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         caption = caption,
                         bgGradientStart = gradientStart,
                         bgGradientEnd = gradientEnd,
-                        timestamp = timestamp
+                        timestamp = timestamp,
+                        firestoreDocId = firestoreDocId
                     )
                     allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(ownerUsername, ignoreCase = true) }
                     saveStoriesToPrefs()
@@ -717,6 +721,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         bgGradientEnd = gradientEnd
                     )
                     _reelsState.value = listOf(newReel) + _reelsState.value
+                    reelFirestoreDocIdByMediaUrl[finalUrl] = firestoreDocId
+                    reelFirestoreDocIdByTimestamp[timestamp] = firestoreDocId
+                    reelFirestoreDocIdById[newReel.id] = firestoreDocId
                     saveReelsToPrefs()
                 }
                 recalculateCreatorStats()
@@ -923,7 +930,134 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun resolveUploadUserId(fallback: String): String {
+        val firebaseUid = try {
+            auth.currentUser?.uid
+        } catch (_: Throwable) {
+            null
+        }
+        return firebaseUid?.takeIf { it.isNotBlank() }
+            ?: activeUserUid()?.takeIf { it.isNotBlank() }
+            ?: fallback
+    }
+
+    private fun savePendingFirestoreDelete(collection: String, docId: String) {
+        synchronized(pendingSyncLock) {
+            try {
+                val currentRaw = prefs.getString("pending_firestore_deletes", null)
+                val currentArray = if (!currentRaw.isNullOrBlank()) JSONArray(currentRaw) else JSONArray()
+                for (i in 0 until currentArray.length()) {
+                    val item = currentArray.optJSONObject(i) ?: continue
+                    if (item.optString("collection") == collection && item.optString("docId") == docId) {
+                        return
+                    }
+                }
+                currentArray.put(JSONObject().apply {
+                    put("collection", collection)
+                    put("docId", docId)
+                })
+                prefs.edit().putString("pending_firestore_deletes", currentArray.toString()).apply()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun removePendingFirestoreDelete(collection: String, docId: String) {
+        synchronized(pendingSyncLock) {
+            try {
+                val currentRaw = prefs.getString("pending_firestore_deletes", null) ?: return
+                val currentArray = JSONArray(currentRaw)
+                if (currentArray.length() == 0) return
+                val updatedArray = JSONArray()
+                var changed = false
+                for (i in 0 until currentArray.length()) {
+                    val item = currentArray.optJSONObject(i) ?: continue
+                    if (item.optString("collection") == collection && item.optString("docId") == docId) {
+                        changed = true
+                        continue
+                    }
+                    updatedArray.put(item)
+                }
+                if (changed) {
+                    prefs.edit().putString("pending_firestore_deletes", updatedArray.toString()).apply()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun deleteFirestoreDocRefWithRetry(
+        docRef: com.google.firebase.firestore.DocumentReference,
+        maxAttempts: Int = 3
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            db.enableNetwork()
+        } catch (_: Exception) {}
+
+        val col = docRef.parent.id
+        val docId = docRef.id
+        removePendingFirestoreDoc(col, docId)
+
+        var lastError: Throwable? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                val deleted = withTimeoutOrNull(20_000L) {
+                    awaitTask(docRef.delete())
+                    true
+                } ?: false
+                if (deleted) {
+                    removePendingFirestoreDelete(col, docId)
+                    android.util.Log.d("YouSnapViewModel", "Firestore delete confirmed: $col/$docId (attempt $attempt)")
+                    return@withContext true
+                }
+            } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
+                lastError = e
+                android.util.Log.e(
+                    "YouSnapViewModel",
+                    "Firestore delete rejected [$col/$docId] code=${e.code} attempt=$attempt: ${e.message}"
+                )
+                if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED ||
+                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAUTHENTICATED ||
+                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.INVALID_ARGUMENT
+                ) {
+                    break
+                }
+            } catch (e: Exception) {
+                lastError = e
+                android.util.Log.e("YouSnapViewModel", "Firestore delete error [$col/$docId] attempt=$attempt: ${e.message}")
+            }
+            if (attempt < maxAttempts) {
+                delay(attempt * 700L)
+            }
+        }
+        android.util.Log.w("YouSnapViewModel", "Firestore delete queued for retry [$col/$docId]: ${lastError?.message ?: "timeout"}")
+        savePendingFirestoreDelete(col, docId)
+        false
+    }
+
     private suspend fun flushPendingFirestoreDocs() {
+        val pendingDeletes: List<Pair<String, String>> = synchronized(pendingSyncLock) {
+            val raw = prefs.getString("pending_firestore_deletes", null)
+            if (raw.isNullOrBlank()) {
+                emptyList()
+            } else {
+                try {
+                    val arr = JSONArray(raw)
+                    val list = mutableListOf<Pair<String, String>>()
+                    for (i in 0 until arr.length()) {
+                        val entry = arr.optJSONObject(i) ?: continue
+                        val col = entry.optString("collection", "")
+                        val id = entry.optString("docId", "")
+                        if (col.isNotBlank() && id.isNotBlank()) list.add(col to id)
+                    }
+                    list
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+        }
+        for ((col, id) in pendingDeletes) {
+            deleteFirestoreDocRefWithRetry(db.collection(col).document(id), maxAttempts = 2)
+        }
+
         val snapshotEntries: List<Triple<String, String, Map<String, Any>>> = synchronized(pendingSyncLock) {
             val raw = prefs.getString("pending_firestore_docs", null)
             if (raw.isNullOrBlank()) return
@@ -1025,6 +1159,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             try {
                 flushPendingFirestoreDocs()
                 val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+                val pendingDeleteKeys: Set<String> = synchronized(pendingSyncLock) {
+                    val raw = prefs.getString("pending_firestore_deletes", null)
+                    if (raw.isNullOrBlank()) emptySet() else try {
+                        val arr = JSONArray(raw)
+                        buildSet {
+                            for (i in 0 until arr.length()) {
+                                val entry = arr.optJSONObject(i) ?: continue
+                                add("${entry.optString("collection")}/${entry.optString("docId")}")
+                            }
+                        }
+                    } catch (_: Exception) { emptySet() }
+                }
 
                 val storiesSnapshot = withContext(Dispatchers.IO) {
                     try {
@@ -1124,13 +1270,14 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 // 1. Merge Stories (Firestore + Local/Cached + Public Supabase story_* fallback)
                 val remoteStories = storiesSnapshot?.documents?.mapNotNull { doc ->
+                    if ("stories/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
                     val story = doc.toObject(StoryModel::class.java) ?: return@mapNotNull null
                     val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(story.mediaUrl)
                     if (fixedUrl.isNotBlank() && isMissingFromSupabase(fixedUrl)) {
                         try { doc.reference.delete() } catch (_: Exception) {}
                         return@mapNotNull null
                     }
-                    story.copy(mediaUrl = fixedUrl)
+                    story.copy(mediaUrl = fixedUrl, firestoreDocId = doc.id)
                 }?.filter { it.mediaUrl.isBlank() || !isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) }.orEmpty()
 
                 val existingStories = allStories.value.filter {
@@ -1169,6 +1316,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                 // 2. Merge Photos (Firestore + Local/Cached + Public Supabase image fallback)
                 val remotePhotos = postsSnapshot?.documents?.mapNotNull { doc ->
+                    if ("posts/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
                     val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
                     val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
                     if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
@@ -1262,6 +1410,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     .associate { it.mediaUrl to it.creatorUid }
 
                 val remoteReels = reelsSnapshot?.documents?.mapNotNull { doc ->
+                    if ("reels/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
                     val rawUrl = doc.getString("mediaUrl") ?: ""
                     val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
                     if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
@@ -1280,6 +1429,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val display = doc.getString("name")?.takeIf { it.isNotBlank() } ?: uname
                     val avatar = doc.getString("creatorAvatar") ?: ""
                     val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
+                    if (fixedUrl.isNotBlank()) reelFirestoreDocIdByMediaUrl[fixedUrl] = doc.id
+                    if (rawUrl.isNotBlank()) reelFirestoreDocIdByMediaUrl[rawUrl] = doc.id
+                    if (ts > 0L) reelFirestoreDocIdByTimestamp[ts] = doc.id
+                    reelFirestoreDocIdById[reelId] = doc.id
                     ReelEntity(
                         id = reelId,
                         creatorName = display,
@@ -1464,7 +1617,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 it.id == postId || it.id == cleanId || it.firestoreDocId == postId || (imageUrl.isNotEmpty() && it.imageUrl == imageUrl)
             }
             val effectiveUrl = imageUrl.ifBlank { targetPhoto?.imageUrl.orEmpty() }
-            val targetDocId = targetPhoto?.firestoreDocId
+            val effectiveOwner = creatorUsername.ifBlank { targetPhoto?.creatorUsername.orEmpty() }
+            val safeOwner = effectiveOwner.lowercase().replace(Regex("[^a-z0-9_]"), "").ifEmpty { "user" }.take(32)
             val targetKey = extractSupabaseFilename(effectiveUrl)
 
             // 1. Immediately remove from local state & mark deleted so UI & Insights update instantly
@@ -1478,6 +1632,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val photoKey = extractSupabaseFilename(photo.imageUrl)
                 photo.id != postId &&
                     photo.id != cleanId &&
+                    photo.firestoreDocId != postId &&
                     (effectiveUrl.isEmpty() || photo.imageUrl != effectiveUrl) &&
                     (targetKey == null || photoKey != targetKey)
             }
@@ -1490,26 +1645,73 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 supabaseDeleteResult = supabaseRepository.deleteFileDetailed(effectiveUrl)
             }
 
-            // 3. Delete from Firestore (by docId, id, or imageUrl)
-            try {
-                if (!targetDocId.isNullOrEmpty()) {
-                    awaitTask(db.collection("posts").document(targetDocId).delete())
-                }
-                val idCandidates = listOf(postId, cleanId).distinct().filter { it.isNotBlank() }
-                if (idCandidates.isNotEmpty()) {
-                    val byId = awaitTask(db.collection("posts").whereIn("id", idCandidates).get())
-                    for (doc in byId.documents) {
-                        try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+            // 3. Delete directly from Firestore "posts" collection (posts/{docId})
+            withContext(Dispatchers.IO) {
+                try {
+                    val refsToDelete = linkedMapOf<String, com.google.firebase.firestore.DocumentReference>()
+                    val explicitDocIds = listOfNotNull(
+                        targetPhoto?.firestoreDocId?.takeIf { it.isNotBlank() },
+                        postId.takeIf { it.startsWith("post_") || it.length >= 16 },
+                        cleanId.toLongOrNull()?.let { "post_${safeOwner}_$it" }
+                    ).distinct()
+
+                    explicitDocIds.forEach { docId ->
+                        val ref = db.collection("posts").document(docId)
+                        refsToDelete[ref.path] = ref
                     }
-                }
-                if (effectiveUrl.isNotEmpty()) {
-                    val byUrl = awaitTask(db.collection("posts").whereEqualTo("imageUrl", effectiveUrl).get())
-                    for (doc in byUrl.documents) {
-                        try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+
+                    val idCandidates = listOf(postId, cleanId, targetPhoto?.id.orEmpty())
+                        .distinct()
+                        .filter { it.isNotBlank() }
+                        .take(10)
+                    if (idCandidates.isNotEmpty()) {
+                        try {
+                            val byId = awaitTask(db.collection("posts").whereIn("id", idCandidates).get())
+                            byId.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                        } catch (_: Exception) {}
                     }
+
+                    if (effectiveUrl.isNotEmpty()) {
+                        try {
+                            val byImageUrl = awaitTask(db.collection("posts").whereEqualTo("imageUrl", effectiveUrl).get())
+                            byImageUrl.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                        } catch (_: Exception) {}
+                        try {
+                            val byMediaUrl = awaitTask(db.collection("posts").whereEqualTo("mediaUrl", effectiveUrl).get())
+                            byMediaUrl.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                        } catch (_: Exception) {}
+                    }
+
+                    if (targetKey != null) {
+                        val effectiveUid = creatorUid.ifBlank { resolveUploadUserId(safeOwner) }
+                        val ownerDocs = try {
+                            if (effectiveUid.isNotBlank()) {
+                                awaitTask(db.collection("posts").whereEqualTo("userId", effectiveUid).get()).documents
+                            } else emptyList()
+                        } catch (_: Exception) { emptyList() }
+                        val unameDocs = try {
+                            if (effectiveOwner.isNotBlank()) {
+                                awaitTask(db.collection("posts").whereEqualTo("username", effectiveOwner).get()).documents
+                            } else emptyList()
+                        } catch (_: Exception) { emptyList() }
+
+                        (ownerDocs + unameDocs).forEach { doc ->
+                            val docUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
+                            if (extractSupabaseFilename(docUrl) == targetKey ||
+                                doc.getString("id") == cleanId ||
+                                doc.id == targetPhoto?.firestoreDocId
+                            ) {
+                                refsToDelete[doc.reference.path] = doc.reference
+                            }
+                        }
+                    }
+
+                    for (ref in refsToDelete.values) {
+                        deleteFirestoreDocRefWithRetry(ref)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("YouSnapViewModel", "Firestore photo delete notice: ${e.message}")
                 }
-            } catch (e: Exception) {
-                android.util.Log.w("YouSnapViewModel", "Firestore photo delete notice: ${e.message}")
             }
 
             if (effectiveUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
@@ -1524,6 +1726,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun deleteReelVideo(reel: ReelEntity, onComplete: () -> Unit) {
         viewModelScope.launch {
             val targetKey = extractSupabaseFilename(reel.mediaUrl)
+            val safeOwner = reel.creatorUsername.lowercase().replace(Regex("[^a-z0-9_]"), "").ifEmpty { "user" }.take(32)
+
             // 1. Remove immediately from local state & delete local thumbnail file
             if (reel.mediaUrl.isNotEmpty()) {
                 markUrlDeleted(reel.mediaUrl)
@@ -1555,26 +1759,78 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 supabaseDeleteResult = supabaseRepository.deleteFileDetailed(reel.mediaUrl)
             }
 
-            // 3. Delete from Firestore collection "reels"
-            try {
-                val byStrId = awaitTask(db.collection("reels").whereEqualTo("id", reel.id.toString()).get())
-                for (doc in byStrId.documents) {
-                    try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
-                }
-                if (reel.timestamp > 0L) {
-                    val byTsId = awaitTask(db.collection("reels").whereEqualTo("id", reel.timestamp.toString()).get())
-                    for (doc in byTsId.documents) {
-                        try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+            // 3. Delete directly from Firestore collection "reels" (reels/{docId})
+            withContext(Dispatchers.IO) {
+                try {
+                    val refsToDelete = linkedMapOf<String, com.google.firebase.firestore.DocumentReference>()
+                    val explicitDocIds = listOfNotNull(
+                        reelFirestoreDocIdByMediaUrl[reel.mediaUrl],
+                        reelFirestoreDocIdByTimestamp[reel.timestamp],
+                        reelFirestoreDocIdById[reel.id],
+                        reel.timestamp.takeIf { it > 0L }?.let { "reel_${safeOwner}_$it" }
+                    ).distinct().filter { it.isNotBlank() }
+
+                    explicitDocIds.forEach { docId ->
+                        val ref = db.collection("reels").document(docId)
+                        refsToDelete[ref.path] = ref
                     }
-                }
-                if (reel.mediaUrl.isNotEmpty()) {
-                    val byUrl = awaitTask(db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl).get())
-                    for (doc in byUrl.documents) {
-                        try { awaitTask(doc.reference.delete()) } catch (_: Exception) {}
+
+                    try {
+                        val byIntId = awaitTask(db.collection("reels").whereEqualTo("reelIntId", reel.id).get())
+                        byIntId.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                    } catch (_: Exception) {}
+
+                    try {
+                        val byStrId = awaitTask(db.collection("reels").whereEqualTo("id", reel.id.toString()).get())
+                        byStrId.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                    } catch (_: Exception) {}
+
+                    if (reel.timestamp > 0L) {
+                        try {
+                            val byTsId = awaitTask(db.collection("reels").whereEqualTo("id", reel.timestamp.toString()).get())
+                            byTsId.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                        } catch (_: Exception) {}
                     }
+
+                    if (reel.mediaUrl.isNotEmpty()) {
+                        try {
+                            val byUrl = awaitTask(db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl).get())
+                            byUrl.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                        } catch (_: Exception) {}
+                    }
+
+                    if (targetKey != null || reel.timestamp > 0L) {
+                        val effectiveUid = reel.creatorUid.ifBlank { resolveUploadUserId(safeOwner) }
+                        val ownerDocs = try {
+                            if (effectiveUid.isNotBlank()) {
+                                awaitTask(db.collection("reels").whereEqualTo("userId", effectiveUid).get()).documents
+                            } else emptyList()
+                        } catch (_: Exception) { emptyList() }
+                        val unameDocs = try {
+                            if (reel.creatorUsername.isNotBlank()) {
+                                awaitTask(db.collection("reels").whereEqualTo("username", reel.creatorUsername).get()).documents
+                            } else emptyList()
+                        } catch (_: Exception) { emptyList() }
+
+                        (ownerDocs + unameDocs).forEach { doc ->
+                            val docUrl = doc.getString("mediaUrl") ?: ""
+                            val docTs = doc.getLong("timestamp") ?: 0L
+                            val docIntId = doc.getLong("reelIntId")?.toInt()
+                            if ((targetKey != null && extractSupabaseFilename(docUrl) == targetKey) ||
+                                (reel.timestamp > 0L && docTs == reel.timestamp) ||
+                                (docIntId != null && docIntId == reel.id)
+                            ) {
+                                refsToDelete[doc.reference.path] = doc.reference
+                            }
+                        }
+                    }
+
+                    for (ref in refsToDelete.values) {
+                        deleteFirestoreDocRefWithRetry(ref)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("YouSnapViewModel", "Firestore reel delete notice: ${e.message}")
                 }
-            } catch (e: Exception) {
-                android.util.Log.w("YouSnapViewModel", "Firestore reel delete notice: ${e.message}")
             }
 
             if (reel.mediaUrl.isNotEmpty() && !supabaseDeleteResult.isSuccess) {
@@ -1644,7 +1900,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val profile = profileState.value
         val ownerUsername = profile.username.ifBlank { "user" }
         val displayName = profile.name.ifBlank { ownerUsername }
-        val creatorUid = activeUserUid().orEmpty().ifBlank { ownerUsername }
+        val creatorUid = resolveUploadUserId(ownerUsername)
         val timestamp = System.currentTimeMillis()
         val newStory = StoryModel(
             storyId = timestamp.toString(),
@@ -1654,7 +1910,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             caption = text,
             bgGradientStart = gradientStart,
             bgGradientEnd = gradientEnd,
-            timestamp = timestamp
+            timestamp = timestamp,
+            firestoreDocId = ownerUsername
         )
         allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(ownerUsername, ignoreCase = true) }
         saveStoriesToPrefs()
@@ -1793,6 +2050,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val updatedMyProfile = myProfile.copy(followingCount = nextFollowingCount)
         _profileState.value = updatedMyProfile
         saveProfileToPrefs(updatedMyProfile, myUid)
+        allUsers.value = allUsers.value.map { user ->
+            if (user.username.equals(cleanTarget, ignoreCase = true)) {
+                user.copy(followersCount = (user.followersCount + if (newFollowing) 1 else -1).coerceAtLeast(0))
+            } else user
+        }
 
         val safeMyKey = myUid.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
         val safeTargetKey = cleanTarget.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
@@ -1993,8 +2255,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     fun deleteStory(username: String, onComplete: () -> Unit) {
         viewModelScope.launch {
             val matchingStories = allStories.value.filter { it.ownerUsername.equals(username, ignoreCase = true) }
+            val currentStory = currentStoryState.value?.takeIf { it.ownerUsername.equals(username, ignoreCase = true) }
+            val storiesToDelete = (matchingStories + listOfNotNull(currentStory)).distinctBy { "${it.storyId}_${it.mediaUrl}" }
+
             var storyDeleteError: String? = null
-            matchingStories.forEach { story ->
+            storiesToDelete.forEach { story ->
                 if (story.mediaUrl.isNotBlank()) {
                     markUrlDeleted(story.mediaUrl)
                     val key = extractSupabaseFilename(story.mediaUrl)
@@ -2007,13 +2272,67 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
             allStories.value = allStories.value.filterNot { it.ownerUsername.equals(username, ignoreCase = true) }
+            if (currentStory != null) {
+                currentStoryState.value = null
+            }
             saveStoriesToPrefs()
             recalculateCreatorStats()
 
-            try {
-                awaitTask(db.collection("stories").document(username).delete())
-            } catch (e: Exception) {
-                android.util.Log.w("YouSnapViewModel", "Firestore story delete notice: ${e.message}")
+            // Delete directly from Firestore "stories" collection (stories/{docId})
+            withContext(Dispatchers.IO) {
+                try {
+                    val refsToDelete = linkedMapOf<String, com.google.firebase.firestore.DocumentReference>()
+                    val explicitDocIds = (listOf(username) + storiesToDelete.map { it.firestoreDocId })
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+
+                    explicitDocIds.forEach { docId ->
+                        val ref = db.collection("stories").document(docId)
+                        refsToDelete[ref.path] = ref
+                    }
+
+                    try {
+                        val byOwnerUsername = awaitTask(db.collection("stories").whereEqualTo("ownerUsername", username).get())
+                        byOwnerUsername.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                    } catch (_: Exception) {}
+
+                    try {
+                        val byUsername = awaitTask(db.collection("stories").whereEqualTo("username", username).get())
+                        byUsername.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                    } catch (_: Exception) {}
+
+                    storiesToDelete.forEach { story ->
+                        if (story.mediaUrl.isNotBlank()) {
+                            try {
+                                val byUrl = awaitTask(db.collection("stories").whereEqualTo("mediaUrl", story.mediaUrl).get())
+                                byUrl.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                            } catch (_: Exception) {}
+                        }
+                        if (story.storyId.isNotBlank()) {
+                            try {
+                                val byStoryId = awaitTask(db.collection("stories").whereEqualTo("storyId", story.storyId).get())
+                                byStoryId.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                            } catch (_: Exception) {}
+                        }
+                    }
+
+                    if (username.equals(_profileState.value.username, ignoreCase = true)) {
+                        val myUid = resolveUploadUserId("")
+                        if (myUid.isNotBlank()) {
+                            try {
+                                val byUid = awaitTask(db.collection("stories").whereEqualTo("userId", myUid).get())
+                                byUid.documents.forEach { refsToDelete[it.reference.path] = it.reference }
+                            } catch (_: Exception) {}
+                        }
+                    }
+
+                    for (ref in refsToDelete.values) {
+                        deleteFirestoreDocRefWithRetry(ref)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("YouSnapViewModel", "Firestore story delete notice: ${e.message}")
+                }
             }
 
             if (storyDeleteError != null) {
@@ -3081,6 +3400,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("bgGradientStart", story.bgGradientStart)
             obj.put("bgGradientEnd", story.bgGradientEnd)
             obj.put("timestamp", story.timestamp)
+            obj.put("firestoreDocId", story.firestoreDocId)
             array.put(obj)
         }
         prefs.edit().putString("cached_stories", array.toString()).apply()
@@ -3101,7 +3421,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     caption = obj.optString("caption", ""),
                     bgGradientStart = obj.optString("bgGradientStart", "#E59424"),
                     bgGradientEnd = obj.optString("bgGradientEnd", "#C48B5E"),
-                    timestamp = obj.optLong("timestamp", 0L)
+                    timestamp = obj.optLong("timestamp", 0L),
+                    firestoreDocId = obj.optString("firestoreDocId", "")
                 ))
             }
             allStories.value = list
@@ -3122,7 +3443,8 @@ data class StoryModel(
     val caption: String = "",
     val bgGradientStart: String = "",
     val bgGradientEnd: String = "",
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val firestoreDocId: String = ""
 )
 
 data class ViewerProfile(
