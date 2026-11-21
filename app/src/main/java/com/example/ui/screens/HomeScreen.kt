@@ -637,6 +637,7 @@ fun HomeScreen(
 
                         FeedPhotoPostCard(
                             post = postItem,
+                            shareUrl = viewModel.getPhotoShareUrl(profilePost),
                             isLiked = isLiked,
                             likesCount = likesCount,
                             commentsCount = postItem.commentsCount,
@@ -646,21 +647,20 @@ fun HomeScreen(
                                 activePostForComments = postItem
                             },
                             onShareClick = {
-                                try {
-                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Post")
-                                        putExtra(
-                                            android.content.Intent.EXTRA_TEXT,
-                                            "Check out @${profilePost.creatorUsername}'s photo on YouSnap! 📸✨"
-                                        )
-                                    }
-                                    val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
-                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(shareIntent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Link copied! 🔗", Toast.LENGTH_SHORT).show()
+                                val postUrl = viewModel.getPhotoShareUrl(profilePost)
+                                val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                    context = context,
+                                    subject = "YouSnap Post",
+                                    text = "Check out @${profilePost.creatorUsername}'s photo on YouSnap! 📸✨\n$postUrl",
+                                    chooserTitle = "Share via"
+                                )
+                                if (!shared) {
+                                    com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                        context = context,
+                                        label = "Post Link",
+                                        url = postUrl,
+                                        toastMessage = "Link copied! 🔗"
+                                    )
                                 }
                             },
                             onBookmarkToggle = {
@@ -799,6 +799,7 @@ fun HomeScreen(
 
                                 FeedPhotoPostCard(
                                     post = postItem,
+                                    shareUrl = viewModel.getPhotoShareUrl(photo),
                                     isLiked = isLiked,
                                     likesCount = currentLikes,
                                     commentsCount = photo.initialComments,
@@ -806,21 +807,20 @@ fun HomeScreen(
                                     onLikeToggle = { viewModel.toggleLikeHomePost(postId) },
                                     onCommentClick = { activePostForComments = postItem },
                                     onShareClick = {
-                                        try {
-                                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Post")
-                                                putExtra(
-                                                    android.content.Intent.EXTRA_TEXT,
-                                                    "Check out @${photo.creatorUsername}'s photo on YouSnap! 📸✨"
-                                                )
-                                            }
-                                            val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
-                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                            context.startActivity(shareIntent)
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Link copied! 🔗", Toast.LENGTH_SHORT).show()
+                                        val postUrl = viewModel.getPhotoShareUrl(photo)
+                                        val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                            context = context,
+                                            subject = "YouSnap Post",
+                                            text = "Check out @${photo.creatorUsername}'s photo on YouSnap! 📸✨\n$postUrl",
+                                            chooserTitle = "Share via"
+                                        )
+                                        if (!shared) {
+                                            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                                context = context,
+                                                label = "Post Link",
+                                                url = postUrl,
+                                                toastMessage = "Link copied! 🔗"
+                                            )
                                         }
                                     },
                                     onBookmarkToggle = {
@@ -855,6 +855,7 @@ fun HomeScreen(
                                 val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
                                 InstagramFeedPost(
                                     reel = reel,
+                                    shareUrl = viewModel.getReelShareUrl(reel),
                                     isOwner = isReelOwner,
                                     isAutoPlayActive = canAutoPlayFeed && activePlayingFeedKey == itemKey,
                                     isMuted = isFeedMuted,
@@ -872,26 +873,22 @@ fun HomeScreen(
                                     },
                                     onFollowToggle = { viewModel.toggleFollowCreator(reel) },
                                     onShareClick = {
-                                        try {
-                                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Reel")
-                                                putExtra(
-                                                    android.content.Intent.EXTRA_TEXT,
-                                                    "Check out @${reel.creatorUsername}'s video on YouSnap! 🎬✨"
-                                                )
-                                            }
-                                            val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
-                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                            viewModel.app.startActivity(shareIntent)
+                                        val reelUrl = viewModel.getReelShareUrl(reel)
+                                        val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                            context = viewModel.app,
+                                            subject = "YouSnap Reel",
+                                            text = "Check out @${reel.creatorUsername}'s video on YouSnap! 🎬✨\n$reelUrl",
+                                            chooserTitle = "Share via"
+                                        )
+                                        if (shared) {
                                             viewModel.incrementReelShares(reel)
-                                        } catch (e: Exception) {
-                                            Toast.makeText(
-                                                viewModel.app,
-                                                "Link copied!",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                        } else {
+                                            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                                context = viewModel.app,
+                                                label = "Reel Link",
+                                                url = reelUrl,
+                                                toastMessage = "Link copied!"
+                                            )
                                         }
                                     },
                                     onProfileClick = {
@@ -1063,6 +1060,7 @@ fun HomeScreen(
 @Composable
 fun FeedPhotoPostCard(
     post: HomePostItem,
+    shareUrl: String = "",
     isLiked: Boolean,
     likesCount: Int,
     commentsCount: Int,
@@ -1081,6 +1079,13 @@ fun FeedPhotoPostCard(
     var showHeartOverlay by remember { mutableStateOf(false) }
     var showPostMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val resolvedShareUrl = remember(shareUrl, post.id, post.firestoreDocId) {
+        shareUrl.ifBlank {
+            com.example.ui.utils.DeepLinkHelper.buildPostUrl(
+                post.firestoreDocId?.takeIf { it.isNotBlank() } ?: post.id
+            )
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1164,6 +1169,25 @@ fun FeedPhotoPostCard(
                 ) {
                     if (isOwner && post.isFromUserProfile) {
                         DropdownMenuItem(
+                            text = { Text("Copy Link", color = Color(0xFF2A1810), fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Link,
+                                    contentDescription = "Copy Link",
+                                    tint = Color(0xFF2A1810)
+                                )
+                            },
+                            onClick = {
+                                showPostMenu = false
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Post Link",
+                                    url = resolvedShareUrl,
+                                    toastMessage = "Link copied to clipboard! 🔗"
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Delete Post", color = Color(0xFFB3261E), fontSize = 14.sp, fontWeight = FontWeight.Bold) },
                             leadingIcon = {
                                 Icon(
@@ -1211,12 +1235,12 @@ fun FeedPhotoPostCard(
                             },
                             onClick = {
                                 showPostMenu = false
-                                try {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("Post Link", "https://yousnap.app/post/${post.username}")
-                                    clipboard.setPrimaryClip(clip)
-                                } catch (e: Exception) {}
-                                Toast.makeText(context, "Link copied to clipboard! 🔗", Toast.LENGTH_SHORT).show()
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Post Link",
+                                    url = resolvedShareUrl,
+                                    toastMessage = "Link copied to clipboard! 🔗"
+                                )
                             }
                         )
 
@@ -1541,6 +1565,7 @@ private data class UserStoryItem(
 @Composable
 fun InstagramFeedPost(
     reel: ReelEntity,
+    shareUrl: String = "",
     isOwner: Boolean = false,
     isAutoPlayActive: Boolean = false,
     isMuted: Boolean = false,
@@ -1558,6 +1583,9 @@ fun InstagramFeedPost(
     var isBookmarked by remember { mutableStateOf(false) }
     var showPostMenu by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val resolvedShareUrl = remember(shareUrl, reel.id) {
+        shareUrl.ifBlank { com.example.ui.utils.DeepLinkHelper.buildReelUrl(reel.id.toString()) }
+    }
 
     var localIsLiked by remember(reel.id, reel.isLiked) { mutableStateOf(reel.isLiked) }
     var localLikesCount by remember(reel.id, reel.likesCount) { mutableStateOf(reel.likesCount) }
@@ -1708,14 +1736,12 @@ fun InstagramFeedPost(
                         },
                         onClick = {
                             showPostMenu = false
-                            try {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("Post Link", "https://yousnap.app/post/${reel.creatorUsername}")
-                                clipboard.setPrimaryClip(clip)
-                            } catch (e: Exception) {
-                                // Fallback
-                            }
-                            Toast.makeText(context, "Link copied to clipboard! 🔗", Toast.LENGTH_SHORT).show()
+                            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                context = context,
+                                label = "Reel Link",
+                                url = resolvedShareUrl,
+                                toastMessage = "Link copied to clipboard! 🔗"
+                            )
                         }
                     )
 

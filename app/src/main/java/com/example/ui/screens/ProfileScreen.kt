@@ -16,8 +16,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -95,6 +98,8 @@ fun ProfileScreen(
     val followingCount by viewModel.myFollowingCount.collectAsState()
     val settings by viewModel.settingsState.collectAsState()
 
+    var showProfileMenu by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -130,6 +135,75 @@ fun ProfileScreen(
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                                 )
                             }
+                        }
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(
+                            onClick = { showProfileMenu = true },
+                            modifier = Modifier.testTag("profile_more_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Profile options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showProfileMenu,
+                            onDismissRequest = { showProfileMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Share Profile",
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Share,
+                                        contentDescription = "Share Profile"
+                                    )
+                                },
+                                onClick = {
+                                    showProfileMenu = false
+                                    val profileUrl = viewModel.getMyProfileShareUrl()
+                                    val displayName = profile.name.ifBlank { profile.username }
+                                    com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                        context = context,
+                                        subject = "YouSnap Profile",
+                                        text = "Check out $displayName (@${profile.username}) on YouSnap!\n$profileUrl",
+                                        chooserTitle = "Share Profile via"
+                                    )
+                                },
+                                modifier = Modifier.testTag("profile_share_button")
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Copy Profile Link",
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Link,
+                                        contentDescription = "Copy Profile Link"
+                                    )
+                                },
+                                onClick = {
+                                    showProfileMenu = false
+                                    val profileUrl = viewModel.getMyProfileShareUrl()
+                                    com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                        context = context,
+                                        label = "Profile Link",
+                                        url = profileUrl,
+                                        toastMessage = "Profile link copied! 🔗"
+                                    )
+                                },
+                                modifier = Modifier.testTag("profile_copy_link_button")
+                            )
                         }
                     }
                 },
@@ -610,11 +684,14 @@ fun ProfileScreen(
                         onCommentClick = { showPreviewComments = true },
                         onFollowToggle = { viewModel.toggleFollowCreator(activePreviewReel) },
                         onShareClick = {
-                            Toast.makeText(
-                                viewModel.app,
-                                "Link copied for sharing!",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            val reelUrl = viewModel.getReelShareUrl(activePreviewReel)
+                            com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                context = context,
+                                subject = "YouSnap Reel",
+                                text = "🎥 Watch @${activePreviewReel.creatorUsername}'s Reel on YouSnap!\n$reelUrl",
+                                chooserTitle = "Share Reel via"
+                            )
+                            viewModel.incrementReelShares(activePreviewReel)
                         },
                         modifier = Modifier.fillMaxSize()
                     )

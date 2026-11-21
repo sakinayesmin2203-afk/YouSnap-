@@ -66,12 +66,15 @@ import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.example.ui.screens.*
 import com.example.ui.theme.YouSnapTheme
+import com.example.ui.utils.DeepLinkHelper
+import com.example.ui.utils.YouSnapDeepLink
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: YouSnapViewModel by viewModels()
     private var hasPausedOnce = false
     private var pendingOpenNotifications by mutableStateOf(false)
+    private var pendingDeepLink by mutableStateOf<YouSnapDeepLink?>(null)
 
     override fun onPause() {
         super.onPause()
@@ -90,6 +93,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleNotificationIntent(intent)
+        handleDeepLinkIntent(intent)
     }
 
     private fun handleNotificationIntent(intent: Intent?) {
@@ -99,9 +103,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleDeepLinkIntent(intent: Intent?) {
+        val parsed = DeepLinkHelper.parseIntent(intent) ?: return
+        pendingDeepLink = parsed
+        intent?.data = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleNotificationIntent(intent)
+        handleDeepLinkIntent(intent)
 
         // Safe Firebase Initialization to prevent any startup crash
         try {
@@ -182,6 +193,14 @@ class MainActivity : ComponentActivity() {
                 if (pendingOpenNotifications && isAuthenticatedScreen && !isAccountLocked) {
                     pendingOpenNotifications = false
                     viewModel.navigateTo(Screen.Notifications)
+                }
+            }
+
+            LaunchedEffect(pendingDeepLink, isAuthenticatedScreen, isAccountLocked) {
+                val deepLink = pendingDeepLink
+                if (deepLink != null && isAuthenticatedScreen && !isAccountLocked) {
+                    pendingDeepLink = null
+                    viewModel.handleIncomingDeepLink(deepLink)
                 }
             }
 

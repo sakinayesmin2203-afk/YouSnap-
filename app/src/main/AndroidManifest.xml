@@ -49,6 +49,36 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- HTTPS App Links for https://yousnap-app.web.app -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="yousnap-app.web.app"
+                    android:pathPrefix="/u/" />
+                <data
+                    android:scheme="https"
+                    android:host="yousnap-app.web.app"
+                    android:pathPrefix="/post/" />
+                <data
+                    android:scheme="https"
+                    android:host="yousnap-app.web.app"
+                    android:pathPrefix="/reel/" />
+            </intent-filter>
+
+            <!-- Custom scheme deep links: yousnap://u/{id}, yousnap://post/{id}, yousnap://reel/{id} -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="yousnap" android:host="u" />
+                <data android:scheme="yousnap" android:host="profile" />
+                <data android:scheme="yousnap" android:host="post" />
+                <data android:scheme="yousnap" android:host="reel" />
+            </intent-filter>
         </activity>
     </application>
 

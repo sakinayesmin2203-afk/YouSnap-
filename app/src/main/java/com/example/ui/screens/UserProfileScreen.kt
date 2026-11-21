@@ -137,34 +137,52 @@ fun UserProfileScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
-                                        text = "Share profile",
+                                        text = "Share Profile",
                                         fontWeight = FontWeight.Medium
                                     )
                                 },
                                 leadingIcon = {
                                     Icon(
                                         imageVector = Icons.Outlined.Share,
-                                        contentDescription = "Share profile"
+                                        contentDescription = "Share Profile"
                                     )
                                 },
                                 onClick = {
                                     showMoreMenu = false
-                                    try {
-                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_SUBJECT, "YouSnap Profile")
-                                            putExtra(
-                                                Intent.EXTRA_TEXT,
-                                                "Check out $displayName (@$username) on YouSnap!"
-                                            )
-                                        }
-                                        val chooser = Intent.createChooser(shareIntent, "Share profile via").apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                        context.startActivity(chooser)
-                                    } catch (_: Exception) {}
+                                    val profileUrl = viewModel.getProfileShareUrl(username, targetUid)
+                                    com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                        context = context,
+                                        subject = "YouSnap Profile",
+                                        text = "Check out $displayName (@$username) on YouSnap!\n$profileUrl",
+                                        chooserTitle = "Share profile via"
+                                    )
                                 },
                                 modifier = Modifier.testTag("menu_share_profile")
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Copy Profile Link",
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Link,
+                                        contentDescription = "Copy Profile Link"
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    val profileUrl = viewModel.getProfileShareUrl(username, targetUid)
+                                    com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                        context = context,
+                                        label = "Profile Link",
+                                        url = profileUrl,
+                                        toastMessage = "Profile link copied! 🔗"
+                                    )
+                                },
+                                modifier = Modifier.testTag("menu_copy_profile_link")
                             )
                             DropdownMenuItem(
                                 text = {

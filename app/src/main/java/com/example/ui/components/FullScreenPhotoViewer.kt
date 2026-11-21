@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Report
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
@@ -83,7 +84,8 @@ data class FullScreenPhotoData(
     val initialComments: Int,
     val initialIsLiked: Boolean = false,
     val timeAgo: String = "Just now",
-    val firestoreDocId: String? = null
+    val firestoreDocId: String? = null,
+    val shareLink: String = ""
 )
 
 data class PhotoCommentItem(
@@ -305,17 +307,27 @@ fun InstagramPostCard(
         }
     }
 
-    fun sharePost() {
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(
-                Intent.EXTRA_TEXT,
-                "Check out @$displayUsername's post on YouSnap!\n${photoData.imageUrl}"
+    val postShareUrl = remember(photoData.id, photoData.firestoreDocId, photoData.shareLink) {
+        photoData.shareLink.ifBlank {
+            com.example.ui.utils.DeepLinkHelper.buildPostUrl(
+                photoData.firestoreDocId?.takeIf { it.isNotBlank() } ?: photoData.id
             )
-            type = "text/plain"
         }
-        val shareIntent = Intent.createChooser(sendIntent, "Share post via")
-        context.startActivity(shareIntent)
+    }
+
+    val profileShareUrl = remember(photoData.creatorUid, displayUsername) {
+        com.example.ui.utils.DeepLinkHelper.buildProfileUrl(
+            photoData.creatorUid.ifBlank { displayUsername }
+        )
+    }
+
+    fun sharePost() {
+        com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+            context = context,
+            subject = "YouSnap Photo",
+            text = "Check out @$displayUsername's photo on YouSnap!\n$postShareUrl",
+            chooserTitle = "Share post via"
+        )
     }
 
     fun toggleSave() {
@@ -432,7 +444,54 @@ fun InstagramPostCard(
                     modifier = Modifier.background(WarmCreamBackground)
                 ) {
                     if (isAccountOwner) {
-                        // 1. ACCOUNT OWNER OPTIONS: Delete ONLY
+                        // 1. ACCOUNT OWNER OPTIONS: Share Post, Copy Link, Delete
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Share Post",
+                                    color = WarmCreamTextPrimary,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Share,
+                                    contentDescription = "Share Post",
+                                    tint = WarmCreamTextPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                sharePost()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Copy Link",
+                                    color = WarmCreamTextPrimary,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Link,
+                                    contentDescription = "Copy Link",
+                                    tint = WarmCreamTextPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Post Link",
+                                    url = postShareUrl,
+                                    toastMessage = "Post link copied! 🔗"
+                                )
+                            }
+                        )
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -456,7 +515,7 @@ fun InstagramPostCard(
                             }
                         )
                     } else {
-                        // 2. OTHER USER OPTIONS: Save photo, Share profile, Report account
+                        // 2. OTHER USER OPTIONS: Save photo, Copy Link, Share profile, Report account
                         // Option 1: Save photo
                         DropdownMenuItem(
                             text = {
@@ -480,7 +539,35 @@ fun InstagramPostCard(
                             }
                         )
 
-                        // Option 2: Share profile
+                        // Option 2: Copy Post Link
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Copy Link",
+                                    color = WarmCreamTextPrimary,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Link,
+                                    contentDescription = "Copy Link",
+                                    tint = WarmCreamTextPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Post Link",
+                                    url = postShareUrl,
+                                    toastMessage = "Post link copied! 🔗"
+                                )
+                            }
+                        )
+
+                        // Option 3: Share profile
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -499,16 +586,12 @@ fun InstagramPostCard(
                             },
                             onClick = {
                                 showOptionsMenu = false
-                                val sendIntent = Intent().apply {
-                                    action = Intent.ACTION_SEND
-                                    putExtra(
-                                        Intent.EXTRA_TEXT,
-                                        "Check out @$displayUsername's profile on YouSnap!\nhttps://yousnap.app/@$displayUsername"
-                                    )
-                                    type = "text/plain"
-                                }
-                                val shareIntent = Intent.createChooser(sendIntent, "Share profile via")
-                                context.startActivity(shareIntent)
+                                com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                    context = context,
+                                    subject = "YouSnap Profile",
+                                    text = "Check out @$displayUsername's profile on YouSnap!\n$profileShareUrl",
+                                    chooserTitle = "Share profile via"
+                                )
                             }
                         )
 

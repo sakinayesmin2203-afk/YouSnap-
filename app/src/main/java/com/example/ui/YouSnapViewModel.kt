@@ -10,7 +10,9 @@ import com.example.ads.AdMobRevenueTracker
 import com.example.data.model.*
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.utils.CompressionState
+import com.example.ui.utils.DeepLinkHelper
 import com.example.ui.utils.VideoCompressor
+import com.example.ui.utils.YouSnapDeepLink
 import com.example.data.repository.SupabaseRepository
 import com.example.data.repository.UploadResult
 import com.example.data.repository.UploadTransferState
@@ -126,6 +128,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private val reelCollectionByMediaUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val reelCollectionById = java.util.concurrent.ConcurrentHashMap<Int, String>()
     private val userUidByUsername = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val usernameByUid = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val profileLinkByUid = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val photoShareLinkByKey = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val reelShareLinkByKey = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val sessionBackfilledProfileLinkUids = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val storyCreatorUidByDocId = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val storyCreatorUidByOwner = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val monetizedUserIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -346,6 +353,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         AdMobRevenueTracker.updateUserMonetizationCache(doc.id, isApproved)
         if (user != null && user.username.isNotBlank()) {
             userUidByUsername[user.username.trim().lowercase()] = doc.id
+            usernameByUid[doc.id] = user.username.trim()
+        }
+        doc.getString("profileLink")?.takeIf { it.isNotBlank() }?.let {
+            profileLinkByUid[doc.id] = it
         }
     }
 
@@ -494,7 +505,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 if (doc.exists()) {
                     latestMonetizationUserDoc = doc
                     val profile = doc.toObject(ProfileEntity::class.java)
+                    val remoteLink = doc.getString("profileLink").orEmpty()
+                    val expectedLink = DeepLinkHelper.buildProfileUrl(uid)
+                    if (remoteLink.isBlank() && sessionBackfilledProfileLinkUids.add(uid)) {
+                        db.collection("users").document(uid)
+                            .set(mapOf("profileLink" to expectedLink), SetOptions.merge())
+                    }
+                    profileLinkByUid[uid] = remoteLink.ifBlank { expectedLink }
                     if (profile != null) {
+                        if (profile.username.isNotBlank()) {
+                            userUidByUsername[profile.username.trim().lowercase()] = uid
+                            usernameByUid[uid] = profile.username.trim()
+                        }
                         val resolvedProfile = profile.copy(
                             monetizationStatus = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
                         )
@@ -588,9 +610,332 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         clearAndNavigateTo(Screen.Login)
     }
 
-    fun hasOpenedPostFromProfile(): Boolean = false
+    fun hasOpenedPostFromProfile(): Boolean = selectedHomePost.value != null
     fun clearOpenedHomePost() {
         selectedHomePost.value = null
+    }
+
+    private fun buildUserDocMap(profile: ProfileEntity, uid: String): Map<String, Any> {
+        val link = DeepLinkHelper.buildProfileUrl(uid)
+        profileLinkByUid[uid] = link
+        if (profile.username.isNotBlank()) {
+            userUidByUsername[profile.username.trim().lowercase()] = uid
+            usernameByUid[uid] = profile.username.trim()
+        }
+        return mapOf(
+            "id" to profile.id,
+            "name" to profile.name,
+            "username" to profile.username,
+            "bio" to profile.bio,
+            "profilePic" to profile.profilePic,
+            "category" to profile.category,
+            "hiddenStoryFrom" to profile.hiddenStoryFrom,
+            "email" to profile.email,
+            "isPinEnabled" to profile.isPinEnabled,
+            "appPin" to profile.appPin,
+            "followersCount" to profile.followersCount,
+            "followingCount" to profile.followingCount,
+            "postCount" to profile.postCount,
+            "videoViewsCount" to profile.videoViewsCount,
+            "photoUploadsCount" to profile.photoUploadsCount,
+            "storiesUploadedCount" to profile.storiesUploadedCount,
+            "monetizationStatus" to profile.monetizationStatus,
+            "profileLink" to link
+        )
+    }
+
+    fun resolveUidForUsername(username: String): String? {
+        val clean = username.trim().removePrefix("@")
+        if (clean.isBlank()) return null
+        val key = clean.lowercase()
+        if (key == _profileState.value.username.trim().lowercase()) {
+            activeUserUid()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        userUidByUsername[key]?.takeIf { it.isNotBlank() }?.let { return it }
+        personalPhotosState.value.firstOrNull {
+            it.creatorUsername.equals(clean, ignoreCase = true) && it.creatorUid.isNotBlank()
+        }?.creatorUid?.let { return it }
+        _reelsState.value.firstOrNull {
+            it.creatorUsername.equals(clean, ignoreCase = true) && it.creatorUid.isNotBlank()
+        }?.creatorUid?.let { return it }
+        return null
+    }
+
+    fun getMyProfileShareUrl(): String {
+        val uid = activeUserUid()?.takeIf { it.isNotBlank() }
+        if (uid != null) {
+            return profileLinkByUid[uid] ?: DeepLinkHelper.buildProfileUrl(uid)
+        }
+        return DeepLinkHelper.buildProfileUrl(_profileState.value.username.ifBlank { "user" })
+    }
+
+    fun getProfileShareUrl(username: String, knownUid: String = ""): String {
+        val uid = knownUid.takeIf { it.isNotBlank() } ?: resolveUidForUsername(username).orEmpty()
+        if (uid.isNotBlank()) {
+            return profileLinkByUid[uid] ?: DeepLinkHelper.buildProfileUrl(uid)
+        }
+        return DeepLinkHelper.buildProfileUrl(username.ifBlank { "user" })
+    }
+
+    fun getPhotoShareUrl(photo: FullScreenPhotoData): String {
+        if (photo.shareLink.isNotBlank()) return photo.shareLink
+        val docId = photo.firestoreDocId?.takeIf { it.isNotBlank() } ?: photo.id
+        return photoShareLinkByKey[docId]
+            ?: photoShareLinkByKey[photo.id]
+            ?: DeepLinkHelper.buildPostUrl(docId)
+    }
+
+    fun getPhotoShareUrl(post: HomePostItem): String {
+        val rawId = post.id.removePrefix("photo_")
+        val docId = post.firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: personalPhotosState.value.firstOrNull {
+                it.id == rawId || it.id == post.id || it.firestoreDocId == post.firestoreDocId
+            }?.firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: rawId
+        return photoShareLinkByKey[docId]
+            ?: photoShareLinkByKey[rawId]
+            ?: DeepLinkHelper.buildPostUrl(docId)
+    }
+
+    fun getReelShareUrl(reel: ReelEntity): String {
+        val docId = reelFirestoreDocIdByMediaUrl[reel.mediaUrl]
+            ?: reelFirestoreDocIdByTimestamp[reel.timestamp]
+            ?: reelFirestoreDocIdById[reel.id]
+            ?: reel.id.toString()
+        return reelShareLinkByKey[docId]
+            ?: reelShareLinkByKey[reel.id.toString()]
+            ?: DeepLinkHelper.buildReelUrl(docId)
+    }
+
+    fun handleIncomingDeepLink(deepLink: YouSnapDeepLink) {
+        viewModelScope.launch {
+            try {
+                when (deepLink) {
+                    is YouSnapDeepLink.UserProfile -> openProfileFromDeepLink(deepLink.identifier)
+                    is YouSnapDeepLink.PhotoPost -> openPhotoPostFromDeepLink(deepLink.docId)
+                    is YouSnapDeepLink.ReelVideo -> openReelFromDeepLink(deepLink.docId)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("YouSnapViewModel", "handleIncomingDeepLink error: ${e.message}")
+            }
+        }
+    }
+
+    private fun openProfileFromDeepLink(rawIdentifier: String) {
+        val cleanId = rawIdentifier.trim().removePrefix("@")
+        if (cleanId.isBlank()) return
+        val myUid = activeUserUid().orEmpty()
+        val myUsername = _profileState.value.username.trim()
+        if ((myUid.isNotBlank() && cleanId == myUid) ||
+            (myUsername.isNotBlank() && cleanId.equals(myUsername, ignoreCase = true))
+        ) {
+            clearOpenedHomePost()
+            navigateTo(Screen.Profile)
+            return
+        }
+
+        val cachedUsername = usernameByUid[cleanId]
+            ?: allUsers.value.firstOrNull { it.username.equals(cleanId, ignoreCase = true) }?.username
+            ?: personalPhotosState.value.firstOrNull { it.creatorUid == cleanId && it.creatorUsername.isNotBlank() }?.creatorUsername
+            ?: _reelsState.value.firstOrNull { it.creatorUid == cleanId && it.creatorUsername.isNotBlank() }?.creatorUsername
+
+        if (!cachedUsername.isNullOrBlank()) {
+            clearOpenedHomePost()
+            navigateTo(Screen.OtherProfile(cachedUsername))
+            return
+        }
+
+        db.collection("users").document(cleanId).get()
+            .addOnSuccessListener { doc ->
+                if (doc.exists()) {
+                    val user = doc.toObject(ProfileEntity::class.java)
+                    updateUserMonetizationStatusCache(doc, user)
+                    val resolvedUsername = user?.username?.takeIf { it.isNotBlank() }
+                        ?: doc.getString("username")?.takeIf { it.isNotBlank() }
+                        ?: cleanId
+                    clearOpenedHomePost()
+                    if (doc.id == myUid || (myUsername.isNotBlank() && resolvedUsername.equals(myUsername, ignoreCase = true))) {
+                        navigateTo(Screen.Profile)
+                    } else {
+                        navigateTo(Screen.OtherProfile(resolvedUsername))
+                    }
+                } else {
+                    db.collection("users").whereEqualTo("username", cleanId).limit(1).get()
+                        .addOnSuccessListener { querySnap ->
+                            val matchedDoc = querySnap.documents.firstOrNull()
+                            if (matchedDoc != null) {
+                                val user = matchedDoc.toObject(ProfileEntity::class.java)
+                                updateUserMonetizationStatusCache(matchedDoc, user)
+                                val resolvedUsername = user?.username?.takeIf { it.isNotBlank() } ?: cleanId
+                                clearOpenedHomePost()
+                                navigateTo(Screen.OtherProfile(resolvedUsername))
+                            } else {
+                                clearOpenedHomePost()
+                                navigateTo(Screen.OtherProfile(cleanId))
+                            }
+                        }
+                        .addOnFailureListener {
+                            clearOpenedHomePost()
+                            navigateTo(Screen.OtherProfile(cleanId))
+                        }
+                }
+            }
+            .addOnFailureListener {
+                clearOpenedHomePost()
+                navigateTo(Screen.OtherProfile(cleanId))
+            }
+    }
+
+    private fun openPhotoPostFromDeepLink(rawDocId: String) {
+        val docId = rawDocId.trim().removePrefix("photo_")
+        if (docId.isBlank()) return
+
+        val localMatch = personalPhotosState.value.firstOrNull {
+            it.firestoreDocId == docId ||
+                it.id == docId ||
+                it.firestoreDocId?.endsWith("_$docId") == true
+        }
+        if (localMatch != null) {
+            selectedHomePost.value = localMatch
+            if (_currentScreen.value !is Screen.Home) {
+                clearAndNavigateTo(Screen.Home)
+            }
+            return
+        }
+
+        val showFetchedPhoto: (DocumentSnapshot) -> Unit = { doc ->
+            if (!isDocumentRestricted(doc)) {
+                val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
+                val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
+                val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
+                val id = doc.getString("id") ?: ts.takeIf { it > 0L }?.toString() ?: doc.id
+                val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: "user"
+                val matchedUser = allUsers.value.firstOrNull { it.username.equals(uname, ignoreCase = true) }
+                val display = doc.getString("name")?.takeIf { it.isNotBlank() }
+                    ?: matchedUser?.name?.takeIf { it.isNotBlank() }
+                    ?: uname
+                val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
+                    ?: matchedUser?.profilePic.orEmpty()
+                val shareLink = doc.getString("shareLink")?.takeIf { it.isNotBlank() }
+                    ?: DeepLinkHelper.buildPostUrl(doc.id)
+                val photo = FullScreenPhotoData(
+                    id = id,
+                    title = doc.getString("caption") ?: doc.getString("title") ?: "",
+                    imageUrl = fixedUrl,
+                    creatorName = display,
+                    creatorUsername = uname,
+                    creatorAvatar = avatar,
+                    creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: "",
+                    initialLikes = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0),
+                    initialComments = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0),
+                    initialIsLiked = false,
+                    timeAgo = if (ts > 0L) formatRelativeTime(ts) else "Just now",
+                    firestoreDocId = doc.id,
+                    shareLink = shareLink
+                )
+                photoShareLinkByKey[doc.id] = shareLink
+                photoShareLinkByKey[id] = shareLink
+                personalPhotosState.value = (listOf(photo) + personalPhotosState.value)
+                    .distinctBy { it.firestoreDocId ?: it.id }
+                selectedHomePost.value = photo
+                if (_currentScreen.value !is Screen.Home) {
+                    clearAndNavigateTo(Screen.Home)
+                }
+            }
+        }
+
+        db.collection("posts").document(docId).get()
+            .addOnSuccessListener { doc ->
+                if (doc.exists()) {
+                    showFetchedPhoto(doc)
+                } else {
+                    db.collection("posts").whereEqualTo("id", docId).limit(1).get()
+                        .addOnSuccessListener { snap ->
+                            val matched = snap.documents.firstOrNull()
+                            if (matched != null) {
+                                showFetchedPhoto(matched)
+                            } else {
+                                Toast.makeText(app, "Post not found or unavailable", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .addOnFailureListener {
+                            Toast.makeText(app, "Unable to open post link", Toast.LENGTH_SHORT).show()
+                        }
+                }
+            }
+            .addOnFailureListener {
+                Toast.makeText(app, "Unable to open post link", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun openReelFromDeepLink(rawDocId: String) {
+        val docId = rawDocId.trim()
+        if (docId.isBlank()) return
+
+        val localMatch = _reelsState.value.firstOrNull { reel ->
+            reelFirestoreDocIdByMediaUrl[reel.mediaUrl] == docId ||
+                reelFirestoreDocIdByTimestamp[reel.timestamp] == docId ||
+                reelFirestoreDocIdById[reel.id] == docId ||
+                reel.id.toString() == docId ||
+                reel.timestamp.toString() == docId
+        }
+        if (localMatch != null) {
+            clearOpenedHomePost()
+            navigateTo(Screen.Reels(startReelId = localMatch.id, startMediaUrl = localMatch.mediaUrl))
+            return
+        }
+
+        val handleFoundDocs: (List<DocumentSnapshot>, String) -> Boolean = { docs, sourceCollection ->
+            val mapped = mapReelOrVideoDocuments(
+                documents = docs,
+                sourceCollection = sourceCollection,
+                deletedUrls = emptySet(),
+                pendingDeleteKeys = emptySet(),
+                myUid = activeUserUid().orEmpty(),
+                myUsername = _profileState.value.username.trim(),
+                usersList = allUsers.value,
+                followingMap = otherUserIsFollowing.value,
+                existingThumbByUrl = emptyMap(),
+                existingUidByUrl = emptyMap()
+            )
+            val reel = mapped.firstOrNull()
+            if (reel != null) {
+                _reelsState.value = (listOf(reel) + _reelsState.value)
+                    .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
+                clearOpenedHomePost()
+                navigateTo(Screen.Reels(startReelId = reel.id, startMediaUrl = reel.mediaUrl))
+                true
+            } else {
+                false
+            }
+        }
+
+        db.collection("reels").document(docId).get()
+            .addOnSuccessListener { doc ->
+                if (doc.exists() && handleFoundDocs(listOf(doc), "reels")) return@addOnSuccessListener
+                db.collection("videos").document(docId).get()
+                    .addOnSuccessListener { vDoc ->
+                        if (vDoc.exists() && handleFoundDocs(listOf(vDoc), "videos")) return@addOnSuccessListener
+                        db.collection("reels").whereEqualTo("id", docId).limit(1).get()
+                            .addOnSuccessListener { qSnap ->
+                                if (!qSnap.isEmpty && handleFoundDocs(qSnap.documents, "reels")) return@addOnSuccessListener
+                                val intId = docId.toIntOrNull()
+                                if (intId != null) {
+                                    db.collection("reels").whereEqualTo("reelIntId", intId).limit(1).get()
+                                        .addOnSuccessListener { intSnap ->
+                                            if (intSnap.isEmpty || !handleFoundDocs(intSnap.documents, "reels")) {
+                                                Toast.makeText(app, "Video not found or unavailable", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                } else {
+                                    Toast.makeText(app, "Video not found or unavailable", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                    }
+            }
+            .addOnFailureListener {
+                Toast.makeText(app, "Unable to open video link", Toast.LENGTH_SHORT).show()
+            }
     }
 
     fun uploadMedia(
@@ -752,6 +1097,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val inFlightKey = "$targetCollection/$firestoreDocId"
                 inFlightUploadDocKeys[inFlightKey] = System.currentTimeMillis()
 
+                val itemShareLink = when {
+                    isStory -> ""
+                    !isVideo -> DeepLinkHelper.buildPostUrl(firestoreDocId)
+                    else -> DeepLinkHelper.buildReelUrl(firestoreDocId)
+                }
+
                 if (isStory) {
                     val newStory = StoryModel(
                         storyId = timestamp.toString(),
@@ -767,6 +1118,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     allStories.value = listOf(newStory) + allStories.value.filter { !it.ownerUsername.equals(ownerUsername, ignoreCase = true) }
                     saveStoriesToPrefs()
                 } else if (!isVideo) {
+                    photoShareLinkByKey[firestoreDocId] = itemShareLink
+                    photoShareLinkByKey[timestamp.toString()] = itemShareLink
                     val newPhoto = FullScreenPhotoData(
                         id = timestamp.toString(),
                         title = caption,
@@ -779,7 +1132,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         initialComments = 0,
                         initialIsLiked = false,
                         timeAgo = "Just now",
-                        firestoreDocId = firestoreDocId
+                        firestoreDocId = firestoreDocId,
+                        shareLink = itemShareLink
                     )
                     personalPhotosState.value = listOf(newPhoto) + personalPhotosState.value
                     savePersonalPhotosToPrefs()
@@ -805,6 +1159,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     reelFirestoreDocIdByMediaUrl[finalUrl] = firestoreDocId
                     reelFirestoreDocIdByTimestamp[timestamp] = firestoreDocId
                     reelFirestoreDocIdById[newReel.id] = firestoreDocId
+                    reelShareLinkByKey[firestoreDocId] = itemShareLink
+                    reelShareLinkByKey[newReel.id.toString()] = itemShareLink
                     saveReelsToPrefs()
                 }
                 recalculateCreatorStats()
@@ -832,6 +1188,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     !isVideo -> mapOf(
                         "id" to timestamp.toString(),
                         "firestoreDocId" to firestoreDocId,
+                        "shareLink" to itemShareLink,
                         "type" to "photo",
                         "userId" to creatorUid,
                         "creatorUid" to creatorUid,
@@ -851,6 +1208,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "id" to timestamp.toString(),
                         "reelIntId" to timestamp.toInt(),
                         "firestoreDocId" to firestoreDocId,
+                        "shareLink" to itemShareLink,
                         "type" to "reel",
                         "userId" to creatorUid,
                         "creatorUid" to creatorUid,
@@ -1302,6 +1660,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     if (!myUid.isNullOrBlank()) {
                         snapshot.documents.firstOrNull { it.id == myUid }?.let { myDoc ->
                             latestMonetizationUserDoc = myDoc
+                            val remoteLink = myDoc.getString("profileLink").orEmpty()
+                            val expectedLink = DeepLinkHelper.buildProfileUrl(myUid)
+                            if (remoteLink.isBlank() && sessionBackfilledProfileLinkUids.add(myUid)) {
+                                db.collection("users").document(myUid)
+                                    .set(mapOf("profileLink" to expectedLink), SetOptions.merge())
+                            }
+                            profileLinkByUid[myUid] = remoteLink.ifBlank { expectedLink }
                             myDoc.toObject(ProfileEntity::class.java)?.let { freshProfile ->
                                 val resolvedStatus = resolveMonetizationStatusFromDocs(myDoc, latestMonetizationRequestDocs)
                                 val resolvedProfile = freshProfile.copy(monetizationStatus = resolvedStatus)
@@ -1545,6 +1910,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 remoteLikedByKey[postKey] = isLiked
             }
 
+            val resolvedShareLink = doc.getString("shareLink")?.takeIf { it.isNotBlank() }
+                ?: DeepLinkHelper.buildPostUrl(doc.id)
+            photoShareLinkByKey[doc.id] = resolvedShareLink
+            photoShareLinkByKey[id] = resolvedShareLink
+
             FullScreenPhotoData(
                 id = id,
                 title = doc.getString("caption") ?: doc.getString("title") ?: "",
@@ -1557,7 +1927,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 initialComments = commentsCount,
                 initialIsLiked = isLiked,
                 timeAgo = if (ts > 0L) formatRelativeTime(ts) else "Just now",
-                firestoreDocId = doc.id
+                firestoreDocId = doc.id,
+                shareLink = resolvedShareLink
             )
         }
 
@@ -1657,6 +2028,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             if (ts > 0L) reelFirestoreDocIdByTimestamp[ts] = doc.id
             reelFirestoreDocIdById[reelId] = doc.id
             reelCollectionById[reelId] = sourceCollection
+            val resolvedShareLink = doc.getString("shareLink")?.takeIf { it.isNotBlank() }
+                ?: DeepLinkHelper.buildReelUrl(doc.id)
+            reelShareLinkByKey[doc.id] = resolvedShareLink
+            reelShareLinkByKey[reelId.toString()] = resolvedShareLink
 
             ReelEntity(
                 id = reelId,
@@ -3237,12 +3612,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     val uid = activeUserUid()
                     val profile = _profileState.value
                     if (!uid.isNullOrBlank()) {
+                        val link = DeepLinkHelper.buildProfileUrl(uid)
+                        profileLinkByUid[uid] = link
                         db.collection("users").document(uid).set(
                             mapOf(
                                 "fcmToken" to token,
                                 "fcmUpdatedAt" to System.currentTimeMillis(),
                                 "username" to profile.username,
-                                "name" to profile.name
+                                "name" to profile.name,
+                                "profileLink" to link
                             ),
                             SetOptions.merge()
                         )
@@ -3978,13 +4356,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        val profileLink = DeepLinkHelper.buildProfileUrl(uid)
+        profileLinkByUid[uid] = profileLink
         val updates = mapOf(
             "name" to cleanName,
             "username" to cleanUsername,
             "bio" to bio,
             "category" to category,
             "profilePic" to profilePic,
-            "email" to updatedProfile.email
+            "email" to updatedProfile.email,
+            "profileLink" to profileLink
         )
         db.collection("users").document(uid)
             .set(updates, com.google.firebase.firestore.SetOptions.merge())
@@ -4049,7 +4430,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val userDocRef = db.collection("users").document(uid)
                 userDocRef.get().addOnSuccessListener { doc ->
                     if (!doc.exists()) {
-                        userDocRef.set(initialProfile).addOnCompleteListener {
+                        userDocRef.set(buildUserDocMap(initialProfile, uid), SetOptions.merge()).addOnCompleteListener {
                             _profileState.value = initialProfile
                             saveProfileToPrefs(initialProfile, uid)
                             recalculateCreatorStats()
@@ -4063,6 +4444,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         }
                     } else {
                         latestMonetizationUserDoc = doc
+                        val remoteLink = doc.getString("profileLink").orEmpty()
+                        val expectedLink = DeepLinkHelper.buildProfileUrl(uid)
+                        if (remoteLink.isBlank()) {
+                            userDocRef.set(mapOf("profileLink" to expectedLink), SetOptions.merge())
+                        }
+                        profileLinkByUid[uid] = remoteLink.ifBlank { expectedLink }
                         val remoteProfile = doc.toObject(ProfileEntity::class.java)
                         val resolvedMonetization = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
                         val resolvedProfile = if (remoteProfile != null) {
@@ -4137,7 +4524,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             saveProfileToPrefs(profile, uid)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
-            db.collection("users").document(uid).set(profile).addOnCompleteListener {
+            db.collection("users").document(uid).set(buildUserDocMap(profile, uid), SetOptions.merge()).addOnCompleteListener {
                 loadFollowingFromFirestore()
                 startListeningToNotifications()
                 startListeningToAccountStatus()
@@ -4205,6 +4592,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("initialIsLiked", photo.initialIsLiked)
             obj.put("timeAgo", photo.timeAgo)
             obj.put("firestoreDocId", photo.firestoreDocId ?: "")
+            obj.put("shareLink", photo.shareLink)
             array.put(obj)
         }
         prefs.edit().putString("personal_photos", array.toString()).apply()
@@ -4218,8 +4606,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val docId = obj.optString("firestoreDocId", "").takeIf { it.isNotBlank() }
+                val id = obj.getString("id")
+                val shareLink = obj.optString("shareLink", "").ifBlank {
+                    DeepLinkHelper.buildPostUrl(docId ?: id)
+                }
                 list.add(FullScreenPhotoData(
-                    id = obj.getString("id"),
+                    id = id,
                     title = obj.optString("title", ""),
                     imageUrl = obj.optString("imageUrl", ""),
                     creatorName = obj.optString("creatorName", "User"),
@@ -4230,7 +4622,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     initialComments = obj.optInt("initialComments", 0),
                     initialIsLiked = obj.optBoolean("initialIsLiked", false),
                     timeAgo = obj.optString("timeAgo", "Recently"),
-                    firestoreDocId = docId
+                    firestoreDocId = docId,
+                    shareLink = shareLink
                 ))
             }
             personalPhotosState.value = list

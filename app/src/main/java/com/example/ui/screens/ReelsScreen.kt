@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -620,24 +621,16 @@ fun ReelViewportItem(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 IconButton(
                     onClick = {
-                        try {
-                            val shareIntent = android.content.Intent().apply {
-                                action = android.content.Intent.ACTION_SEND
-                                type = "text/plain"
-                                putExtra(
-                                    android.content.Intent.EXTRA_SUBJECT, 
-                                    "Check out @${reel.creatorUsername}'s Reel on YouSnap!"
-                                )
-                                putExtra(
-                                    android.content.Intent.EXTRA_TEXT, 
-                                    "🎥 Watch this amazing Reel by @${reel.creatorUsername} on YouSnap!\n\n\"${reel.caption}\"\n\nWatch here: https://yousnap.app/reel/${reel.id}"
-                                )
-                            }
-                            context.startActivity(
-                                android.content.Intent.createChooser(shareIntent, "Share Reel via")
-                            )
+                        val reelUrl = viewModel.getReelShareUrl(reel)
+                        val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                            context = context,
+                            subject = "Check out @${reel.creatorUsername}'s Reel on YouSnap!",
+                            text = "🎥 Watch this Reel by @${reel.creatorUsername} on YouSnap!\n\n\"${reel.caption}\"\n\n$reelUrl",
+                            chooserTitle = "Share Reel via"
+                        )
+                        if (shared) {
                             viewModel.incrementReelShares(reel)
-                        } catch (e: Exception) {
+                        } else {
                             Toast.makeText(
                                 context,
                                 "Unable to open Share sheet",
@@ -702,6 +695,27 @@ fun ReelViewportItem(
                     expanded = showMoreMenu,
                     onDismissRequest = { showMoreMenu = false }
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("Copy Link") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Link,
+                                contentDescription = "Copy Link"
+                            )
+                        },
+                        onClick = {
+                            showMoreMenu = false
+                            val reelUrl = viewModel.getReelShareUrl(reel)
+                            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                context = context,
+                                label = "Reel Link",
+                                url = reelUrl,
+                                toastMessage = "Reel link copied! 🔗"
+                            )
+                        },
+                        modifier = Modifier.testTag("reel_copy_link_menu_item")
+                    )
+
                     val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
 
                     if (isReelOwner) {
