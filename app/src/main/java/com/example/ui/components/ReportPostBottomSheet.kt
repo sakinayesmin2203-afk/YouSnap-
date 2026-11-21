@@ -31,7 +31,8 @@ fun ReportPostBottomSheet(
         "Violence or Dangerous Content",
         "False Information / Misleading",
         "Bullying or Harassment",
-        "Intellectual Property Violation"
+        "Intellectual Property Violation",
+        "Other"
     )
 
     var selectedReason by remember { mutableStateOf(reportReasons.first()) }
@@ -92,7 +93,7 @@ fun ReportPostBottomSheet(
             OutlinedTextField(
                 value = reportDetails,
                 onValueChange = { reportDetails = it },
-                label = { Text("Write additional details (optional)...") },
+                label = { Text("Write a reason or additional details (optional)...") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(100.dp),

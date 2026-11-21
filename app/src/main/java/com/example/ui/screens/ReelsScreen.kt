@@ -257,6 +257,8 @@ fun ReelsScreen(
                             is ReelsFeedItem.Ad -> {
                                 FullScreenNativeVideoAd(
                                     adUnitId = item.adUnitId,
+                                    creatorId = "platform",
+                                    mediaId = "",
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
@@ -773,7 +775,7 @@ fun ReelViewportItem(
         }
 
         if (showReportDialog) {
-            val reasons = listOf("Inappropriate Content", "Spam", "Hate Speech", "Violence", "False Information", "Harassment")
+            val reasons = listOf("Inappropriate Content", "Spam", "Hate Speech", "Violence", "False Information", "Harassment", "Other")
             ModalBottomSheet(
                 onDismissRequest = { showReportDialog = false },
                 sheetState = reportSheetState

@@ -2131,11 +2131,13 @@ fun MonetizationScreen(
     onBack: () -> Unit
 ) {
     LaunchedEffect(Unit) {
+        viewModel.startListeningToMonetizationStatus()
         viewModel.refreshHomeFeed(showIndicator = false)
         viewModel.recalculateCreatorStats()
     }
 
     val monetizationStatus by viewModel.monetizationStatus.collectAsState()
+    val normalizedStatus = monetizationStatus.trim().lowercase()
 
     // Real live user metrics (1 item = 1 displayed)
     val liveFollowers by viewModel.followersCount.collectAsState()
@@ -2151,10 +2153,13 @@ fun MonetizationScreen(
     val targetPhotos = 10
     val targetStories = 20
 
-    val followers = if (isAutoFillEnabled) maxOf(liveFollowers, targetFollowers) else liveFollowers
-    val videoViews = if (isAutoFillEnabled) maxOf(liveVideoViews, targetViews) else liveVideoViews
-    val photoUploads = if (isAutoFillEnabled) maxOf(livePhotoUploads, targetPhotos) else livePhotoUploads
-    val storiesUploaded = if (isAutoFillEnabled) maxOf(liveStoriesUploaded, targetStories) else liveStoriesUploaded
+    val isFilledFromApplication = normalizedStatus == "pending" || normalizedStatus == "approved"
+    val shouldShowFilled = isAutoFillEnabled || isFilledFromApplication
+
+    val followers = if (shouldShowFilled) maxOf(liveFollowers, targetFollowers) else liveFollowers
+    val videoViews = if (shouldShowFilled) maxOf(liveVideoViews, targetViews) else liveVideoViews
+    val photoUploads = if (shouldShowFilled) maxOf(livePhotoUploads, targetPhotos) else livePhotoUploads
+    val storiesUploaded = if (shouldShowFilled) maxOf(liveStoriesUploaded, targetStories) else liveStoriesUploaded
 
     // Condition satisfaction checks
     val isFollowersMet = followers >= targetFollowers
@@ -2163,6 +2168,17 @@ fun MonetizationScreen(
     val isStoriesMet = storiesUploaded >= targetStories
 
     val allConditionsMet = isFollowersMet && isViewsMet && isPhotosMet && isStoriesMet
+
+    val isRealEligible = liveFollowers >= targetFollowers &&
+        liveVideoViews >= targetViews &&
+        livePhotoUploads >= targetPhotos &&
+        liveStoriesUploaded >= targetStories
+
+    LaunchedEffect(isRealEligible, normalizedStatus) {
+        if (normalizedStatus != "pending" && normalizedStatus != "approved" && normalizedStatus != "rejected") {
+            viewModel.syncUnappliedMonetizationStatus(isRealEligible)
+        }
+    }
 
     Scaffold(
         topBar = { SubScreenTopBar("Monetization Eligibility", onBack) }
@@ -2200,39 +2216,56 @@ fun MonetizationScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // Status Banner
-            val bannerBg = when (monetizationStatus) {
-                "PENDING" -> Color(0xFFFF9800).copy(alpha = 0.15f)
-                "APPROVED" -> Color(0xFF2EB85C).copy(alpha = 0.15f)
-                "REJECTED" -> Color(0xFFFF5252).copy(alpha = 0.15f)
+            // Status Banner (real-time synced with users/{uid}.monetizationStatus)
+            val bannerBg = when (normalizedStatus) {
+                "pending" -> Color(0xFFFF9800).copy(alpha = 0.14f)
+                "approved" -> Color(0xFF2EB85C).copy(alpha = 0.14f)
+                "rejected" -> Color(0xFFFF5252).copy(alpha = 0.14f)
                 else -> if (allConditionsMet) Color(0xFF38EF7D).copy(alpha = 0.12f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
             }
-            val bannerText = when (monetizationStatus) {
-                "PENDING" -> "Monetization Application Status: PENDING ⏳ (Under Review)"
-                "APPROVED" -> "Monetization Status: APPROVED ✅ (Earnings Active)"
-                "REJECTED" -> "Monetization Status: REJECTED ❌ (Review requirements & Re-apply)"
-                else -> if (allConditionsMet) "Eligible for Creator Fund & Gifts 🌟" else "Progressing towards Creator Fund 🚀"
+            val bannerTitle = when (normalizedStatus) {
+                "pending" -> "Application Under Review ⏳"
+                "approved" -> "Monetization Approved ✅"
+                "rejected" -> "Application Rejected ❌"
+                else -> null
             }
-            val bannerColor = when (monetizationStatus) {
-                "PENDING" -> Color(0xFFF57C00)
-                "APPROVED" -> Color(0xFF2EB85C)
-                "REJECTED" -> Color(0xFFFF5252)
+            val bannerText = when (normalizedStatus) {
+                "pending" -> "Your monetization application is still pending. Please wait. Our team is checking your account. Your account will be approved after the review is complete."
+                "approved" -> "Your monetization application is approved. Congratulations! You can now start earning money from your content."
+                "rejected" -> "Your monetization application has been rejected. Sorry, your account did not meet our requirements. Please check the guidelines and try again later."
+                else -> if (allConditionsMet) "Eligible for Creator Fund & Gifts 🌟 (Not Applied)" else "Not Eligible — Progressing towards Creator Fund 🚀"
+            }
+            val bannerColor = when (normalizedStatus) {
+                "pending" -> Color(0xFFE65100)
+                "approved" -> Color(0xFF1B8E42)
+                "rejected" -> Color(0xFFD32F2F)
                 else -> if (allConditionsMet) Color(0xFF2EB85C) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             }
 
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(bannerBg)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                contentAlignment = Alignment.Center
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (bannerTitle != null) {
+                    Text(
+                        text = bannerTitle,
+                        color = bannerColor,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
                 Text(
                     text = bannerText,
                     color = bannerColor,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = if (bannerTitle != null) FontWeight.Medium else FontWeight.Bold,
                     fontSize = 13.sp,
+                    lineHeight = 19.sp,
                     textAlign = TextAlign.Center
                 )
             }
@@ -2336,13 +2369,12 @@ fun MonetizationScreen(
                 modifier = Modifier.padding(horizontal = 12.dp)
             )
 
-            // Apply Now Button
-            val canApply = allConditionsMet && (
-                monetizationStatus == "NOT_ELIGIBLE" ||
-                    monetizationStatus == "NONE" ||
-                    monetizationStatus == "REJECTED" ||
-                    monetizationStatus.isBlank()
-                )
+            // Apply for Monetization / Apply Again Button
+            val canApply = when (normalizedStatus) {
+                "pending", "approved" -> false
+                "rejected" -> true
+                else -> allConditionsMet
+            }
             Button(
                 onClick = {
                     if (canApply) {
@@ -2363,11 +2395,11 @@ fun MonetizationScreen(
                     .testTag("apply_now_button")
             ) {
                 Text(
-                    text = when (monetizationStatus) {
-                        "PENDING" -> "Application Under Review (Pending) ⏳"
-                        "APPROVED" -> "Monetization Active & Earning 💰"
-                        "REJECTED" -> "Re-Apply Now ✨"
-                        else -> if (allConditionsMet) "Apply Now ✨" else "Apply Now (Requirements Pending)"
+                    text = when (normalizedStatus) {
+                        "pending" -> "Application Under Review (Pending) ⏳"
+                        "approved" -> "Monetization Active & Earning 💰"
+                        "rejected" -> "Apply Again for Monetization ✨"
+                        else -> if (allConditionsMet) "Apply for Monetization ✨" else "Apply for Monetization (Requirements Pending)"
                     },
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold

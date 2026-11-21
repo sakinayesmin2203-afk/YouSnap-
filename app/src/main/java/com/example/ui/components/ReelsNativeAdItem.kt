@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.ads.AdMobRevenueTracker
 import com.example.data.model.ReelEntity
 import com.example.ui.Toast
 import com.google.android.gms.ads.AdListener
@@ -43,11 +44,8 @@ import com.google.android.gms.ads.nativead.NativeAd
 import com.google.android.gms.ads.nativead.NativeAdOptions
 import com.google.android.gms.ads.nativead.NativeAdView
 
-// Production Native Ad Unit provided by user
+// Production Native Ad Unit ID
 const val ADMOB_NATIVE_AD_UNIT_ID = "ca-app-pub-2077385225737134/9497192934"
-
-// Google Official Sample Native Video Ad Unit (used as test fallback when live publisher data is pending approval)
-const val ADMOB_SAMPLE_NATIVE_AD_UNIT_ID = "ca-app-pub-3940256099942544/2247696110"
 
 /**
  * Model representing an item in the Reels vertical feed:
@@ -84,15 +82,15 @@ fun buildReelsFeedWithAds(reels: List<ReelEntity>, adInterval: Int = 6): List<Re
 @Composable
 fun FullScreenNativeVideoAd(
     adUnitId: String = ADMOB_NATIVE_AD_UNIT_ID,
+    creatorId: String? = null,
+    mediaId: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var nativeAd by remember { mutableStateOf<NativeAd?>(null) }
     var isLoading by remember { mutableStateOf(true) }
-    var activeAdUnitId by remember(adUnitId) { mutableStateOf(adUnitId) }
-    var triedSampleFallback by remember(adUnitId) { mutableStateOf(false) }
 
-    DisposableEffect(activeAdUnitId) {
+    DisposableEffect(adUnitId, creatorId, mediaId) {
         val videoOptions = VideoOptions.Builder()
             .setStartMuted(true)
             .build()
@@ -102,22 +100,21 @@ fun FullScreenNativeVideoAd(
             .setMediaAspectRatio(NativeAdOptions.NATIVE_MEDIA_ASPECT_RATIO_PORTRAIT)
             .build()
 
-        val adLoader = AdLoader.Builder(context, activeAdUnitId)
+        val adLoader = AdLoader.Builder(context, adUnitId)
             .forNativeAd { ad: NativeAd ->
+                AdMobRevenueTracker.attachNativeAdPaidEventListener(
+                    nativeAd = ad,
+                    creatorIdOverride = creatorId,
+                    mediaIdOverride = mediaId
+                )
                 nativeAd?.destroy()
                 nativeAd = ad
                 isLoading = false
             }
             .withAdListener(object : AdListener() {
                 override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                    android.util.Log.d("ReelsNativeAd", "Ad notice for $activeAdUnitId: ${loadAdError.message}")
-                    // If live ad has "Publisher data not found", try Google's official test ad unit
-                    if (!triedSampleFallback && activeAdUnitId != ADMOB_SAMPLE_NATIVE_AD_UNIT_ID) {
-                        triedSampleFallback = true
-                        activeAdUnitId = ADMOB_SAMPLE_NATIVE_AD_UNIT_ID
-                    } else {
-                        isLoading = false
-                    }
+                    android.util.Log.d("ReelsNativeAd", "Ad notice for $adUnitId: ${loadAdError.message}")
+                    isLoading = false
                 }
 
                 override fun onAdLoaded() {
@@ -131,12 +128,7 @@ fun FullScreenNativeVideoAd(
             adLoader.loadAd(AdRequest.Builder().build())
         } catch (e: Throwable) {
             android.util.Log.d("ReelsNativeAd", "Ad load notice: ${e.message}")
-            if (!triedSampleFallback && activeAdUnitId != ADMOB_SAMPLE_NATIVE_AD_UNIT_ID) {
-                triedSampleFallback = true
-                activeAdUnitId = ADMOB_SAMPLE_NATIVE_AD_UNIT_ID
-            } else {
-                isLoading = false
-            }
+            isLoading = false
         }
 
         onDispose {

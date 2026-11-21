@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ads.AdMobRevenueTracker
 import com.example.data.model.*
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.utils.CompressionState
@@ -16,6 +17,7 @@ import com.example.data.repository.UploadTransferState
 import com.example.notifications.YouSnapNotificationHelper
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ListenerRegistration
@@ -115,11 +117,29 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val activeReelComments = MutableStateFlow<List<CommentEntity>>(emptyList())
     val currentCommentText = MutableStateFlow("")
     private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val inFlightUploadDocKeys = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var refreshFeedJob: kotlinx.coroutines.Job? = null
     private val pendingSyncLock = Any()
     private val reelFirestoreDocIdByMediaUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val reelFirestoreDocIdByTimestamp = java.util.concurrent.ConcurrentHashMap<Long, String>()
     private val reelFirestoreDocIdById = java.util.concurrent.ConcurrentHashMap<Int, String>()
+    private val reelCollectionByMediaUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val reelCollectionById = java.util.concurrent.ConcurrentHashMap<Int, String>()
+    private val userUidByUsername = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val storyCreatorUidByDocId = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val storyCreatorUidByOwner = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val monetizedUserIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val nonMonetizedUserIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val sessionLoggedAdViewMediaKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var cachedRemoteReels: List<ReelEntity> = emptyList()
+    private var cachedRemoteVideos: List<ReelEntity> = emptyList()
+    private var restrictedReelDocIds: Set<String> = emptySet()
+    private var restrictedVideoDocIds: Set<String> = emptySet()
+    private var storiesCollectionListener: ListenerRegistration? = null
+    private var postsCollectionListener: ListenerRegistration? = null
+    private var reelsCollectionListener: ListenerRegistration? = null
+    private var videosCollectionListener: ListenerRegistration? = null
+    private var usersCollectionListener: ListenerRegistration? = null
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -143,6 +163,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val accountRestrictionState: StateFlow<AccountRestrictionState> = _accountRestrictionState.asStateFlow()
     private var accountStatusListener: ListenerRegistration? = null
     private var listenedAccountUid: String? = null
+    private var monetizationStatusListener: ListenerRegistration? = null
+    private var monetizationRequestsListener: ListenerRegistration? = null
+    private var listenedMonetizationUid: String? = null
+    private var latestMonetizationUserDoc: DocumentSnapshot? = null
+    private var latestMonetizationRequestDocs: List<DocumentSnapshot> = emptyList()
 
     private var notifUidListener: ListenerRegistration? = null
     private var notifUsernameListener: ListenerRegistration? = null
@@ -171,7 +196,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val forceDarkMode = MutableStateFlow(false)
     
     // Monetization & Analytics state
-    val monetizationStatus = MutableStateFlow("NOT_ELIGIBLE")
+    val monetizationStatus = MutableStateFlow("Not Eligible")
     val videoViewsCount = MutableStateFlow(0)
     val photoUploadsCount = MutableStateFlow(0)
     val storiesUploadedCount = MutableStateFlow(0)
@@ -215,12 +240,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try { recalculateCreatorStats() } catch (e: Throwable) {}
         try { listenToAuthChanges() } catch (e: Throwable) {}
         try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
+        try { startListeningToFeedAndContent() } catch (e: Throwable) {}
         try { refreshHomeFeed() } catch (e: Throwable) {}
-        try { fetchAllUsers() } catch (e: Throwable) {}
         try { loadSearchHistory() } catch (e: Throwable) {}
         try { loadFollowingFromFirestore() } catch (e: Throwable) {}
         try { startListeningToNotifications() } catch (e: Throwable) {}
         try { startListeningToAccountStatus() } catch (e: Throwable) {}
+        try { startListeningToMonetizationStatus() } catch (e: Throwable) {}
         try { syncFcmToken() } catch (e: Throwable) {}
     }
 
@@ -228,6 +254,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         super.onCleared()
         stopListeningToNotifications()
         stopListeningToAccountStatus()
+        stopListeningToMonetizationStatus()
+        stopListeningToFeedAndContent()
         storyListenerRegistration?.remove()
         storyListenerRegistration = null
     }
@@ -277,7 +305,24 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         videoViewsCount.value = myReels.sumOf { it.viewsCount.coerceAtLeast(0) }
         val currentStatus = _profileState.value.monetizationStatus
         if (currentStatus.isNotBlank()) {
-            monetizationStatus.value = currentStatus
+            monetizationStatus.value = normalizeMonetizationStatus(currentStatus)
+        }
+    }
+
+    private fun normalizeMonetizationStatus(rawStatus: String?): String {
+        val trimmed = rawStatus?.trim().orEmpty()
+        return when {
+            trimmed.equals("Approved", ignoreCase = true) ||
+                trimmed.equals("Approve", ignoreCase = true) -> "Approved"
+            trimmed.equals("Rejected", ignoreCase = true) ||
+                trimmed.equals("Reject", ignoreCase = true) -> "Rejected"
+            trimmed.equals("Pending", ignoreCase = true) -> "Pending"
+            trimmed.equals("Not Applied", ignoreCase = true) -> "Not Applied"
+            trimmed.equals("Not Eligible", ignoreCase = true) ||
+                trimmed.equals("NOT_ELIGIBLE", ignoreCase = true) ||
+                trimmed.equals("NONE", ignoreCase = true) ||
+                trimmed.isBlank() -> "Not Eligible"
+            else -> trimmed
         }
     }
 
@@ -288,10 +333,34 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         } catch (e: Throwable) {}
     }
 
+    private fun updateUserMonetizationStatusCache(doc: DocumentSnapshot, user: ProfileEntity? = null) {
+        val isApproved = doc.getBoolean("isMonetized") == true ||
+            doc.getString("monetizationStatus")?.trim().equals("Approved", ignoreCase = true)
+        if (isApproved) {
+            monetizedUserIds.add(doc.id)
+            nonMonetizedUserIds.remove(doc.id)
+        } else {
+            monetizedUserIds.remove(doc.id)
+            nonMonetizedUserIds.add(doc.id)
+        }
+        AdMobRevenueTracker.updateUserMonetizationCache(doc.id, isApproved)
+        if (user != null && user.username.isNotBlank()) {
+            userUidByUsername[user.username.trim().lowercase()] = doc.id
+        }
+    }
+
     fun fetchAllUsers() {
         try {
+            if (usersCollectionListener == null) {
+                startListeningToUsers()
+            }
             db.collection("users").limit(100).get().addOnSuccessListener { snapshot ->
-                allUsers.value = snapshot.documents.mapNotNull { it.toObject(ProfileEntity::class.java) }
+                val users = snapshot.documents.mapNotNull { doc ->
+                    val user = doc.toObject(ProfileEntity::class.java)
+                    updateUserMonetizationStatusCache(doc, user)
+                    user
+                }
+                allUsers.value = users
             }
         } catch (e: Throwable) {
             android.util.Log.e("YouSnapViewModel", "fetchAllUsers safe: ${e.message}")
@@ -302,9 +371,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try {
             auth.addAuthStateListener { firebaseAuth ->
                 currentUser.value = firebaseAuth.currentUser
+                AdMobRevenueTracker.setFallbackViewerUid(activeUserUid())
                 if (firebaseAuth.currentUser != null) {
                     fetchAndSyncUserProfile()
                     startListeningToAccountStatus()
+                    startListeningToMonetizationStatus()
                 }
             }
         } catch (e: Throwable) {
@@ -386,7 +457,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     videoViewsCount = obj.optInt("videoViewsCount", 0),
                     photoUploadsCount = obj.optInt("photoUploadsCount", 0),
                     storiesUploadedCount = obj.optInt("storiesUploadedCount", 0),
-                    monetizationStatus = obj.optString("monetizationStatus", "NOT_ELIGIBLE")
+                    monetizationStatus = normalizeMonetizationStatus(obj.optString("monetizationStatus", "Not Eligible"))
                 )
             } catch (_: Exception) {}
         }
@@ -401,7 +472,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             _profileState.value = cached
             myFollowersCount.value = cached.followersCount
             myFollowingCount.value = cached.followingCount
-            monetizationStatus.value = cached.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+            monetizationStatus.value = normalizeMonetizationStatus(cached.monetizationStatus)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
         }
@@ -415,19 +486,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 _profileState.value = cached
                 myFollowersCount.value = cached.followersCount
                 myFollowingCount.value = cached.followingCount
-                monetizationStatus.value = cached.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+                monetizationStatus.value = normalizeMonetizationStatus(cached.monetizationStatus)
                 loadProfileVisitsFromPrefs()
                 recalculateCreatorStats()
             }
             db.collection("users").document(uid).get().addOnSuccessListener { doc ->
                 if (doc.exists()) {
+                    latestMonetizationUserDoc = doc
                     val profile = doc.toObject(ProfileEntity::class.java)
                     if (profile != null) {
-                        _profileState.value = profile
-                        myFollowersCount.value = profile.followersCount
-                        myFollowingCount.value = profile.followingCount
-                        monetizationStatus.value = profile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
-                        saveProfileToPrefs(profile, uid)
+                        val resolvedProfile = profile.copy(
+                            monetizationStatus = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
+                        )
+                        _profileState.value = resolvedProfile
+                        myFollowersCount.value = resolvedProfile.followersCount
+                        myFollowingCount.value = resolvedProfile.followingCount
+                        monetizationStatus.value = resolvedProfile.monetizationStatus
+                        saveProfileToPrefs(resolvedProfile, uid)
                         loadProfileVisitsFromPrefs()
                         recalculateCreatorStats()
                     }
@@ -495,6 +570,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         prefs.edit().remove("active_user_email").remove("active_user_uid").apply()
         stopListeningToNotifications()
         stopListeningToAccountStatus()
+        stopListeningToMonetizationStatus()
+        sessionLoggedAdViewMediaKeys.clear()
+        AdMobRevenueTracker.clearActiveMediaContext()
+        AdMobRevenueTracker.setFallbackViewerUid(null)
         _accountRestrictionState.value = AccountRestrictionState()
         notifications.value = emptyList()
         unreadNotificationsCount.value = 0
@@ -503,7 +582,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         _profileState.value = ProfileEntity(name = "User", username = "user")
         myFollowersCount.value = 0
         myFollowingCount.value = 0
-        monetizationStatus.value = "NOT_ELIGIBLE"
+        monetizationStatus.value = "Not Eligible"
         profileVisitsCount.value = 0
         recalculateCreatorStats()
         clearAndNavigateTo(Screen.Login)
@@ -670,6 +749,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     else -> "Saving post to Firestore..."
                 }
                 b2UploadProgress.value = 0.96f
+                val inFlightKey = "$targetCollection/$firestoreDocId"
+                inFlightUploadDocKeys[inFlightKey] = System.currentTimeMillis()
 
                 if (isStory) {
                     val newStory = StoryModel(
@@ -791,11 +872,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 val firestorePayload = basePayload + ("createdAt" to FieldValue.serverTimestamp())
-                val firestoreSynced = syncDocumentToFirestoreWithRetry(
-                    collection = targetCollection,
-                    docId = firestoreDocId,
-                    data = firestorePayload
-                )
+                val firestoreSynced = try {
+                    syncDocumentToFirestoreWithRetry(
+                        collection = targetCollection,
+                        docId = firestoreDocId,
+                        data = firestorePayload
+                    )
+                } finally {
+                    // Keep short protection only if write failed (saved in pending_firestore_docs)
+                    inFlightUploadDocKeys.remove(inFlightKey)
+                }
                 if (!firestoreSynced) {
                     savePendingFirestoreDoc(targetCollection, firestoreDocId, basePayload)
                 }
@@ -1150,7 +1236,564 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         return key != null && key in deletedSet
     }
 
+    private fun getPendingDeleteKeys(): Set<String> = synchronized(pendingSyncLock) {
+        val raw = prefs.getString("pending_firestore_deletes", null)
+        if (raw.isNullOrBlank()) emptySet() else try {
+            val arr = JSONArray(raw)
+            buildSet {
+                for (i in 0 until arr.length()) {
+                    val entry = arr.optJSONObject(i) ?: continue
+                    add("${entry.optString("collection")}/${entry.optString("docId")}")
+                }
+            }
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    private fun getPendingUploadDocIds(collection: String): Set<String> {
+        val now = System.currentTimeMillis()
+        val ids = mutableSetOf<String>()
+        inFlightUploadDocKeys.entries.removeIf { now - it.value > 120_000L }
+        val prefix = "$collection/"
+        inFlightUploadDocKeys.keys.forEach { key ->
+            if (key.startsWith(prefix)) {
+                ids.add(key.removePrefix(prefix))
+            }
+        }
+        synchronized(pendingSyncLock) {
+            val raw = prefs.getString("pending_firestore_docs", null)
+            if (!raw.isNullOrBlank()) {
+                try {
+                    val arr = JSONArray(raw)
+                    for (i in 0 until arr.length()) {
+                        val entry = arr.optJSONObject(i) ?: continue
+                        if (entry.optString("collection") == collection) {
+                            val id = entry.optString("docId", "")
+                            if (id.isNotBlank()) ids.add(id)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return ids
+    }
+
+    private fun startListeningToUsers() {
+        if (usersCollectionListener != null) return
+        try {
+            usersCollectionListener = db.collection("users")
+                .limit(100)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Users listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot == null) return@addSnapshotListener
+                    val users = snapshot.documents.mapNotNull { doc ->
+                        val user = doc.toObject(ProfileEntity::class.java)
+                        updateUserMonetizationStatusCache(doc, user)
+                        user
+                    }
+                    if (users.isNotEmpty() || !snapshot.metadata.isFromCache) {
+                        allUsers.value = users
+                    }
+                    val myUid = activeUserUid()
+                    if (!myUid.isNullOrBlank()) {
+                        snapshot.documents.firstOrNull { it.id == myUid }?.let { myDoc ->
+                            latestMonetizationUserDoc = myDoc
+                            myDoc.toObject(ProfileEntity::class.java)?.let { freshProfile ->
+                                val resolvedStatus = resolveMonetizationStatusFromDocs(myDoc, latestMonetizationRequestDocs)
+                                val resolvedProfile = freshProfile.copy(monetizationStatus = resolvedStatus)
+                                _profileState.value = resolvedProfile
+                                myFollowersCount.value = resolvedProfile.followersCount
+                                myFollowingCount.value = resolvedProfile.followingCount
+                                monetizationStatus.value = resolvedStatus
+                                saveProfileToPrefs(resolvedProfile, myUid)
+                            }
+                        }
+                    }
+                }
+        } catch (t: Throwable) {
+            android.util.Log.w("YouSnapViewModel", "Could not attach users listener: ${t.message}")
+        }
+    }
+
+    fun startListeningToFeedAndContent() {
+        startListeningToUsers()
+
+        if (storiesCollectionListener == null) {
+            try {
+                storiesCollectionListener = db.collection("stories")
+                    .limit(200)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Stories listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyStoriesSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach stories listener: ${t.message}")
+            }
+        }
+
+        if (postsCollectionListener == null) {
+            try {
+                postsCollectionListener = db.collection("posts")
+                    .limit(200)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Posts listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyPostsSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache,
+                            hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach posts listener: ${t.message}")
+            }
+        }
+
+        if (reelsCollectionListener == null) {
+            try {
+                reelsCollectionListener = db.collection("reels")
+                    .limit(200)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Reels listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyReelsSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach reels listener: ${t.message}")
+            }
+        }
+
+        if (videosCollectionListener == null) {
+            try {
+                videosCollectionListener = db.collection("videos")
+                    .limit(200)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Videos listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyVideosSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach videos listener: ${t.message}")
+            }
+        }
+    }
+
+    fun stopListeningToFeedAndContent() {
+        storiesCollectionListener?.remove()
+        storiesCollectionListener = null
+        postsCollectionListener?.remove()
+        postsCollectionListener = null
+        reelsCollectionListener?.remove()
+        reelsCollectionListener = null
+        videosCollectionListener?.remove()
+        videosCollectionListener = null
+        usersCollectionListener?.remove()
+        usersCollectionListener = null
+    }
+
+    private fun isDocumentRestricted(doc: DocumentSnapshot): Boolean {
+        if (doc.getBoolean("isBlocked") == true ||
+            doc.getBoolean("isBanned") == true ||
+            doc.getBoolean("isSuspended") == true
+        ) {
+            return true
+        }
+        val status = doc.getString("status")?.trim()?.lowercase().orEmpty()
+        return status == "banned" || status == "suspended" || status == "blocked"
+    }
+
+    private fun applyStoriesSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && allStories.value.isNotEmpty()) {
+            return
+        }
+        val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+        val pendingDeleteKeys = getPendingDeleteKeys()
+        val pendingStoryDocIds = getPendingUploadDocIds("stories")
+        val restrictedDocIds = documents.filter { isDocumentRestricted(it) }.map { it.id }.toSet()
+
+        val remoteStories = documents.mapNotNull { doc ->
+            if ("stories/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
+            if (isDocumentRestricted(doc)) return@mapNotNull null
+            val story = doc.toObject(StoryModel::class.java) ?: return@mapNotNull null
+            val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(story.mediaUrl)
+            if (fixedUrl.isNotBlank() && isUrlOrKeyDeleted(fixedUrl, deletedUrls)) {
+                return@mapNotNull null
+            }
+            val ownerUid = doc.getString("userId")?.takeIf { it.isNotBlank() }
+                ?: doc.getString("creatorUid")?.takeIf { it.isNotBlank() }
+                ?: ""
+            if (ownerUid.isNotBlank()) {
+                storyCreatorUidByDocId[doc.id] = ownerUid
+                if (story.ownerUsername.isNotBlank()) {
+                    storyCreatorUidByOwner[story.ownerUsername.trim().lowercase()] = ownerUid
+                }
+            }
+            normalizeStoryMedia(story.copy(mediaUrl = fixedUrl, firestoreDocId = doc.id))
+        }
+
+        val remoteDocIds = remoteStories.map { it.firestoreDocId }.filter { it.isNotBlank() }.toSet()
+        val remoteOwners = remoteStories.map { it.ownerUsername.lowercase() }.toSet()
+        val protectedPendingStories = allStories.value.filter { local ->
+            val docKey = local.firestoreDocId.ifBlank { local.ownerUsername }
+            docKey in pendingStoryDocIds &&
+                local.firestoreDocId !in restrictedDocIds &&
+                local.firestoreDocId !in remoteDocIds &&
+                local.ownerUsername.lowercase() !in remoteOwners &&
+                (local.mediaUrl.isBlank() || !isUrlOrKeyDeleted(local.mediaUrl, deletedUrls))
+        }.map { normalizeStoryMedia(it) }
+
+        val mergedStories = (remoteStories + protectedPendingStories)
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
+            .sortedByDescending { it.timestamp }
+
+        allStories.value = mergedStories
+        saveStoriesToPrefs()
+
+        val activeViewerStory = currentStoryState.value
+        if (activeViewerStory != null) {
+            val updatedMatch = mergedStories.firstOrNull {
+                it.ownerUsername.equals(activeViewerStory.ownerUsername, ignoreCase = true) ||
+                    (activeViewerStory.firestoreDocId.isNotBlank() && it.firestoreDocId == activeViewerStory.firestoreDocId)
+            }
+            currentStoryState.value = updatedMatch
+        }
+        recalculateCreatorStats()
+    }
+
+    private fun applyPostsSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean,
+        hasPendingWrites: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && personalPhotosState.value.isNotEmpty()) {
+            return
+        }
+        val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+        val pendingDeleteKeys = getPendingDeleteKeys()
+        val pendingPostDocIds = getPendingUploadDocIds("posts")
+        val restrictedDocIds = documents.filter { isDocumentRestricted(it) }.map { it.id }.toSet()
+        val myUid = activeUserUid().orEmpty()
+        val myUsername = _profileState.value.username.trim()
+        val usersList = allUsers.value
+        val existingLikedSnapshot = homePostLikedState.value
+
+        val remoteLikedByKey = mutableMapOf<String, Boolean>()
+        val remoteLikesCountByKey = mutableMapOf<String, Int>()
+
+        val remotePhotos = documents.mapNotNull { doc ->
+            if ("posts/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
+            if (isDocumentRestricted(doc)) return@mapNotNull null
+            val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
+            val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
+            if (fixedUrl.isNotBlank() && isUrlOrKeyDeleted(fixedUrl, deletedUrls)) {
+                return@mapNotNull null
+            }
+            val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
+            val id = doc.getString("id") ?: ts.takeIf { it > 0L }?.toString() ?: doc.id
+            val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: "user"
+            val matchedUser = usersList.firstOrNull { it.username.equals(uname, ignoreCase = true) }
+            val display = doc.getString("name")?.takeIf { it.isNotBlank() }
+                ?: matchedUser?.name?.takeIf { it.isNotBlank() }
+                ?: uname
+            val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
+                ?: matchedUser?.profilePic.orEmpty()
+            val likesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
+            val commentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0)
+            val postKey = "photo_$id"
+            val hasLikedByField = doc.contains("likedBy")
+            val likedByList = (doc.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
+            val isLiked = if (hasLikedByField) {
+                (myUid.isNotBlank() && likedByList.contains(myUid)) ||
+                    (myUsername.isNotBlank() && likedByList.any { it.equals(myUsername, ignoreCase = true) })
+            } else {
+                existingLikedSnapshot[postKey] ?: existingLikedSnapshot[id] ?: false
+            }
+
+            remoteLikesCountByKey[id] = likesCount
+            remoteLikesCountByKey[postKey] = likesCount
+            if (hasLikedByField) {
+                remoteLikedByKey[id] = isLiked
+                remoteLikedByKey[postKey] = isLiked
+            }
+
+            FullScreenPhotoData(
+                id = id,
+                title = doc.getString("caption") ?: doc.getString("title") ?: "",
+                imageUrl = fixedUrl,
+                creatorName = display,
+                creatorUsername = uname,
+                creatorAvatar = avatar,
+                creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: "",
+                initialLikes = likesCount,
+                initialComments = commentsCount,
+                initialIsLiked = isLiked,
+                timeAgo = if (ts > 0L) formatRelativeTime(ts) else "Just now",
+                firestoreDocId = doc.id
+            )
+        }
+
+        val remoteDocIds = remotePhotos.mapNotNull { it.firestoreDocId }.toSet()
+        val remoteIds = remotePhotos.map { it.id }.toSet()
+        val remoteUrls = remotePhotos.map { it.imageUrl }.filter { it.isNotBlank() }.toSet()
+
+        val protectedPendingPhotos = personalPhotosState.value.filter { local ->
+            val docKey = local.firestoreDocId.orEmpty().ifBlank { local.id }
+            (docKey in pendingPostDocIds || local.id in pendingPostDocIds) &&
+                local.firestoreDocId !in restrictedDocIds &&
+                local.firestoreDocId !in remoteDocIds &&
+                local.id !in remoteIds &&
+                (local.imageUrl.isBlank() || local.imageUrl !in remoteUrls) &&
+                (local.imageUrl.isBlank() || !isUrlOrKeyDeleted(local.imageUrl, deletedUrls))
+        }
+
+        val mergedPhotos = (remotePhotos + protectedPendingPhotos)
+            .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
+            .sortedByDescending { it.id.toLongOrNull() ?: 0L }
+
+        personalPhotosState.value = mergedPhotos
+        savePersonalPhotosToPrefs()
+
+        val activeIds = mergedPhotos.flatMap { listOf(it.id, "photo_${it.id}") }.toSet()
+        val nextLikesCount = homePostLikesCount.value.filterKeys { it in activeIds }.toMutableMap()
+        val nextLikedState = homePostLikedState.value.filterKeys { it in activeIds }.toMutableMap()
+        if (!hasPendingWrites) {
+            nextLikesCount.putAll(remoteLikesCountByKey)
+            nextLikedState.putAll(remoteLikedByKey)
+        }
+        homePostLikesCount.value = nextLikesCount
+        homePostLikedState.value = nextLikedState
+        homePostComments.value = homePostComments.value.filterKeys { it in activeIds }
+        homePostBookmarked.value = homePostBookmarked.value.filterKeys { it in activeIds }
+
+        val openedPost = selectedHomePost.value
+        if (openedPost != null) {
+            val stillExists = mergedPhotos.firstOrNull {
+                (!openedPost.firestoreDocId.isNullOrBlank() && it.firestoreDocId == openedPost.firestoreDocId) ||
+                    it.id == openedPost.id ||
+                    (openedPost.imageUrl.isNotBlank() && it.imageUrl == openedPost.imageUrl)
+            }
+            selectedHomePost.value = stillExists
+        }
+
+        recalculateCreatorStats()
+    }
+
+    private fun mapReelOrVideoDocuments(
+        documents: List<DocumentSnapshot>,
+        sourceCollection: String,
+        deletedUrls: Set<String>,
+        pendingDeleteKeys: Set<String>,
+        myUid: String,
+        myUsername: String,
+        usersList: List<ProfileEntity>,
+        followingMap: Map<String, Boolean>,
+        existingThumbByUrl: Map<String, String>,
+        existingUidByUrl: Map<String, String>
+    ): List<ReelEntity> {
+        return documents.mapNotNull { doc ->
+            if ("$sourceCollection/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
+            if (isDocumentRestricted(doc)) return@mapNotNull null
+            val rawUrl = doc.getString("mediaUrl") ?: doc.getString("videoUrl") ?: ""
+            val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
+            if (fixedUrl.isNotBlank() && isUrlOrKeyDeleted(fixedUrl, deletedUrls)) {
+                return@mapNotNull null
+            }
+            val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
+            val reelId = doc.getLong("reelIntId")?.toInt()
+                ?: doc.getString("id")?.toLongOrNull()?.toInt()
+                ?: ts.takeIf { it > 0L }?.toInt()
+                ?: doc.id.hashCode()
+            val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: "user"
+            val matchedUser = usersList.firstOrNull { it.username.equals(uname, ignoreCase = true) }
+            val display = doc.getString("name")?.takeIf { it.isNotBlank() }
+                ?: matchedUser?.name?.takeIf { it.isNotBlank() }
+                ?: uname
+            val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
+                ?: matchedUser?.profilePic.orEmpty()
+            val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
+            val likedByList = (doc.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
+            val isLiked = (myUid.isNotBlank() && likedByList.contains(myUid)) ||
+                (myUsername.isNotBlank() && likedByList.any { it.equals(myUsername, ignoreCase = true) })
+            val isFollowingCreator = followingMap.entries
+                .firstOrNull { it.key.equals(uname, ignoreCase = true) }?.value ?: false
+
+            if (fixedUrl.isNotBlank()) {
+                reelFirestoreDocIdByMediaUrl[fixedUrl] = doc.id
+                reelCollectionByMediaUrl[fixedUrl] = sourceCollection
+            }
+            if (rawUrl.isNotBlank()) {
+                reelFirestoreDocIdByMediaUrl[rawUrl] = doc.id
+                reelCollectionByMediaUrl[rawUrl] = sourceCollection
+            }
+            if (ts > 0L) reelFirestoreDocIdByTimestamp[ts] = doc.id
+            reelFirestoreDocIdById[reelId] = doc.id
+            reelCollectionById[reelId] = sourceCollection
+
+            ReelEntity(
+                id = reelId,
+                creatorName = display,
+                creatorUsername = uname,
+                creatorProfilePic = avatar,
+                creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: existingUidByUrl[fixedUrl] ?: "",
+                mediaUrl = fixedUrl,
+                thumbnailUrl = doc.getString("thumbnailUrl").orEmpty().ifBlank { existingThumbByUrl[fixedUrl] ?: "" },
+                caption = doc.getString("caption") ?: doc.getString("title") ?: "",
+                audioTitle = audioTitle,
+                likesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0),
+                commentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0),
+                viewsCount = (doc.getLong("viewsCount") ?: 0L).toInt().coerceAtLeast(0),
+                isLiked = isLiked,
+                isFollowingCreator = isFollowingCreator,
+                timestamp = ts,
+                bgGradientStart = doc.getString("bgGradientStart") ?: "#161616",
+                bgGradientEnd = doc.getString("bgGradientEnd") ?: "#161616"
+            )
+        }
+    }
+
+    private fun applyReelsSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && cachedRemoteReels.isNotEmpty()) {
+            return
+        }
+        val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+        val pendingDeleteKeys = getPendingDeleteKeys()
+        restrictedReelDocIds = documents.filter { isDocumentRestricted(it) }.map { it.id }.toSet()
+
+        val existingThumbByUrl = _reelsState.value
+            .filter { it.mediaUrl.isNotBlank() && it.thumbnailUrl.isNotBlank() }
+            .associate { it.mediaUrl to it.thumbnailUrl }
+        val existingUidByUrl = _reelsState.value
+            .filter { it.mediaUrl.isNotBlank() && it.creatorUid.isNotBlank() }
+            .associate { it.mediaUrl to it.creatorUid }
+
+        cachedRemoteReels = mapReelOrVideoDocuments(
+            documents = documents,
+            sourceCollection = "reels",
+            deletedUrls = deletedUrls,
+            pendingDeleteKeys = pendingDeleteKeys,
+            myUid = activeUserUid().orEmpty(),
+            myUsername = _profileState.value.username.trim(),
+            usersList = allUsers.value,
+            followingMap = otherUserIsFollowing.value,
+            existingThumbByUrl = existingThumbByUrl,
+            existingUidByUrl = existingUidByUrl
+        )
+        publishMergedReelsAndVideos()
+    }
+
+    private fun applyVideosSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && cachedRemoteVideos.isNotEmpty()) {
+            return
+        }
+        val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+        val pendingDeleteKeys = getPendingDeleteKeys()
+        restrictedVideoDocIds = documents.filter { isDocumentRestricted(it) }.map { it.id }.toSet()
+
+        val existingThumbByUrl = _reelsState.value
+            .filter { it.mediaUrl.isNotBlank() && it.thumbnailUrl.isNotBlank() }
+            .associate { it.mediaUrl to it.thumbnailUrl }
+        val existingUidByUrl = _reelsState.value
+            .filter { it.mediaUrl.isNotBlank() && it.creatorUid.isNotBlank() }
+            .associate { it.mediaUrl to it.creatorUid }
+
+        cachedRemoteVideos = mapReelOrVideoDocuments(
+            documents = documents,
+            sourceCollection = "videos",
+            deletedUrls = deletedUrls,
+            pendingDeleteKeys = pendingDeleteKeys,
+            myUid = activeUserUid().orEmpty(),
+            myUsername = _profileState.value.username.trim(),
+            usersList = allUsers.value,
+            followingMap = otherUserIsFollowing.value,
+            existingThumbByUrl = existingThumbByUrl,
+            existingUidByUrl = existingUidByUrl
+        )
+        publishMergedReelsAndVideos()
+    }
+
+    private fun publishMergedReelsAndVideos() {
+        val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
+        val pendingReelDocIds = getPendingUploadDocIds("reels")
+        val combinedRemote = cachedRemoteReels + cachedRemoteVideos
+        val restrictedIds = restrictedReelDocIds + restrictedVideoDocIds
+
+        val remoteIds = combinedRemote.map { it.id }.toSet()
+        val remoteUrls = combinedRemote.map { it.mediaUrl }.filter { it.isNotBlank() }.toSet()
+        val protectedPendingReels = _reelsState.value.filter { local ->
+            val safeOwner = local.creatorUsername.lowercase().replace(Regex("[^a-z0-9_]"), "").ifEmpty { "user" }.take(32)
+            val candidateDocId = if (local.timestamp > 0L) "reel_${safeOwner}_${local.timestamp}" else ""
+            (candidateDocId in pendingReelDocIds || pendingReelDocIds.any { it.endsWith("_${local.timestamp}") }) &&
+                candidateDocId !in restrictedIds &&
+                local.id !in remoteIds &&
+                (local.mediaUrl.isBlank() || local.mediaUrl !in remoteUrls) &&
+                (local.mediaUrl.isBlank() || !isUrlOrKeyDeleted(local.mediaUrl, deletedUrls))
+        }
+
+        val mergedReels = (combinedRemote + protectedPendingReels)
+            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
+            .sortedByDescending { it.timestamp }
+
+        _reelsState.value = mergedReels
+        saveReelsToPrefs()
+        recalculateCreatorStats()
+
+        val activeIds = mergedReels.map { it.id }.toSet()
+        val activeUrls = mergedReels.map { it.mediaUrl }.filter { it.isNotBlank() }.toSet()
+        watchHistory.value = watchHistory.value.filter { item ->
+            item.id in activeIds || (item.mediaUrl.isNotBlank() && item.mediaUrl in activeUrls)
+        }
+        bookmarkedReelIds.value = bookmarkedReelIds.value.intersect(activeIds)
+        selectedReelForPreview.value = selectedReelForPreview.value?.let { currentPreview ->
+            mergedReels.firstOrNull {
+                it.id == currentPreview.id || (currentPreview.mediaUrl.isNotBlank() && it.mediaUrl == currentPreview.mediaUrl)
+            }
+        }
+
+        if (searchQuery.value.isNotBlank()) {
+            searchResultPosts.value = mergedReels.filter {
+                it.caption.contains(searchQuery.value, ignoreCase = true) ||
+                    it.creatorUsername.contains(searchQuery.value, ignoreCase = true)
+            }
+        }
+    }
+
     fun refreshHomeFeed(showIndicator: Boolean = true, onComplete: () -> Unit = {}) {
+        startListeningToFeedAndContent()
         refreshFeedJob?.cancel()
         val launchedJob = viewModelScope.launch {
             if (showIndicator) {
@@ -1158,349 +1801,49 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
             try {
                 flushPendingFirestoreDocs()
-                val deletedUrls = prefs.getStringSet("deleted_media_urls", emptySet()) ?: emptySet()
-                val pendingDeleteKeys: Set<String> = synchronized(pendingSyncLock) {
-                    val raw = prefs.getString("pending_firestore_deletes", null)
-                    if (raw.isNullOrBlank()) emptySet() else try {
-                        val arr = JSONArray(raw)
-                        buildSet {
-                            for (i in 0 until arr.length()) {
-                                val entry = arr.optJSONObject(i) ?: continue
-                                add("${entry.optString("collection")}/${entry.optString("docId")}")
-                            }
-                        }
-                    } catch (_: Exception) { emptySet() }
-                }
 
-                val storiesSnapshot = withContext(Dispatchers.IO) {
-                    try {
-                        withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("stories").limit(200).get())
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("YouSnapViewModel", "Firestore stories fetch notice: ${e.message}")
-                        null
-                    }
-                }
-
-                val postsSnapshot = withContext(Dispatchers.IO) {
-                    try {
-                        withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("posts").limit(200).get())
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("YouSnapViewModel", "Firestore posts fetch notice: ${e.message}")
-                        null
-                    }
-                }
-
-                val reelsSnapshot = withContext(Dispatchers.IO) {
-                    try {
-                        withTimeoutOrNull(8000L) {
-                            awaitTask(db.collection("reels").limit(200).get())
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("YouSnapViewModel", "Firestore reels fetch notice: ${e.message}")
-                        null
-                    }
-                }
-
-                val supabaseObjects = try {
-                    supabaseRepository.listMediaFiles(limit = 1000)
-                } catch (_: Exception) {
-                    null
-                }
-
-                val activeSupabaseNames = supabaseObjects?.map { it.name }?.toSet().orEmpty()
-                val supabaseOwnerByUrl = supabaseObjects
-                    ?.filter { !it.ownerUsername.isNullOrBlank() }
-                    ?.associate { it.publicUrl to it.ownerUsername!! }
-                    .orEmpty()
-
-                // Collect every Supabase media URL across Firestore + local caches to verify real-time existence
-                val candidateUrls = buildSet {
-                    storiesSnapshot?.documents?.forEach { doc ->
-                        val url = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("mediaUrl") ?: "")
-                        if (url.isNotBlank()) add(url)
-                    }
-                    postsSnapshot?.documents?.forEach { doc ->
-                        val url = com.example.data.CdnConfig.getFullMediaUrl(
-                            doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
-                        )
-                        if (url.isNotBlank()) add(url)
-                    }
-                    reelsSnapshot?.documents?.forEach { doc ->
-                        val url = com.example.data.CdnConfig.getFullMediaUrl(doc.getString("mediaUrl") ?: "")
-                        if (url.isNotBlank()) add(url)
-                    }
-                    allStories.value.forEach { if (it.mediaUrl.isNotBlank()) add(it.mediaUrl) }
-                    personalPhotosState.value.forEach { if (it.imageUrl.isNotBlank()) add(it.imageUrl) }
-                    _reelsState.value.forEach { if (it.mediaUrl.isNotBlank()) add(it.mediaUrl) }
-                }.filter { url ->
-                    val fname = extractSupabaseFilename(url)
-                    fname != null &&
-                        !isUrlOrKeyDeleted(url, deletedUrls) &&
-                        fname !in activeSupabaseNames
-                }
-
-                // Verify directly against uncached Supabase URLs so RLS-restricted `list` returning []
-                // NEVER deletes uploaded media, while files actually deleted in Supabase Storage ARE removed immediately.
-                val existenceByUrl: Map<String, Boolean?> = if (candidateUrls.isEmpty()) {
-                    emptyMap()
-                } else {
+                suspend fun fetchLatest(collection: String): com.google.firebase.firestore.QuerySnapshot? =
                     withContext(Dispatchers.IO) {
-                        withTimeoutOrNull(12000L) {
-                            coroutineScope {
-                                candidateUrls.map { url ->
-                                    async {
-                                        url to supabaseRepository.checkPublicFileExists(url)
-                                    }
-                                }.awaitAll().toMap()
+                        try {
+                            withTimeoutOrNull(8000L) {
+                                awaitTask(
+                                    db.collection(collection)
+                                        .limit(200)
+                                        .get(com.google.firebase.firestore.Source.SERVER)
+                                )
                             }
-                        }.orEmpty()
-                    }
-                }
-
-                fun isMissingFromSupabase(url: String): Boolean {
-                    if (url.isBlank()) return false
-                    val fname = extractSupabaseFilename(url) ?: return false
-                    if (fname in activeSupabaseNames) return false
-                    return existenceByUrl[url] == false
-                }
-
-                // 1. Merge Stories (Firestore + Local/Cached + Public Supabase story_* fallback)
-                val remoteStories = storiesSnapshot?.documents?.mapNotNull { doc ->
-                    if ("stories/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
-                    val story = doc.toObject(StoryModel::class.java) ?: return@mapNotNull null
-                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(story.mediaUrl)
-                    if (fixedUrl.isNotBlank() && isMissingFromSupabase(fixedUrl)) {
-                        try { doc.reference.delete() } catch (_: Exception) {}
-                        return@mapNotNull null
-                    }
-                    story.copy(mediaUrl = fixedUrl, firestoreDocId = doc.id)
-                }?.filter { it.mediaUrl.isBlank() || !isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) }.orEmpty()
-
-                val existingStories = allStories.value.filter {
-                    (it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl)))
-                }
-                val knownStoryUrls = (remoteStories.map { it.mediaUrl } + existingStories.map { it.mediaUrl })
-                    .filter { it.isNotBlank() }.toSet()
-                val knownStoryNames = knownStoryUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
-
-                val fallbackStories = supabaseObjects.orEmpty()
-                    .filter {
-                        it.name.startsWith("story", ignoreCase = true) &&
-                            !isUrlOrKeyDeleted(it.publicUrl, deletedUrls) &&
-                            it.name !in deletedUrls &&
-                            it.publicUrl !in knownStoryUrls &&
-                            it.name !in knownStoryNames
-                    }
-                    .map { obj ->
-                        val lower = obj.name.lowercase()
-                        val isVid = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")
-                        val owner = obj.ownerUsername?.takeIf { it.isNotBlank() } ?: "user_${obj.timestamp % 10000}"
-                        StoryModel(
-                            storyId = obj.timestamp.takeIf { it > 0L }?.toString() ?: obj.name,
-                            ownerUsername = owner,
-                            mediaUrl = obj.publicUrl,
-                            mediaType = if (isVid) "video" else "image",
-                            timestamp = obj.timestamp
-                        )
-                    }
-
-                val mergedStories = (remoteStories + existingStories + fallbackStories)
-                    .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
-                    .sortedByDescending { it.timestamp }
-                allStories.value = mergedStories
-                saveStoriesToPrefs()
-
-                // 2. Merge Photos (Firestore + Local/Cached + Public Supabase image fallback)
-                val remotePhotos = postsSnapshot?.documents?.mapNotNull { doc ->
-                    if ("posts/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
-                    val rawUrl = doc.getString("imageUrl") ?: doc.getString("mediaUrl") ?: ""
-                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
-                    if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
-                        if (isMissingFromSupabase(fixedUrl)) {
-                            try { doc.reference.delete() } catch (_: Exception) {}
+                        } catch (_: Exception) {
+                            try {
+                                withTimeoutOrNull(8000L) {
+                                    awaitTask(db.collection(collection).limit(200).get())
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.w("YouSnapViewModel", "Firestore $collection fetch notice: ${e.message}")
+                                null
+                            }
                         }
-                        return@mapNotNull null
-                    }
-                    val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
-                    val id = doc.getString("id") ?: ts.takeIf { it > 0L }?.toString() ?: doc.id
-                    val ownerFromUrl = supabaseOwnerByUrl[fixedUrl]
-                    val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: ownerFromUrl ?: "user"
-                    val display = doc.getString("name")?.takeIf { it.isNotBlank() } ?: uname
-                    val avatar = doc.getString("creatorAvatar") ?: ""
-                    FullScreenPhotoData(
-                        id = id,
-                        title = doc.getString("caption") ?: doc.getString("title") ?: "",
-                        imageUrl = fixedUrl,
-                        creatorName = display,
-                        creatorUsername = uname,
-                        creatorAvatar = avatar,
-                        creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: "",
-                        initialLikes = (doc.getLong("likesCount") ?: 0).toInt(),
-                        initialComments = (doc.getLong("commentsCount") ?: 0).toInt(),
-                        initialIsLiked = false,
-                        timeAgo = if (ts > 0L) "Recently" else "Just now",
-                        firestoreDocId = doc.id
-                    )
-                }.orEmpty()
-
-                val existingPhotos = personalPhotosState.value
-                    .filter { it.imageUrl.isBlank() || (!isUrlOrKeyDeleted(it.imageUrl, deletedUrls) && !isMissingFromSupabase(it.imageUrl)) }
-                    .map { photo ->
-                        val betterOwner = supabaseOwnerByUrl[photo.imageUrl]
-                        if ((photo.creatorUsername.isBlank() || photo.creatorUsername == "user") && !betterOwner.isNullOrBlank()) {
-                            photo.copy(creatorUsername = betterOwner, creatorName = betterOwner)
-                        } else photo
-                    }
-                val knownPhotoUrls = (remotePhotos.map { it.imageUrl } + existingPhotos.map { it.imageUrl })
-                    .filter { it.isNotBlank() }.toSet()
-                val knownPhotoNames = knownPhotoUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
-
-                val fallbackPhotos = supabaseObjects.orEmpty()
-                    .filter { obj ->
-                        val lower = obj.name.lowercase()
-                        !lower.startsWith("story") &&
-                            (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) &&
-                            !isUrlOrKeyDeleted(obj.publicUrl, deletedUrls) &&
-                            obj.name !in deletedUrls &&
-                            obj.publicUrl !in knownPhotoUrls &&
-                            obj.name !in knownPhotoNames
-                    }
-                    .map { obj ->
-                        val owner = obj.ownerUsername?.takeIf { it.isNotBlank() } ?: "user"
-                        FullScreenPhotoData(
-                            id = obj.timestamp.takeIf { it > 0L }?.toString() ?: obj.name,
-                            title = "",
-                            imageUrl = obj.publicUrl,
-                            creatorName = if (owner == "user") "YouSnap User" else owner,
-                            creatorUsername = owner,
-                            creatorAvatar = "",
-                            creatorUid = "",
-                            initialLikes = 0,
-                            initialComments = 0,
-                            initialIsLiked = false,
-                            timeAgo = "Recently",
-                            firestoreDocId = null
-                        )
                     }
 
-                val mergedPhotos = (remotePhotos + existingPhotos + fallbackPhotos)
-                    .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
-                    .sortedByDescending { it.id.toLongOrNull() ?: 0L }
-                personalPhotosState.value = mergedPhotos
-                savePersonalPhotosToPrefs()
+                val storiesSnapshot = fetchLatest("stories")
+                val postsSnapshot = fetchLatest("posts")
+                val reelsSnapshot = fetchLatest("reels")
+                val videosSnapshot = fetchLatest("videos")
 
-                // 3. Merge Reels (Firestore + Local/Cached + Public Supabase video fallback)
-                val existingReels = _reelsState.value
-                    .filter { it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl)) }
-                    .map { reel ->
-                        val betterOwner = supabaseOwnerByUrl[reel.mediaUrl]
-                        if ((reel.creatorUsername.isBlank() || reel.creatorUsername == "user") && !betterOwner.isNullOrBlank()) {
-                            reel.copy(creatorUsername = betterOwner, creatorName = betterOwner)
-                        } else reel
-                    }
-                val existingThumbByUrl = existingReels
-                    .filter { it.mediaUrl.isNotBlank() && it.thumbnailUrl.isNotBlank() }
-                    .associate { it.mediaUrl to it.thumbnailUrl }
-                val existingUidByUrl = existingReels
-                    .filter { it.mediaUrl.isNotBlank() && it.creatorUid.isNotBlank() }
-                    .associate { it.mediaUrl to it.creatorUid }
-
-                val remoteReels = reelsSnapshot?.documents?.mapNotNull { doc ->
-                    if ("reels/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
-                    val rawUrl = doc.getString("mediaUrl") ?: ""
-                    val fixedUrl = com.example.data.CdnConfig.getFullMediaUrl(rawUrl)
-                    if (fixedUrl.isNotBlank() && (isUrlOrKeyDeleted(fixedUrl, deletedUrls) || isMissingFromSupabase(fixedUrl))) {
-                        if (isMissingFromSupabase(fixedUrl)) {
-                            try { doc.reference.delete() } catch (_: Exception) {}
-                        }
-                        return@mapNotNull null
-                    }
-                    val ts = doc.getLong("timestamp") ?: doc.getString("id")?.toLongOrNull() ?: 0L
-                    val reelId = doc.getLong("reelIntId")?.toInt()
-                        ?: doc.getString("id")?.toLongOrNull()?.toInt()
-                        ?: ts.takeIf { it > 0L }?.toInt()
-                        ?: fixedUrl.hashCode()
-                    val ownerFromUrl = supabaseOwnerByUrl[fixedUrl]
-                    val uname = doc.getString("username")?.takeIf { it.isNotBlank() && it != "user" } ?: ownerFromUrl ?: "user"
-                    val display = doc.getString("name")?.takeIf { it.isNotBlank() } ?: uname
-                    val avatar = doc.getString("creatorAvatar") ?: ""
-                    val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
-                    if (fixedUrl.isNotBlank()) reelFirestoreDocIdByMediaUrl[fixedUrl] = doc.id
-                    if (rawUrl.isNotBlank()) reelFirestoreDocIdByMediaUrl[rawUrl] = doc.id
-                    if (ts > 0L) reelFirestoreDocIdByTimestamp[ts] = doc.id
-                    reelFirestoreDocIdById[reelId] = doc.id
-                    ReelEntity(
-                        id = reelId,
-                        creatorName = display,
-                        creatorUsername = uname,
-                        creatorProfilePic = avatar,
-                        creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: existingUidByUrl[fixedUrl] ?: "",
-                        mediaUrl = fixedUrl,
-                        thumbnailUrl = doc.getString("thumbnailUrl").orEmpty().ifBlank { existingThumbByUrl[fixedUrl] ?: "" },
-                        caption = doc.getString("caption") ?: "",
-                        audioTitle = audioTitle,
-                        likesCount = (doc.getLong("likesCount") ?: 0).toInt(),
-                        commentsCount = (doc.getLong("commentsCount") ?: 0).toInt(),
-                        viewsCount = (doc.getLong("viewsCount") ?: 0).toInt(),
-                        timestamp = ts,
-                        bgGradientStart = doc.getString("bgGradientStart") ?: "#161616",
-                        bgGradientEnd = doc.getString("bgGradientEnd") ?: "#161616"
-                    )
-                }.orEmpty()
-
-                val knownReelUrls = (remoteReels.map { it.mediaUrl } + existingReels.map { it.mediaUrl })
-                    .filter { it.isNotBlank() }.toSet()
-                val knownReelNames = knownReelUrls.mapNotNull { extractSupabaseFilename(it) }.toSet()
-
-                val fallbackReels = supabaseObjects.orEmpty()
-                    .filter { obj ->
-                        val lower = obj.name.lowercase()
-                        !lower.startsWith("story") &&
-                            (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".webm")) &&
-                            !isUrlOrKeyDeleted(obj.publicUrl, deletedUrls) &&
-                            obj.name !in deletedUrls &&
-                            obj.publicUrl !in knownReelUrls &&
-                            obj.name !in knownReelNames
-                    }
-                    .map { obj ->
-                        val owner = obj.ownerUsername?.takeIf { it.isNotBlank() } ?: "user"
-                        ReelEntity(
-                            id = obj.timestamp.takeIf { it > 0L }?.toInt() ?: obj.publicUrl.hashCode(),
-                            creatorName = if (owner == "user") "YouSnap User" else owner,
-                            creatorUsername = owner,
-                            creatorProfilePic = "",
-                            creatorUid = existingUidByUrl[obj.publicUrl] ?: "",
-                            mediaUrl = obj.publicUrl,
-                            thumbnailUrl = existingThumbByUrl[obj.publicUrl] ?: "",
-                            caption = "",
-                            likesCount = 0,
-                            commentsCount = 0,
-                            viewsCount = 0,
-                            timestamp = obj.timestamp,
-                            bgGradientStart = "#161616",
-                            bgGradientEnd = "#161616"
-                        )
-                    }
-
-                val mergedReels = (remoteReels + existingReels + fallbackReels)
-                    .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
-                    .sortedByDescending { it.timestamp }
-                _reelsState.value = mergedReels
-                saveReelsToPrefs()
-                recalculateCreatorStats()
-
-                watchHistory.value = watchHistory.value.filter {
-                    it.mediaUrl.isBlank() || (!isUrlOrKeyDeleted(it.mediaUrl, deletedUrls) && !isMissingFromSupabase(it.mediaUrl))
+                if (storiesSnapshot != null) {
+                    applyStoriesSnapshot(storiesSnapshot.documents, storiesSnapshot.metadata.isFromCache)
                 }
-                if (searchQuery.value.isNotBlank()) {
-                    searchResultPosts.value = mergedReels.filter {
-                        it.caption.contains(searchQuery.value, ignoreCase = true) ||
-                            it.creatorUsername.contains(searchQuery.value, ignoreCase = true)
-                    }
+                if (postsSnapshot != null) {
+                    applyPostsSnapshot(
+                        postsSnapshot.documents,
+                        postsSnapshot.metadata.isFromCache,
+                        postsSnapshot.metadata.hasPendingWrites()
+                    )
+                }
+                if (reelsSnapshot != null) {
+                    applyReelsSnapshot(reelsSnapshot.documents, reelsSnapshot.metadata.isFromCache)
+                }
+                if (videosSnapshot != null) {
+                    applyVideosSnapshot(videosSnapshot.documents, videosSnapshot.metadata.isFromCache)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1937,11 +2280,17 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "likes" to emptyList<String>()
         )
         viewModelScope.launch {
-            val synced = syncDocumentToFirestoreWithRetry(
-                collection = "stories",
-                docId = ownerUsername,
-                data = baseStoryDoc + ("createdAt" to FieldValue.serverTimestamp())
-            )
+            val inFlightKey = "stories/$ownerUsername"
+            inFlightUploadDocKeys[inFlightKey] = System.currentTimeMillis()
+            val synced = try {
+                syncDocumentToFirestoreWithRetry(
+                    collection = "stories",
+                    docId = ownerUsername,
+                    data = baseStoryDoc + ("createdAt" to FieldValue.serverTimestamp())
+                )
+            } finally {
+                inFlightUploadDocKeys.remove(inFlightKey)
+            }
             if (!synced) {
                 savePendingFirestoreDoc("stories", ownerUsername, baseStoryDoc)
             }
@@ -1952,16 +2301,161 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun reportPost(postId: String, username: String, reason: String, details: String) {
-        val report = mapOf(
-            "postId" to postId,
-            "reportedUsername" to username,
-            "reason" to reason,
-            "details" to details,
-            "reporterUid" to (auth.currentUser?.uid ?: ""),
-            "timestamp" to System.currentTimeMillis()
+    private fun resolveUserUid(username: String, knownUid: String = ""): String {
+        if (knownUid.isNotBlank()) return knownUid.trim()
+        val key = username.trim().lowercase()
+        if (key.isBlank()) return ""
+        userUidByUsername[key]?.takeIf { it.isNotBlank() }?.let { return it }
+        personalPhotosState.value
+            .firstOrNull { it.creatorUsername.equals(username, ignoreCase = true) && it.creatorUid.isNotBlank() }
+            ?.creatorUid?.let { return it }
+        _reelsState.value
+            .firstOrNull { it.creatorUsername.equals(username, ignoreCase = true) && it.creatorUid.isNotBlank() }
+            ?.creatorUid?.let { return it }
+        storyCreatorUidByOwner[key]?.takeIf { it.isNotBlank() }?.let { return it }
+        return ""
+    }
+
+    private fun formatReportReason(reason: String, details: String): String {
+        val cleanReason = reason.trim()
+        val cleanDetails = details.trim()
+        return when {
+            cleanReason.equals("Other", ignoreCase = true) && cleanDetails.isNotBlank() -> cleanDetails
+            cleanDetails.isNotBlank() && cleanReason.isNotBlank() -> "$cleanReason: $cleanDetails"
+            cleanDetails.isNotBlank() -> cleanDetails
+            else -> cleanReason.ifBlank { "Inappropriate Content" }
+        }
+    }
+
+    private fun submitViolationReport(
+        reportedCollection: String,
+        reportedMediaId: String = "",
+        reportedUsername: String = "",
+        knownReportedUserId: String = "",
+        reason: String,
+        details: String = ""
+    ) {
+        val reporterUid = (auth.currentUser?.uid ?: activeUserUid()).orEmpty().trim()
+        val finalReason = formatReportReason(reason, details)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var resolvedReportedUid = resolveUserUid(reportedUsername, knownReportedUserId)
+            if (resolvedReportedUid.isBlank() && reportedUsername.isNotBlank()) {
+                try {
+                    val snap = awaitTask(
+                        db.collection("users")
+                            .whereEqualTo("username", reportedUsername.trim())
+                            .limit(1)
+                            .get()
+                    )
+                    resolvedReportedUid = snap.documents.firstOrNull()?.id.orEmpty()
+                } catch (_: Exception) {}
+            }
+            if (resolvedReportedUid.isBlank() && reportedMediaId.isNotBlank() &&
+                reportedCollection in listOf("posts", "reels", "stories", "videos")
+            ) {
+                try {
+                    val mediaDoc = awaitTask(db.collection(reportedCollection).document(reportedMediaId).get())
+                    resolvedReportedUid = mediaDoc.getString("userId")
+                        ?: mediaDoc.getString("creatorUid")
+                        ?: ""
+                } catch (_: Exception) {}
+            }
+
+            val ticketData = hashMapOf<String, Any>(
+                "category" to "Reports & Violations",
+                "reporterUserId" to reporterUid,
+                "reportedUserId" to resolvedReportedUid,
+                "reportedMediaId" to reportedMediaId,
+                "reportedCollection" to reportedCollection,
+                "reason" to finalReason,
+                "status" to "Pending",
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+            if (reportedUsername.isNotBlank()) {
+                ticketData["reportedUsername"] = reportedUsername.trim()
+            }
+            if (details.trim().isNotBlank()) {
+                ticketData["details"] = details.trim()
+            }
+
+            try {
+                awaitTask(db.collection("support_tickets").add(ticketData))
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        app,
+                        "Report submitted. Thank you!",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "Error submitting violation report: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        app,
+                        "Could not submit report. Please try again.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun reportAccount(
+        username: String,
+        reason: String,
+        details: String,
+        knownUid: String = ""
+    ) {
+        submitViolationReport(
+            reportedCollection = "users",
+            reportedMediaId = "",
+            reportedUsername = username,
+            knownReportedUserId = knownUid,
+            reason = reason,
+            details = details
         )
-        db.collection("reports").add(report)
+    }
+
+    fun reportPost(
+        postId: String,
+        username: String,
+        reason: String,
+        details: String,
+        creatorUid: String = "",
+        firestoreDocId: String = ""
+    ) {
+        if (postId.startsWith("profile_")) {
+            reportAccount(
+                username = username.ifBlank { postId.removePrefix("profile_") },
+                reason = reason,
+                details = details,
+                knownUid = creatorUid
+            )
+            return
+        }
+        val cleanId = postId.removePrefix("photo_")
+        val matchedPhoto = personalPhotosState.value.firstOrNull {
+            (firestoreDocId.isNotBlank() && it.firestoreDocId == firestoreDocId) ||
+                it.firestoreDocId == postId ||
+                it.firestoreDocId == cleanId ||
+                it.id == postId ||
+                it.id == cleanId
+        }
+        val resolvedDocId = firestoreDocId.takeIf { it.isNotBlank() }
+            ?: matchedPhoto?.firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: cleanId
+        val resolvedUid = creatorUid.ifBlank { matchedPhoto?.creatorUid.orEmpty() }
+        val resolvedUsername = username.ifBlank { matchedPhoto?.creatorUsername.orEmpty() }
+
+        submitViolationReport(
+            reportedCollection = "posts",
+            reportedMediaId = resolvedDocId,
+            reportedUsername = resolvedUsername,
+            knownReportedUserId = resolvedUid,
+            reason = reason,
+            details = details
+        )
     }
 
     fun toggleLikeReel(reel: ReelEntity) {
@@ -2211,16 +2705,25 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
         storyListenerRegistration = db.collection("stories").document(username)
             .addSnapshotListener { snapshot, _ ->
-                if (snapshot != null && snapshot.exists()) {
+                if (snapshot == null) return@addSnapshotListener
+                if (snapshot.exists() && !isDocumentRestricted(snapshot)) {
                     val rawStory = snapshot.toObject(StoryModel::class.java)
                     if (rawStory != null) {
-                        val normalized = normalizeStoryMedia(rawStory)
+                        val ownerUid = snapshot.getString("userId")?.takeIf { it.isNotBlank() }
+                            ?: snapshot.getString("creatorUid")?.takeIf { it.isNotBlank() }
+                            ?: ""
+                        if (ownerUid.isNotBlank()) {
+                            storyCreatorUidByDocId[snapshot.id] = ownerUid
+                            storyCreatorUidByOwner[username.trim().lowercase()] = ownerUid
+                        }
+                        val normalized = normalizeStoryMedia(rawStory.copy(firestoreDocId = snapshot.id))
                         val latestLocal = allStories.value
                             .firstOrNull { it.ownerUsername.equals(username, ignoreCase = true) }
                             ?.let { normalizeStoryMedia(it) }
                         val resolved = if (latestLocal != null &&
                             latestLocal.timestamp > normalized.timestamp &&
-                            latestLocal.mediaUrl.isNotBlank()
+                            latestLocal.mediaUrl.isNotBlank() &&
+                            (username in getPendingUploadDocIds("stories"))
                         ) {
                             latestLocal.copy(
                                 viewsCount = maxOf(latestLocal.viewsCount, normalized.viewsCount),
@@ -2237,6 +2740,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         saveStoriesToPrefs()
                         recalculateCreatorStats()
                     }
+                } else if (isDocumentRestricted(snapshot) || (!snapshot.metadata.isFromCache && username !in getPendingUploadDocIds("stories"))) {
+                    currentStoryState.value = null
+                    allStories.value = allStories.value.filterNot {
+                        it.ownerUsername.equals(username, ignoreCase = true)
+                    }
+                    saveStoriesToPrefs()
+                    recalculateCreatorStats()
                 }
             }
     }
@@ -2425,18 +2935,175 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearWatchHistory() { watchHistory.value = emptyList() }
     fun addToWatchHistory(reel: ReelEntity) { watchHistory.value = (listOf(reel) + watchHistory.value.filter { it.id != reel.id }).take(20) }
+    fun setAdCreatorContextForPhoto(photo: FullScreenPhotoData?) {
+        if (photo == null) {
+            AdMobRevenueTracker.clearActiveMediaContext()
+            return
+        }
+        val mediaId = photo.firestoreDocId?.takeIf { it.isNotBlank() } ?: photo.id.removePrefix("photo_")
+        val creatorId = resolveUserUid(photo.creatorUsername, photo.creatorUid)
+        AdMobRevenueTracker.setActiveMediaContext(creatorId, mediaId)
+    }
+
+    fun setAdCreatorContextForStory(username: String?, story: StoryModel?) {
+        if (username.isNullOrBlank() && story == null) {
+            AdMobRevenueTracker.clearActiveMediaContext()
+            return
+        }
+        val docId = story?.firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: story?.storyId?.takeIf { it.isNotBlank() }
+            ?: username.orEmpty()
+        val knownUid = storyCreatorUidByDocId[docId]
+            ?: username?.let { storyCreatorUidByOwner[it.trim().lowercase()] }
+            ?: ""
+        val creatorId = resolveUserUid(username.orEmpty(), knownUid)
+        AdMobRevenueTracker.setActiveMediaContext(creatorId, docId)
+    }
+
+    fun clearAdCreatorContext() {
+        AdMobRevenueTracker.clearActiveMediaContext()
+    }
+
+    private fun logMonetizedMediaViewOnce(
+        mediaCollection: String,
+        mediaId: String,
+        creatorUsername: String,
+        knownCreatorUid: String
+    ) {
+        val cleanMediaId = mediaId.trim()
+        if (cleanMediaId.isBlank()) return
+        val viewerUid = (auth.currentUser?.uid ?: activeUserUid()).orEmpty().trim()
+        if (viewerUid.isBlank()) return
+        AdMobRevenueTracker.setFallbackViewerUid(viewerUid)
+
+        val sessionKey = "${mediaCollection.trim().lowercase()}:$cleanMediaId"
+        if (!sessionLoggedAdViewMediaKeys.add(sessionKey)) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var resolvedCreatorId = resolveUserUid(creatorUsername, knownCreatorUid)
+                if (resolvedCreatorId.isBlank() && creatorUsername.isNotBlank()) {
+                    try {
+                        val userSnap = awaitTask(
+                            db.collection("users")
+                                .whereEqualTo("username", creatorUsername.trim())
+                                .limit(1)
+                                .get()
+                        )
+                        userSnap.documents.firstOrNull()?.let { doc ->
+                            updateUserMonetizationStatusCache(doc, doc.toObject(ProfileEntity::class.java))
+                            resolvedCreatorId = doc.id
+                        }
+                    } catch (_: Exception) {}
+                }
+                if (resolvedCreatorId.isBlank() && mediaCollection in listOf("posts", "reels", "stories", "videos")) {
+                    try {
+                        val mediaDoc = awaitTask(db.collection(mediaCollection).document(cleanMediaId).get())
+                        resolvedCreatorId = mediaDoc.getString("userId")
+                            ?: mediaDoc.getString("creatorUid")
+                            ?: ""
+                    } catch (_: Exception) {}
+                }
+
+                // Only log if creator exists and viewer is NOT the creator
+                if (resolvedCreatorId.isBlank() || resolvedCreatorId == viewerUid) {
+                    return@launch
+                }
+
+                val isCreatorApproved = when {
+                    resolvedCreatorId in monetizedUserIds -> true
+                    resolvedCreatorId in nonMonetizedUserIds -> false
+                    else -> {
+                        val creatorDoc = awaitTask(db.collection("users").document(resolvedCreatorId).get())
+                        val approved = creatorDoc.exists() && (
+                            creatorDoc.getBoolean("isMonetized") == true ||
+                                creatorDoc.getString("monetizationStatus")?.trim().equals("Approved", ignoreCase = true)
+                            )
+                        updateUserMonetizationStatusCache(creatorDoc, creatorDoc.toObject(ProfileEntity::class.java))
+                        approved
+                    }
+                }
+
+                if (!isCreatorApproved) {
+                    return@launch
+                }
+
+                val viewEvent = hashMapOf<String, Any>(
+                    "eventType" to "view",
+                    "creatorId" to resolvedCreatorId,
+                    "mediaId" to cleanMediaId,
+                    "viewerId" to viewerUid,
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+                awaitTask(db.collection("ad_events").add(viewEvent))
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Silent ad_events view log notice: ${e.message}")
+            }
+        }
+    }
+
+    fun logPhotoAdViewOnce(photo: FullScreenPhotoData) {
+        val docId = photo.firestoreDocId?.takeIf { it.isNotBlank() } ?: photo.id.removePrefix("photo_")
+        logMonetizedMediaViewOnce(
+            mediaCollection = "posts",
+            mediaId = docId,
+            creatorUsername = photo.creatorUsername,
+            knownCreatorUid = photo.creatorUid
+        )
+    }
+
+    fun logReelAdViewOnce(reel: ReelEntity) {
+        val docId = reelFirestoreDocIdByMediaUrl[reel.mediaUrl]
+            ?: reelFirestoreDocIdByTimestamp[reel.timestamp]
+            ?: reelFirestoreDocIdById[reel.id]
+            ?: reel.id.toString()
+        val col = reelCollectionByMediaUrl[reel.mediaUrl]
+            ?: reelCollectionById[reel.id]
+            ?: "reels"
+        logMonetizedMediaViewOnce(
+            mediaCollection = col,
+            mediaId = docId,
+            creatorUsername = reel.creatorUsername,
+            knownCreatorUid = reel.creatorUid
+        )
+    }
+
+    fun logStoryAdViewOnce(username: String, explicitStory: StoryModel? = null) {
+        val matchedStory = explicitStory ?: allStories.value.firstOrNull {
+            it.ownerUsername.equals(username, ignoreCase = true)
+        }
+        val docId = matchedStory?.firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: matchedStory?.storyId?.takeIf { it.isNotBlank() }
+            ?: username
+        val knownUid = storyCreatorUidByDocId[docId]
+            ?: storyCreatorUidByOwner[username.trim().lowercase()]
+            ?: ""
+        logMonetizedMediaViewOnce(
+            mediaCollection = "stories",
+            mediaId = docId,
+            creatorUsername = username,
+            knownCreatorUid = knownUid
+        )
+    }
+
     fun recordReelViewOnce(id: Int) {
         val matchedReel = _reelsState.value.find { it.id == id }
+        matchedReel?.let { logReelAdViewOnce(it) }
         _reelsState.value = _reelsState.value.map { reel ->
             if (reel.id == id) reel.copy(viewsCount = reel.viewsCount + 1) else reel
         }
         saveReelsToPrefs()
         recalculateCreatorStats()
 
+        val targetCollection = (matchedReel?.let { reelCollectionByMediaUrl[it.mediaUrl] }
+            ?: reelCollectionById[id])
+            ?.takeIf { it == "reels" || it == "videos" }
+            ?: "reels"
+
         val query = if (matchedReel != null && matchedReel.mediaUrl.isNotBlank()) {
-            db.collection("reels").whereEqualTo("mediaUrl", matchedReel.mediaUrl)
+            db.collection(targetCollection).whereEqualTo("mediaUrl", matchedReel.mediaUrl)
         } else {
-            db.collection("reels").whereEqualTo("reelIntId", id)
+            db.collection(targetCollection).whereEqualTo("reelIntId", id)
         }
         query.get().addOnSuccessListener { snapshot ->
             if (!snapshot.isEmpty) {
@@ -2444,7 +3111,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     doc.reference.update("viewsCount", FieldValue.increment(1))
                 }
             } else {
-                db.collection("reels").whereEqualTo("id", id.toString()).get().addOnSuccessListener { fallback ->
+                db.collection(targetCollection).whereEqualTo("id", id.toString()).get().addOnSuccessListener { fallback ->
                     for (doc in fallback.documents) {
                         doc.reference.update("viewsCount", FieldValue.increment(1))
                     }
@@ -2469,13 +3136,25 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun reportReel(reelId: Int, reason: String, details: String) {
-        db.collection("reel_reports").add(mapOf(
-            "reelId" to reelId.toString(),
-            "reason" to reason,
-            "details" to details,
-            "reporterUid" to (auth.currentUser?.uid ?: ""),
-            "timestamp" to System.currentTimeMillis()
-        ))
+        val matchedReel = _reelsState.value.find { it.id == reelId }
+            ?: selectedReelForPreview.value?.takeIf { it.id == reelId }
+        val resolvedDocId = (matchedReel?.let {
+            reelFirestoreDocIdByMediaUrl[it.mediaUrl]
+                ?: reelFirestoreDocIdByTimestamp[it.timestamp]
+        } ?: reelFirestoreDocIdById[reelId]).orEmpty().ifBlank { reelId.toString() }
+        val resolvedCollection = (matchedReel?.let { reelCollectionByMediaUrl[it.mediaUrl] }
+            ?: reelCollectionById[reelId])
+            ?.takeIf { it == "reels" || it == "videos" }
+            ?: "reels"
+
+        submitViolationReport(
+            reportedCollection = resolvedCollection,
+            reportedMediaId = resolvedDocId,
+            reportedUsername = matchedReel?.creatorUsername.orEmpty(),
+            knownReportedUserId = matchedReel?.creatorUid.orEmpty(),
+            reason = reason,
+            details = details
+        )
     }
 
     fun resetPassword(email: String, pass: String): Boolean {
@@ -2795,6 +3474,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun recordStoryView(username: String) {
+        logStoryAdViewOnce(username)
         val myUser = profileState.value.username
         allStories.value = allStories.value.map { story ->
             if (story.ownerUsername.equals(username, ignoreCase = true)) {
@@ -2827,17 +3507,201 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun reportStory(storyOwner: String, reason: String, details: String) {
-        db.collection("story_reports").add(mapOf(
-            "storyOwner" to storyOwner,
-            "reason" to reason,
-            "details" to details,
-            "reporterUid" to (auth.currentUser?.uid ?: ""),
-            "timestamp" to System.currentTimeMillis()
-        ))
+    fun reportStory(storyOwner: String, reason: String, details: String, storyDocId: String = "") {
+        val matchedStory = allStories.value.firstOrNull {
+            (storyDocId.isNotBlank() && it.firestoreDocId == storyDocId) ||
+                it.ownerUsername.equals(storyOwner, ignoreCase = true)
+        }
+        val resolvedDocId = storyDocId.ifBlank { matchedStory?.firestoreDocId.orEmpty() }
+            .ifBlank { storyOwner }
+        val knownUid = storyCreatorUidByDocId[resolvedDocId]
+            ?: storyCreatorUidByOwner[storyOwner.trim().lowercase()]
+            ?: ""
+
+        submitViolationReport(
+            reportedCollection = "stories",
+            reportedMediaId = resolvedDocId,
+            reportedUsername = storyOwner,
+            knownReportedUserId = knownUid,
+            reason = reason,
+            details = details
+        )
     }
 
     fun triggerStoryLikeNotification(username: String) {}
+
+    private fun extractMonetizationDocTimestampMs(doc: DocumentSnapshot): Long {
+        val created = doc.getTimestamp("createdAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val updated = doc.getTimestamp("updatedAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val submitted = doc.getLong("submittedAt") ?: 0L
+        val ts = doc.getLong("timestamp") ?: 0L
+        return maxOf(created, updated, submitted, ts)
+    }
+
+    private fun resolveMonetizationStatusFromDocs(
+        userDoc: DocumentSnapshot?,
+        requestDocs: List<DocumentSnapshot>
+    ): String {
+        val userStatusRaw = userDoc?.getString("monetizationStatus")
+        val userStatus = if (userStatusRaw != null) {
+            normalizeMonetizationStatus(userStatusRaw)
+        } else {
+            normalizeMonetizationStatus(_profileState.value.monetizationStatus)
+        }
+        val userIsMonetized = userDoc?.getBoolean("isMonetized") == true
+        val userRejectedFlag = userDoc?.getBoolean("monetizationRejected") == true
+        val userSubmittedAtMs = userDoc?.getLong("monetizationSubmittedAt") ?: 0L
+
+        val latestReqDoc = requestDocs.maxByOrNull { extractMonetizationDocTimestampMs(it) }
+        val reqStatus = latestReqDoc?.getString("status")?.takeIf { it.isNotBlank() }?.let {
+            normalizeMonetizationStatus(it)
+        }
+        val reqTimestampMs = latestReqDoc?.let { extractMonetizationDocTimestampMs(it) } ?: 0L
+
+        // If user just re-applied at T2 > old doc timestamp T1 while the new request doc is still arriving,
+        // avoid letting the stale older request doc briefly override the fresh "Pending" re-application.
+        val isStaleRequestBeforeReapply = latestReqDoc != null &&
+            userStatus == "Pending" &&
+            !userRejectedFlag &&
+            !userIsMonetized &&
+            userSubmittedAtMs > 0L &&
+            reqTimestampMs > 0L &&
+            userSubmittedAtMs > reqTimestampMs
+
+        return when {
+            userIsMonetized || userStatus == "Approved" -> "Approved"
+            !isStaleRequestBeforeReapply && reqStatus == "Approved" && userStatus != "Rejected" && !userRejectedFlag -> "Approved"
+            userRejectedFlag || userStatus == "Rejected" -> "Rejected"
+            !isStaleRequestBeforeReapply && reqStatus == "Rejected" -> "Rejected"
+            userStatus == "Pending" || reqStatus == "Pending" -> "Pending"
+            else -> userStatus
+        }
+    }
+
+    private fun publishResolvedMonetizationState(uid: String) {
+        val userDoc = latestMonetizationUserDoc
+        val resolvedStatus = resolveMonetizationStatusFromDocs(userDoc, latestMonetizationRequestDocs)
+        monetizationStatus.value = resolvedStatus
+
+        val updatedFollowers = if (userDoc != null && userDoc.exists()) {
+            (userDoc.getLong("followersCount") ?: _profileState.value.followersCount.toLong()).toInt()
+        } else {
+            _profileState.value.followersCount
+        }
+        val updatedFollowing = if (userDoc != null && userDoc.exists()) {
+            (userDoc.getLong("followingCount") ?: _profileState.value.followingCount.toLong()).toInt()
+        } else {
+            _profileState.value.followingCount
+        }
+        val updatedProfile = _profileState.value.copy(
+            followersCount = updatedFollowers,
+            followingCount = updatedFollowing,
+            monetizationStatus = resolvedStatus
+        )
+        _profileState.value = updatedProfile
+        myFollowersCount.value = updatedFollowers
+        myFollowingCount.value = updatedFollowing
+        saveProfileToPrefs(updatedProfile, uid)
+    }
+
+    fun stopListeningToMonetizationStatus() {
+        monetizationStatusListener?.remove()
+        monetizationStatusListener = null
+        monetizationRequestsListener?.remove()
+        monetizationRequestsListener = null
+        listenedMonetizationUid = null
+        latestMonetizationUserDoc = null
+        latestMonetizationRequestDocs = emptyList()
+    }
+
+    fun startListeningToMonetizationStatus() {
+        val uid = (auth.currentUser?.uid ?: activeUserUid())?.trim().orEmpty()
+        if (uid.isBlank()) return
+        if (listenedMonetizationUid == uid &&
+            monetizationStatusListener != null &&
+            monetizationRequestsListener != null
+        ) return
+
+        stopListeningToMonetizationStatus()
+        listenedMonetizationUid = uid
+        try {
+            monetizationStatusListener = db.collection("users")
+                .document(uid)
+                .addSnapshotListener { doc, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Monetization user listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (doc != null && doc.exists()) {
+                        latestMonetizationUserDoc = doc
+                        publishResolvedMonetizationState(uid)
+                    }
+                }
+
+            monetizationRequestsListener = db.collection("monetization_requests")
+                .whereEqualTo("userId", uid)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.w("YouSnapViewModel", "Monetization requests listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        latestMonetizationRequestDocs = snapshot.documents
+                        publishResolvedMonetizationState(uid)
+                    }
+                }
+        } catch (t: Throwable) {
+            android.util.Log.w("YouSnapViewModel", "Could not attach monetization listeners: ${t.message}")
+        }
+    }
+
+    fun syncUnappliedMonetizationStatus(isRealEligible: Boolean) {
+        val uid = (auth.currentUser?.uid ?: activeUserUid())?.trim().orEmpty()
+        if (uid.isBlank()) return
+        val currentNormalized = normalizeMonetizationStatus(monetizationStatus.value)
+        if (currentNormalized == "Pending" || currentNormalized == "Approved" || currentNormalized == "Rejected") {
+            return
+        }
+        val cachedDoc = latestMonetizationUserDoc
+        if (cachedDoc != null && (cachedDoc.getBoolean("isMonetized") == true || cachedDoc.getBoolean("monetizationRejected") == true)) {
+            publishResolvedMonetizationState(uid)
+            return
+        }
+        val hasExistingDecisionInRequests = latestMonetizationRequestDocs.any { reqDoc ->
+            val st = normalizeMonetizationStatus(reqDoc.getString("status"))
+            st == "Pending" || st == "Approved" || st == "Rejected"
+        }
+        if (hasExistingDecisionInRequests) {
+            publishResolvedMonetizationState(uid)
+            return
+        }
+
+        val targetStatus = if (isRealEligible) "Not Applied" else "Not Eligible"
+        if (currentNormalized != targetStatus) {
+            monetizationStatus.value = targetStatus
+            val updated = _profileState.value.copy(monetizationStatus = targetStatus)
+            _profileState.value = updated
+            saveProfileToPrefs(updated, uid)
+        }
+        db.collection("users").document(uid).get().addOnSuccessListener { doc ->
+            if (!doc.exists()) return@addOnSuccessListener
+            val remoteRaw = doc.getString("monetizationStatus")?.trim().orEmpty()
+            val alreadyApplied = doc.getBoolean("monetizationApplied") == true
+            val isMonetized = doc.getBoolean("isMonetized") == true
+            val isRejected = doc.getBoolean("monetizationRejected") == true
+            val isAlreadyDecided = isMonetized ||
+                isRejected ||
+                remoteRaw.equals("Pending", ignoreCase = true) ||
+                remoteRaw.equals("Approved", ignoreCase = true) ||
+                remoteRaw.equals("Rejected", ignoreCase = true)
+            if (!alreadyApplied && !isAlreadyDecided && remoteRaw != targetStatus && latestMonetizationRequestDocs.isEmpty()) {
+                db.collection("users").document(uid).set(
+                    mapOf("monetizationStatus" to targetStatus),
+                    SetOptions.merge()
+                )
+            }
+        }
+    }
 
     fun submitMonetizationApplication(
         fullName: String = "",
@@ -2854,9 +3718,30 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         email: String = "",
         country: String = ""
     ) {
-        updateMonetizationStatus("PENDING")
-        val uid = activeUserUid() ?: return
-        val data = mapOf(
+        val uid = (auth.currentUser?.uid ?: activeUserUid())?.trim().orEmpty()
+        if (uid.isBlank()) return
+        val currentStatus = normalizeMonetizationStatus(monetizationStatus.value)
+        if (currentStatus == "Pending" || currentStatus == "Approved") return
+
+        val submittedAtMs = System.currentTimeMillis()
+        val currentProfile = _profileState.value
+        val totalFollowers = maxOf(myFollowersCount.value, currentProfile.followersCount).coerceAtLeast(0)
+        val totalViews = maxOf(videoViewsCount.value, currentProfile.videoViewsCount).coerceAtLeast(0)
+
+        monetizationStatus.value = "Pending"
+        val updatedProfile = currentProfile.copy(monetizationStatus = "Pending")
+        _profileState.value = updatedProfile
+        saveProfileToPrefs(updatedProfile, uid)
+
+        val requestData = hashMapOf<String, Any>(
+            "userId" to uid,
+            "creatorName" to currentProfile.name,
+            "creatorUsername" to currentProfile.username,
+            "creatorAvatar" to currentProfile.profilePic,
+            "followersCount" to totalFollowers,
+            "totalViews" to totalViews,
+            "earnings" to 0,
+            "status" to "Pending",
             "fullName" to fullName.ifEmpty { name },
             "age" to age,
             "fatherName" to fatherName,
@@ -2867,21 +3752,37 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "accountHolderName" to accountHolderName,
             "accountNumber" to accountNumber,
             "ifscCode" to ifscCode,
-            "email" to email,
+            "email" to email.ifBlank { currentProfile.email },
             "country" to country,
-            "timestamp" to System.currentTimeMillis()
+            "submittedAt" to submittedAtMs,
+            "createdAt" to FieldValue.serverTimestamp()
         )
-        db.collection("monetization_apps").document(uid).set(data)
+        db.collection("monetization_requests").add(requestData)
+
+        db.collection("users").document(uid).set(
+            mapOf(
+                "monetizationStatus" to "Pending",
+                "monetizationApplied" to true,
+                "monetizationRejected" to false,
+                "isMonetized" to false,
+                "monetizationSubmittedAt" to submittedAtMs
+            ),
+            SetOptions.merge()
+        )
     }
 
     fun updateMonetizationStatus(status: String) {
-        monetizationStatus.value = status
-        val updated = _profileState.value.copy(monetizationStatus = status)
+        val normalized = normalizeMonetizationStatus(status)
+        monetizationStatus.value = normalized
+        val updated = _profileState.value.copy(monetizationStatus = normalized)
         _profileState.value = updated
         val uid = activeUserUid()
         saveProfileToPrefs(updated, uid)
         if (!uid.isNullOrBlank()) {
-            db.collection("users").document(uid).update("monetizationStatus", status)
+            db.collection("users").document(uid).set(
+                mapOf("monetizationStatus" to normalized),
+                SetOptions.merge()
+            )
         }
     }
 
@@ -3139,7 +4040,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             _profileState.value = initialProfile
             myFollowersCount.value = initialProfile.followersCount
             myFollowingCount.value = initialProfile.followingCount
-            monetizationStatus.value = initialProfile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+            monetizationStatus.value = normalizeMonetizationStatus(initialProfile.monetizationStatus)
             saveProfileToPrefs(initialProfile, uid)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
@@ -3155,27 +4056,32 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             loadFollowingFromFirestore()
                             startListeningToNotifications()
                             startListeningToAccountStatus()
+                            startListeningToMonetizationStatus()
                             syncFcmToken()
                             refreshHomeFeed()
                             onSuccess()
                         }
                     } else {
+                        latestMonetizationUserDoc = doc
                         val remoteProfile = doc.toObject(ProfileEntity::class.java)
+                        val resolvedMonetization = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
                         val resolvedProfile = if (remoteProfile != null) {
                             remoteProfile.copy(
                                 email = remoteProfile.email.ifBlank { normalizedEmail },
-                                profilePic = remoteProfile.profilePic.ifBlank { initialProfile.profilePic }
+                                profilePic = remoteProfile.profilePic.ifBlank { initialProfile.profilePic },
+                                monetizationStatus = resolvedMonetization
                             )
-                        } else initialProfile
+                        } else initialProfile.copy(monetizationStatus = resolvedMonetization)
                         _profileState.value = resolvedProfile
                         myFollowersCount.value = resolvedProfile.followersCount
                         myFollowingCount.value = resolvedProfile.followingCount
-                        monetizationStatus.value = resolvedProfile.monetizationStatus.ifBlank { "NOT_ELIGIBLE" }
+                        monetizationStatus.value = resolvedMonetization
                         saveProfileToPrefs(resolvedProfile, uid)
                         recalculateCreatorStats()
                         loadFollowingFromFirestore()
                         startListeningToNotifications()
                         startListeningToAccountStatus()
+                        startListeningToMonetizationStatus()
                         syncFcmToken()
                         refreshHomeFeed()
                         onSuccess()

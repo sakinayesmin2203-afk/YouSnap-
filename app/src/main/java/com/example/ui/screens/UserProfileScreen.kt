@@ -603,20 +603,41 @@ fun UserProfileScreen(
                 val isLiked = photoLikedStatusMap[p.id] ?: p.initialIsLiked
                 p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
             }
-            FullScreenPhotoViewer(
-                photos = updatedPhotos,
-                initialIndex = startIndex,
-                currentUsername = currentProfile.username,
-                isOwner = false,
-                onDismiss = { selectedPhotoIndexForViewer = null },
-                onLikeChanged = { photoId, liked, newCount ->
-                    photoLikedStatusMap[photoId] = liked
-                    photoLikesMap[photoId] = newCount
-                    updatedPhotos.find { it.id == photoId }?.let { photo ->
-                        viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
-                    }
+            if (updatedPhotos.isEmpty()) {
+                LaunchedEffect(Unit) { selectedPhotoIndexForViewer = null }
+            } else {
+                DisposableEffect(startIndex) {
+                    onDispose { viewModel.clearAdCreatorContext() }
                 }
-            )
+                FullScreenPhotoViewer(
+                    photos = updatedPhotos,
+                    initialIndex = startIndex.coerceIn(0, updatedPhotos.lastIndex),
+                    currentUsername = currentProfile.username,
+                    isOwner = false,
+                    onDismiss = { selectedPhotoIndexForViewer = null },
+                    onLikeChanged = { photoId, liked, newCount ->
+                        photoLikedStatusMap[photoId] = liked
+                        photoLikesMap[photoId] = newCount
+                        updatedPhotos.find { it.id == photoId }?.let { photo ->
+                            viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
+                        }
+                    },
+                    onReportPhoto = { photoData, reason, details ->
+                        viewModel.reportPost(
+                            postId = photoData.id,
+                            username = photoData.creatorUsername,
+                            reason = reason,
+                            details = details,
+                            creatorUid = photoData.creatorUid,
+                            firestoreDocId = photoData.firestoreDocId.orEmpty()
+                        )
+                    },
+                    onPhotoViewed = { viewedPhoto ->
+                        viewModel.setAdCreatorContextForPhoto(viewedPhoto)
+                        viewModel.logPhotoAdViewOnce(viewedPhoto)
+                    }
+                )
+            }
         }
 
         // Report Profile Bottom Sheet
@@ -626,7 +647,7 @@ fun UserProfileScreen(
                 title = "Report Profile",
                 subtitle = "Help us understand the issue with @$username's profile. Your report is anonymous and confidential.",
                 onReportSubmit = { reason, details ->
-                    viewModel.reportPost("profile_$username", username, reason, details)
+                    viewModel.reportAccount(username = username, reason = reason, details = details)
                     showReportSheet = false
                 },
                 onDismissRequest = { showReportSheet = false }

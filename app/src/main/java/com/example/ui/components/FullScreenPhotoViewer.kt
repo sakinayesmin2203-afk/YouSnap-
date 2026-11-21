@@ -103,7 +103,9 @@ fun FullScreenPhotoViewer(
     isOwner: Boolean? = null,
     onDismiss: () -> Unit,
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
-    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
+    onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     FullScreenPhotoViewer(
         photos = listOf(photoData),
@@ -112,7 +114,9 @@ fun FullScreenPhotoViewer(
         isOwner = isOwner,
         onDismiss = onDismiss,
         onLikeChanged = onLikeChanged,
-        onDeletePhoto = onDeletePhoto
+        onDeletePhoto = onDeletePhoto,
+        onReportPhoto = onReportPhoto,
+        onPhotoViewed = onPhotoViewed
     )
 }
 
@@ -125,7 +129,9 @@ fun FullScreenPhotoViewer(
     isOwner: Boolean? = null,
     onDismiss: () -> Unit,
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
-    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
+    onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     if (photos.isEmpty()) return
 
@@ -214,7 +220,9 @@ fun FullScreenPhotoViewer(
                                 if (displayedPhotos.isEmpty()) {
                                     onDismiss()
                                 }
-                            }
+                            },
+                            onReportPhoto = onReportPhoto,
+                            onPhotoViewed = onPhotoViewed
                         )
                     }
                 }
@@ -232,8 +240,13 @@ fun InstagramPostCard(
     currentUsername: String = "",
     isOwner: Boolean? = null,
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
-    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null
+    onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
+    onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
+    LaunchedEffect(photoData.id, photoData.firestoreDocId) {
+        onPhotoViewed?.invoke(photoData)
+    }
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -499,11 +512,11 @@ fun InstagramPostCard(
                             }
                         )
 
-                        // Option 3: Report account
+                        // Option 3: Report Post
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = "Report account",
+                                    text = "Report Post",
                                     color = Color(0xFFFF4D4D),
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 14.sp
@@ -512,7 +525,7 @@ fun InstagramPostCard(
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Report,
-                                    contentDescription = "Report account",
+                                    contentDescription = "Report Post",
                                     tint = Color(0xFFFF4D4D),
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -830,13 +843,17 @@ fun InstagramPostCard(
         )
     }
 
-    // Report Sheet for other user's account/post
+    // Report Sheet for other user's post
     if (showReportDialog) {
         ReportPostBottomSheet(
             postUsername = displayUsername,
             onReportSubmit = { reason, details ->
                 showReportDialog = false
-                Toast.makeText(context, "Report submitted for @$displayUsername. Thank you.", Toast.LENGTH_SHORT).show()
+                if (onReportPhoto != null) {
+                    onReportPhoto.invoke(photoData, reason, details)
+                } else {
+                    Toast.makeText(context, "Report submitted for @$displayUsername. Thank you.", Toast.LENGTH_SHORT).show()
+                }
             },
             onDismissRequest = { showReportDialog = false }
         )

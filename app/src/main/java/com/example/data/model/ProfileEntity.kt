@@ -21,5 +21,5 @@ data class ProfileEntity(
     val videoViewsCount: Int = 0,
     val photoUploadsCount: Int = 0,
     val storiesUploadedCount: Int = 0,
-    val monetizationStatus: String = "NOT_ELIGIBLE"
+    val monetizationStatus: String = "Not Eligible"
 )

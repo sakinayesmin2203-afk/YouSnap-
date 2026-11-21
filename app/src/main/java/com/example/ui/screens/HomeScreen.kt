@@ -7,6 +7,8 @@ import android.content.Context
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,6 +51,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -80,10 +83,17 @@ import com.example.ui.components.ReportPostBottomSheet
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.components.FullScreenPhotoViewer
 import com.example.ui.components.CdnVideoPlayer
+import com.example.ui.components.HomeFeedEntry
+import com.example.ui.components.HomeFeedNativeVideoAdCard
+import com.example.ui.components.buildHomeFeedWithAds
+import com.example.ui.components.FullScreenStoryNativeAd
+import com.example.ui.components.StoryFeedEntry
+import com.example.ui.components.buildStoryQueueWithAds
 import com.example.ui.theme.WarmCreamBackground
 import com.example.ui.theme.WarmCreamTextPrimary
 import com.example.ui.theme.WarmCreamTextSecondary
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,10 +146,19 @@ fun HomeScreen(
         }.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
     }
 
+    val homeFeedEntries = remember(visiblePersonalPhotos, visibleReels) {
+        buildHomeFeedWithAds(
+            photos = visiblePersonalPhotos,
+            reels = visibleReels,
+            adInterval = 5
+        )
+    }
+
     var activePostForComments by remember { mutableStateOf<HomePostItem?>(null) }
     var activePostCommentInput by remember { mutableStateOf("") }
     var selectedPhotoForViewer by remember { mutableStateOf<FullScreenPhotoData?>(null) }
     var postToReport by remember { mutableStateOf<HomePostItem?>(null) }
+    var reelToReport by remember { mutableStateOf<ReelEntity?>(null) }
     var isFeedMuted by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -162,17 +181,21 @@ fun HomeScreen(
         selectedPhotoForViewer != null ||
         activePostForComments != null ||
         selectedReelForComments != null ||
-        postToReport != null
+        postToReport != null ||
+        reelToReport != null
     val canAutoPlayFeed = isLifecycleResumed && !isAnyOverlayOpen
 
-    val activePlayingReelKey by remember {
+    val activePlayingFeedKey by remember {
         derivedStateOf {
             if (!canAutoPlayFeed) return@derivedStateOf null
             val layoutInfo = listState.layoutInfo
             val viewportStart = layoutInfo.viewportStartOffset
             val viewportEnd = layoutInfo.viewportEndOffset
             layoutInfo.visibleItemsInfo
-                .filter { (it.key as? String)?.startsWith("reel_") == true }
+                .filter {
+                    val k = it.key as? String
+                    k?.startsWith("reel_") == true || k?.startsWith("home_ad_") == true
+                }
                 .mapNotNull { info ->
                     val itemStart = info.offset
                     val itemEnd = info.offset + info.size
@@ -183,6 +206,17 @@ fun HomeScreen(
                 }
                 .maxByOrNull { it.second }
                 ?.first
+        }
+    }
+
+    LaunchedEffect(activePlayingFeedKey, visibleReels) {
+        val activeKey = activePlayingFeedKey ?: return@LaunchedEffect
+        if (!activeKey.startsWith("reel_")) return@LaunchedEffect
+        val activeReel = visibleReels.firstOrNull { reel ->
+            "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}" == activeKey
+        }
+        if (activeReel != null) {
+            viewModel.logReelAdViewOnce(activeReel)
         }
     }
 
@@ -575,6 +609,9 @@ fun HomeScreen(
                 // Item B1: Dynamic Profile-Opened Post (if user clicked a photo from any user's profile)
                 selectedHomePost?.let { profilePost ->
                     item(key = "profile_opened_post_${profilePost.id}") {
+                        LaunchedEffect(profilePost.firestoreDocId, profilePost.id) {
+                            viewModel.logPhotoAdViewOnce(profilePost)
+                        }
                         val isLiked = homePostLikedState[profilePost.id] ?: profilePost.initialIsLiked
                         val likesCount = homePostLikesCount[profilePost.id] ?: profilePost.initialLikes
                         val commentsForPost = homePostCommentsMap[profilePost.id] ?: emptyList()
@@ -594,7 +631,8 @@ fun HomeScreen(
                             commentsCount = commentsForPost.size,
                             isLiked = isLiked,
                             isBookmarked = isBookmarked,
-                            timeAgo = profilePost.timeAgo
+                            timeAgo = profilePost.timeAgo,
+                            firestoreDocId = profilePost.firestoreDocId
                         )
 
                         FeedPhotoPostCard(
@@ -664,85 +702,6 @@ fun HomeScreen(
                     }
                 }
 
-                // Real uploaded photo posts from users
-                if (visiblePersonalPhotos.isNotEmpty()) {
-                    items(visiblePersonalPhotos, key = { "personal_photo_${it.id}" }) { photo ->
-                        val postId = "photo_${photo.id}"
-                        val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
-                        val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
-                        val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
-
-                        val postItem = HomePostItem(
-                            id = postId,
-                            username = photo.creatorUsername,
-                            userDisplayName = photo.creatorName,
-                            userAvatarUrl = photo.creatorAvatar,
-                            userInitials = photo.creatorName.take(2).uppercase().ifEmpty { "ME" },
-                            creatorUid = photo.creatorUid,
-                            location = "YouSnap",
-                            imageUrl = photo.imageUrl,
-                            caption = photo.title,
-                            hashtags = "",
-                            likesCount = currentLikes,
-                            commentsCount = photo.initialComments,
-                            isLiked = isLiked,
-                            timeAgo = photo.timeAgo,
-                            isFromUserProfile = true
-                        )
-
-                        FeedPhotoPostCard(
-                            post = postItem,
-                            isLiked = isLiked,
-                            likesCount = currentLikes,
-                            commentsCount = photo.initialComments,
-                            isBookmarked = false,
-                            onLikeToggle = { viewModel.toggleLikeHomePost(postId) },
-                            onCommentClick = { activePostForComments = postItem },
-                            onShareClick = {
-                                try {
-                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Post")
-                                        putExtra(
-                                            android.content.Intent.EXTRA_TEXT,
-                                            "Check out @${photo.creatorUsername}'s photo on YouSnap! 📸✨"
-                                        )
-                                    }
-                                    val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
-                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(shareIntent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Link copied! 🔗", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onBookmarkToggle = {
-                                Toast.makeText(context, "Post saved to bookmarks! 📌", Toast.LENGTH_SHORT).show()
-                            },
-                            onProfileClick = {
-                                if (isPhotoOwner) {
-                                    onNavigateTo(Screen.Profile)
-                                } else {
-                                    onNavigateTo(Screen.OtherProfile(photo.creatorUsername))
-                                }
-                            },
-                            onPhotoClick = {
-                                selectedPhotoForViewer = photo.copy(initialIsLiked = isLiked)
-                            },
-                            onDismissBanner = null,
-                            isOwner = isPhotoOwner,
-                            onDeleteClick = if (isPhotoOwner) {
-                                {
-                                    viewModel.deletePhotoPost(photo.firestoreDocId ?: photo.id, photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
-                                }
-                            } else null,
-                            onRequestReport = {
-                                postToReport = postItem
-                            }
-                        )
-                    }
-                }
-
                 // Empty State when no real posts or reels exist yet
                 if (visibleReels.isEmpty() && selectedHomePost == null && visiblePersonalPhotos.isEmpty()) {
                     item(key = "home_empty_state") {
@@ -796,68 +755,172 @@ fun HomeScreen(
                     }
                 }
 
-                // Item C: Auto-Playing Feed Video Reels
-                if (visibleReels.isNotEmpty()) {
-                    itemsIndexed(
-                        items = visibleReels,
-                        key = { _, reel -> "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}" }
-                    ) { _, reel ->
-                        val itemKey = "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}"
-                        val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
-                        InstagramFeedPost(
-                            reel = reel,
-                            isOwner = isReelOwner,
-                            isAutoPlayActive = canAutoPlayFeed && activePlayingReelKey == itemKey,
-                            isMuted = isFeedMuted,
-                            onToggleMute = { isFeedMuted = !isFeedMuted },
-                            onDeleteClick = if (isReelOwner) {
-                                { viewModel.deleteReelVideo(reel) {} }
-                            } else null,
-                            onLikeToggle = { viewModel.toggleLikeReel(reel) },
-                            onCommentClick = {
-                                viewModel.loadCommentsForReel(reel.id)
-                                selectedReelForComments = reel
-                            },
-                            onFollowToggle = { viewModel.toggleFollowCreator(reel) },
-                            onShareClick = {
-                                try {
-                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Reel")
-                                        putExtra(
-                                            android.content.Intent.EXTRA_TEXT,
-                                            "Check out @${reel.creatorUsername}'s video on YouSnap! 🎬✨"
-                                        )
-                                    }
-                                    val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
-                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    viewModel.app.startActivity(shareIntent)
-                                    viewModel.incrementReelShares(reel)
-                                } catch (e: Exception) {
-                                    Toast.makeText(
-                                        viewModel.app,
-                                        "Link copied!",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                // Unified Home Feed: Photos, Auto-Playing Video Reels, and Native Video Ads every 5 posts
+                if (homeFeedEntries.isNotEmpty()) {
+                    items(
+                        items = homeFeedEntries,
+                        key = { entry ->
+                            when (entry) {
+                                is HomeFeedEntry.Photo -> "personal_photo_${entry.photo.id}"
+                                is HomeFeedEntry.Video -> "reel_${entry.reel.id}_${entry.reel.timestamp}_${entry.reel.mediaUrl.hashCode()}"
+                                is HomeFeedEntry.NativeAd -> "home_ad_${entry.adSlotId}"
+                            }
+                        }
+                    ) { entry ->
+                        when (entry) {
+                            is HomeFeedEntry.Photo -> {
+                                val photo = entry.photo
+                                LaunchedEffect(photo.firestoreDocId, photo.id) {
+                                    viewModel.logPhotoAdViewOnce(photo)
                                 }
-                            },
-                            onProfileClick = {
-                                if (isReelOwner) {
-                                    onNavigateTo(Screen.Profile)
-                                } else {
-                                    onNavigateTo(Screen.OtherProfile(reel.creatorUsername))
-                                }
-                            },
-                            onReelClick = {
-                                onNavigateTo(
-                                    Screen.Reels(
-                                        startReelId = reel.id,
-                                        startMediaUrl = reel.mediaUrl
-                                    )
+                                val postId = "photo_${photo.id}"
+                                val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
+                                val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
+                                val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
+
+                                val postItem = HomePostItem(
+                                    id = postId,
+                                    username = photo.creatorUsername,
+                                    userDisplayName = photo.creatorName,
+                                    userAvatarUrl = photo.creatorAvatar,
+                                    userInitials = photo.creatorName.take(2).uppercase().ifEmpty { "ME" },
+                                    creatorUid = photo.creatorUid,
+                                    location = "YouSnap",
+                                    imageUrl = photo.imageUrl,
+                                    caption = photo.title,
+                                    hashtags = "",
+                                    likesCount = currentLikes,
+                                    commentsCount = photo.initialComments,
+                                    isLiked = isLiked,
+                                    timeAgo = photo.timeAgo,
+                                    isFromUserProfile = true,
+                                    firestoreDocId = photo.firestoreDocId
+                                )
+
+                                FeedPhotoPostCard(
+                                    post = postItem,
+                                    isLiked = isLiked,
+                                    likesCount = currentLikes,
+                                    commentsCount = photo.initialComments,
+                                    isBookmarked = false,
+                                    onLikeToggle = { viewModel.toggleLikeHomePost(postId) },
+                                    onCommentClick = { activePostForComments = postItem },
+                                    onShareClick = {
+                                        try {
+                                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Post")
+                                                putExtra(
+                                                    android.content.Intent.EXTRA_TEXT,
+                                                    "Check out @${photo.creatorUsername}'s photo on YouSnap! 📸✨"
+                                                )
+                                            }
+                                            val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
+                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            context.startActivity(shareIntent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Link copied! 🔗", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onBookmarkToggle = {
+                                        Toast.makeText(context, "Post saved to bookmarks! 📌", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onProfileClick = {
+                                        if (isPhotoOwner) {
+                                            onNavigateTo(Screen.Profile)
+                                        } else {
+                                            onNavigateTo(Screen.OtherProfile(photo.creatorUsername))
+                                        }
+                                    },
+                                    onPhotoClick = {
+                                        selectedPhotoForViewer = photo.copy(initialIsLiked = isLiked)
+                                    },
+                                    onDismissBanner = null,
+                                    isOwner = isPhotoOwner,
+                                    onDeleteClick = if (isPhotoOwner) {
+                                        {
+                                            viewModel.deletePhotoPost(photo.firestoreDocId ?: photo.id, photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
+                                        }
+                                    } else null,
+                                    onRequestReport = {
+                                        postToReport = postItem
+                                    }
                                 )
                             }
-                        )
+
+                            is HomeFeedEntry.Video -> {
+                                val reel = entry.reel
+                                val itemKey = "reel_${reel.id}_${reel.timestamp}_${reel.mediaUrl.hashCode()}"
+                                val isReelOwner = viewModel.isOwnedByCurrentUser(reel.creatorUsername, reel.creatorUid)
+                                InstagramFeedPost(
+                                    reel = reel,
+                                    isOwner = isReelOwner,
+                                    isAutoPlayActive = canAutoPlayFeed && activePlayingFeedKey == itemKey,
+                                    isMuted = isFeedMuted,
+                                    onToggleMute = { isFeedMuted = !isFeedMuted },
+                                    onDeleteClick = if (isReelOwner) {
+                                        { viewModel.deleteReelVideo(reel) {} }
+                                    } else null,
+                                    onRequestReport = {
+                                        reelToReport = reel
+                                    },
+                                    onLikeToggle = { viewModel.toggleLikeReel(reel) },
+                                    onCommentClick = {
+                                        viewModel.loadCommentsForReel(reel.id)
+                                        selectedReelForComments = reel
+                                    },
+                                    onFollowToggle = { viewModel.toggleFollowCreator(reel) },
+                                    onShareClick = {
+                                        try {
+                                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "YouSnap Reel")
+                                                putExtra(
+                                                    android.content.Intent.EXTRA_TEXT,
+                                                    "Check out @${reel.creatorUsername}'s video on YouSnap! 🎬✨"
+                                                )
+                                            }
+                                            val shareIntent = android.content.Intent.createChooser(sendIntent, "Share via").apply {
+                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            viewModel.app.startActivity(shareIntent)
+                                            viewModel.incrementReelShares(reel)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                viewModel.app,
+                                                "Link copied!",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    },
+                                    onProfileClick = {
+                                        if (isReelOwner) {
+                                            onNavigateTo(Screen.Profile)
+                                        } else {
+                                            onNavigateTo(Screen.OtherProfile(reel.creatorUsername))
+                                        }
+                                    },
+                                    onReelClick = {
+                                        onNavigateTo(
+                                            Screen.Reels(
+                                                startReelId = reel.id,
+                                                startMediaUrl = reel.mediaUrl
+                                            )
+                                        )
+                                    }
+                                )
+                            }
+
+                            is HomeFeedEntry.NativeAd -> {
+                                val adKey = "home_ad_${entry.adSlotId}"
+                                HomeFeedNativeVideoAdCard(
+                                    adSlotId = entry.adSlotId,
+                                    isAutoPlayActive = canAutoPlayFeed && activePlayingFeedKey == adKey,
+                                    adUnitId = entry.adUnitId
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -885,6 +948,10 @@ fun HomeScreen(
         // FULLSCREEN VIEWER (from Home Feed Photo clicks)
         selectedPhotoForViewer?.let { photo ->
             val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
+            DisposableEffect(photo.id, photo.firestoreDocId) {
+                viewModel.setAdCreatorContextForPhoto(photo)
+                onDispose { viewModel.clearAdCreatorContext() }
+            }
             FullScreenPhotoViewer(
                 photoData = photo,
                 currentUsername = currentProfile?.username ?: "",
@@ -904,7 +971,20 @@ fun HomeScreen(
                             selectedPhotoForViewer = null
                         }
                     }
-                } else null
+                } else null,
+                onReportPhoto = { photoData, reason, details ->
+                    viewModel.reportPost(
+                        postId = photoData.id,
+                        username = photoData.creatorUsername,
+                        reason = reason,
+                        details = details,
+                        creatorUid = photoData.creatorUid,
+                        firestoreDocId = photoData.firestoreDocId.orEmpty()
+                    )
+                },
+                onPhotoViewed = { viewedPhoto ->
+                    viewModel.logPhotoAdViewOnce(viewedPhoto)
+                }
             )
         }
 
@@ -913,10 +993,31 @@ fun HomeScreen(
             ReportPostBottomSheet(
                 postUsername = post.username,
                 onReportSubmit = { reason, details ->
-                    viewModel.reportPost(post.id, post.username, reason, details)
+                    viewModel.reportPost(
+                        postId = post.id,
+                        username = post.username,
+                        reason = reason,
+                        details = details,
+                        creatorUid = post.creatorUid,
+                        firestoreDocId = post.firestoreDocId.orEmpty()
+                    )
                     postToReport = null
                 },
                 onDismissRequest = { postToReport = null }
+            )
+        }
+
+        // REPORT VIDEO / REEL BOTTOM SHEET (Home Feed)
+        reelToReport?.let { reel ->
+            ReportPostBottomSheet(
+                postUsername = reel.creatorUsername,
+                title = "Report Video",
+                subtitle = "Help us understand the issue with @${reel.creatorUsername}'s video. Your report is anonymous and confidential.",
+                onReportSubmit = { reason, details ->
+                    viewModel.reportReel(reel.id, reason, details)
+                    reelToReport = null
+                },
+                onDismissRequest = { reelToReport = null }
             )
         }
 
@@ -935,8 +1036,22 @@ fun HomeScreen(
 
         // 5. STORY VIEWER OVERLAY DIALOG
         activeStoryUser?.let { storyUser ->
+            val orderedStoryUsernames = remember(allStories, currentProfile.username) {
+                val myStoryOwner = allStories.firstOrNull {
+                    it.ownerUsername.equals(currentProfile.username, ignoreCase = true)
+                }?.ownerUsername
+                val others = allStories
+                    .filter { !it.ownerUsername.equals(currentProfile.username, ignoreCase = true) }
+                    .map { it.ownerUsername }
+                    .distinctBy { it.lowercase() }
+                buildList {
+                    if (!myStoryOwner.isNullOrBlank()) add(myStoryOwner)
+                    addAll(others)
+                }
+            }
             StoryPlaybackDialog(
                 username = storyUser,
+                orderedStoryUsernames = orderedStoryUsernames,
                 viewModel = viewModel,
                 onNavigateTo = onNavigateTo,
                 onDismiss = { activeStoryUser = null }
@@ -1431,6 +1546,7 @@ fun InstagramFeedPost(
     isMuted: Boolean = false,
     onToggleMute: () -> Unit = {},
     onDeleteClick: (() -> Unit)? = null,
+    onRequestReport: (() -> Unit)? = null,
     onLikeToggle: () -> Unit,
     onCommentClick: () -> Unit,
     onFollowToggle: () -> Unit,
@@ -1633,7 +1749,11 @@ fun InstagramFeedPost(
                             },
                             onClick = {
                                 showPostMenu = false
-                                Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
+                                if (onRequestReport != null) {
+                                    onRequestReport()
+                                } else {
+                                    Toast.makeText(context, "Post reported. Thank you!", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
                     }
@@ -2019,6 +2139,7 @@ fun InstagramFeedPost(
 @Composable
 fun StoryPlaybackDialog(
     username: String,
+    orderedStoryUsernames: List<String> = emptyList(),
     viewModel: YouSnapViewModel,
     onNavigateTo: (Screen) -> Unit,
     onDismiss: () -> Unit
@@ -2031,7 +2152,31 @@ fun StoryPlaybackDialog(
         return
     }
 
-    var activeUsername by remember { mutableStateOf(username) }
+    val storyQueue = remember(username, orderedStoryUsernames) {
+        buildStoryQueueWithAds(
+            orderedUsernames = orderedStoryUsernames,
+            fallbackUsername = username,
+            adInterval = 3
+        )
+    }
+    val initialQueueIndex = remember(storyQueue, username) {
+        storyQueue.indexOfFirst {
+            it is StoryFeedEntry.UserStory && it.username.equals(username, ignoreCase = true)
+        }.coerceAtLeast(0)
+    }
+
+    var currentQueueIndex by remember(storyQueue) { mutableIntStateOf(initialQueueIndex) }
+    val currentEntry = storyQueue.getOrNull(currentQueueIndex)
+    if (currentEntry == null) {
+        LaunchedEffect(Unit) {
+            onDismiss()
+        }
+        return
+    }
+
+    val activeUsername = (currentEntry as? StoryFeedEntry.UserStory)?.username.orEmpty()
+    val isAdSlide = currentEntry is StoryFeedEntry.Ad
+
     var progress by remember { mutableStateOf(0f) }
     var isPaused by remember { mutableStateOf(false) }
     var isHoldingToPause by remember { mutableStateOf(false) }
@@ -2043,29 +2188,44 @@ fun StoryPlaybackDialog(
     var selectedReportReason by remember { mutableStateOf("Inappropriate Content") }
     var reportDetails by remember { mutableStateOf("") }
 
-    val currentProfile by viewModel.profileState.collectAsState()
-    val loggedInUsername = currentProfile.username.orEmpty()
-    val usernames = remember(activeUsername) {
-        listOf(activeUsername)
-    }
-    val currentIndex = remember(activeUsername, usernames) {
-        val idx = usernames.indexOfFirst { it.lowercase() == activeUsername.lowercase() }
-        if (idx == -1) 0 else idx
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isLifecycleResumed by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isLifecycleResumed = true
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                isLifecycleResumed = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
+    val currentProfile by viewModel.profileState.collectAsState()
+    val loggedInUsername = currentProfile.username.orEmpty()
+
     fun navigateToNextStory() {
-        if (currentIndex < usernames.size - 1) {
+        if (currentQueueIndex < storyQueue.lastIndex) {
             progress = 0f
-            activeUsername = usernames[currentIndex + 1]
+            isHoldingToPause = false
+            showMenu = false
+            showViewerSheet = false
+            currentQueueIndex++
         } else {
             onDismiss()
         }
     }
 
     fun navigateToPrevStory() {
-        if (currentIndex > 0) {
+        if (currentQueueIndex > 0) {
             progress = 0f
-            activeUsername = usernames[currentIndex - 1]
+            isHoldingToPause = false
+            showMenu = false
+            showViewerSheet = false
+            currentQueueIndex--
         } else {
             progress = 0f
         }
@@ -2078,20 +2238,26 @@ fun StoryPlaybackDialog(
         }
     }
 
-    // Start listening to real-time updates and record story view with robust try-catch
-    LaunchedEffect(activeUsername) {
+    // Start listening to real-time updates and record story view only for user story slides
+    LaunchedEffect(currentQueueIndex, activeUsername, isAdSlide) {
         try {
-            viewModel.startListeningToStory(activeUsername)
-            viewModel.recordStoryView(activeUsername)
+            if (!isAdSlide && activeUsername.isNotBlank()) {
+                viewModel.startListeningToStory(activeUsername)
+                viewModel.recordStoryView(activeUsername)
+            } else {
+                viewModel.stopListeningToStory()
+                viewModel.clearAdCreatorContext()
+            }
         } catch (e: Exception) {
             android.util.Log.e("StoryPlaybackDialog", "Error starting story listener: ${e.message}")
         }
     }
 
-    DisposableEffect(activeUsername) {
+    DisposableEffect(currentQueueIndex, activeUsername) {
         onDispose {
             try {
                 viewModel.stopListeningToStory()
+                viewModel.clearAdCreatorContext()
             } catch (e: Exception) {
                 android.util.Log.e("StoryPlaybackDialog", "Error stopping story listener: ${e.message}")
             }
@@ -2101,10 +2267,28 @@ fun StoryPlaybackDialog(
     // Story data from real-time Firebase Firestore + immediate local allStories fallback
     val storyState by viewModel.currentStoryState.collectAsState()
     val allStoriesList by viewModel.allStories.collectAsState()
-    val resolvedStory = remember(storyState, allStoriesList, activeUsername) {
-        storyState ?: allStoriesList.firstOrNull { it.ownerUsername.equals(activeUsername, ignoreCase = true) }
+    val resolvedStory = remember(storyState, allStoriesList, activeUsername, isAdSlide) {
+        if (isAdSlide || activeUsername.isBlank()) null
+        else storyState ?: allStoriesList.firstOrNull { it.ownerUsername.equals(activeUsername, ignoreCase = true) }
     }
-    val isOwner = activeUsername.lowercase() == loggedInUsername.lowercase()
+    LaunchedEffect(activeUsername, resolvedStory?.firestoreDocId, isAdSlide) {
+        if (!isAdSlide && activeUsername.isNotBlank()) {
+            viewModel.setAdCreatorContextForStory(activeUsername, resolvedStory)
+        } else {
+            viewModel.clearAdCreatorContext()
+        }
+    }
+    var hadLoadedActiveStory by remember(currentQueueIndex, activeUsername) { mutableStateOf(false) }
+    LaunchedEffect(resolvedStory, isAdSlide) {
+        if (!isAdSlide) {
+            if (resolvedStory != null) {
+                hadLoadedActiveStory = true
+            } else if (hadLoadedActiveStory) {
+                navigateToNextStory()
+            }
+        }
+    }
+    val isOwner = !isAdSlide && activeUsername.lowercase() == loggedInUsername.lowercase()
 
     val viewsCount = resolvedStory?.viewsCount ?: 0
     val likesList = resolvedStory?.likes ?: emptyList()
@@ -2113,8 +2297,9 @@ fun StoryPlaybackDialog(
     }
 
     val mediaModel: String? = resolvedStory?.mediaUrl?.takeIf { it.isNotBlank() }
-    val resolvedMediaType = remember(resolvedStory, mediaModel) {
+    val resolvedMediaType = remember(resolvedStory, mediaModel, isAdSlide) {
         when {
+            isAdSlide -> "ad"
             resolvedStory == null -> "loading"
             resolvedStory.mediaType.equals("text", ignoreCase = true) -> "text"
             resolvedStory.mediaType.equals("video", ignoreCase = true) -> "video"
@@ -2139,9 +2324,10 @@ fun StoryPlaybackDialog(
     val isMediaPreparing = resolvedMediaType == "loading" ||
         (resolvedMediaType == "image" && imageLoading) ||
         (resolvedMediaType == "video" && !videoReady)
-    val shouldPauseTimer = isPaused || isHoldingToPause || showViewerSheet || showMenu || showDeleteConfirmDialog || showReportDialog
+    val shouldPauseTimer = isAdSlide || isPaused || isHoldingToPause || showViewerSheet || showMenu || showDeleteConfirmDialog || showReportDialog || !isLifecycleResumed
     val effectivePauseTimer = shouldPauseTimer || isMediaPreparing
-    LaunchedEffect(effectivePauseTimer, activeUsername, resolvedMediaType) {
+    LaunchedEffect(effectivePauseTimer, currentQueueIndex, activeUsername, resolvedMediaType) {
+        if (isAdSlide) return@LaunchedEffect
         try {
             if (!effectivePauseTimer) {
                 val duration = if (resolvedMediaType == "video") 30000 else 6000
@@ -2173,11 +2359,43 @@ fun StoryPlaybackDialog(
             dismissOnClickOutside = true
         )
     ) {
+        if (currentEntry is StoryFeedEntry.Ad) {
+            FullScreenStoryNativeAd(
+                adSlotId = currentEntry.adSlotId,
+                adUnitId = currentEntry.adUnitId,
+                isLifecycleResumed = isLifecycleResumed,
+                onPrevious = { navigateToPrevStory() },
+                onNext = { navigateToNextStory() },
+                onDismiss = onDismiss
+            )
+            return@Dialog
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
                 .systemBarsPadding()
+                .pointerInput(currentQueueIndex, activeUsername) {
+                    // Horizontal swipe navigation across stories and story ads
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        val startX = down.position.x
+                        val startY = down.position.y
+                        while (true) {
+                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val dx = change.position.x - startX
+                            val dy = change.position.y - startY
+                            if (abs(dx) > 90f && abs(dx) > abs(dy) * 1.4f) {
+                                change.consume()
+                                if (dx < 0f) navigateToNextStory() else navigateToPrevStory()
+                                break
+                            }
+                        }
+                    }
+                }
         ) {
 
             // Real Media Display
@@ -2186,7 +2404,7 @@ fun StoryPlaybackDialog(
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { layoutWidth = it.width }
-                    .pointerInput(activeUsername) {
+                    .pointerInput(currentQueueIndex, activeUsername) {
                         detectTapGestures(
                             onPress = {
                                 isHoldingToPause = true
@@ -2912,16 +3130,17 @@ fun StoryPlaybackDialog(
                                         viewModel.reportStory(
                                             storyOwner = activeUsername,
                                             reason = selectedReportReason,
-                                            details = reportDetails
+                                            details = reportDetails,
+                                            storyDocId = resolvedStory?.firestoreDocId.orEmpty()
                                         )
                                         reportDetails = ""
                                     },
                                     modifier = Modifier.weight(1f),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary
+                                        containerColor = MaterialTheme.colorScheme.error
                                     )
                                 ) {
-                                    Text("Submit")
+                                    Text("Submit Report")
                                 }
                             }
                         }

@@ -17,5 +17,6 @@ data class HomePostItem(
     val isLiked: Boolean = false,
     val isBookmarked: Boolean = false,
     val timeAgo: String = "Just now",
-    val isFromUserProfile: Boolean = false
+    val isFromUserProfile: Boolean = false,
+    val firestoreDocId: String? = null
 )
