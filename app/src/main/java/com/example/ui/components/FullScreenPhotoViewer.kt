@@ -85,7 +85,13 @@ data class FullScreenPhotoData(
     val initialIsLiked: Boolean = false,
     val timeAgo: String = "Just now",
     val firestoreDocId: String? = null,
-    val shareLink: String = ""
+    val shareLink: String = "",
+    val sharesCount: Int = 0,
+    val isViral: Boolean = false,
+    val viralDurationDays: Int = 0,
+    val viralDurationHours: Int = 0,
+    val viralExpiresAt: String? = null,
+    val createdAtMillis: Long = 0L
 )
 
 data class PhotoCommentItem(
@@ -103,8 +109,12 @@ fun FullScreenPhotoViewer(
     photoData: FullScreenPhotoData,
     currentUsername: String = "",
     isOwner: Boolean? = null,
+    commentsByPostId: Map<String, List<com.example.data.model.CommentEntity>> = emptyMap(),
     onDismiss: () -> Unit,
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLoadComments: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onAddComment: ((photoData: FullScreenPhotoData, text: String) -> Unit)? = null,
+    onShareChanged: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
     onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
@@ -114,8 +124,12 @@ fun FullScreenPhotoViewer(
         initialIndex = 0,
         currentUsername = currentUsername,
         isOwner = isOwner,
+        commentsByPostId = commentsByPostId,
         onDismiss = onDismiss,
         onLikeChanged = onLikeChanged,
+        onLoadComments = onLoadComments,
+        onAddComment = onAddComment,
+        onShareChanged = onShareChanged,
         onDeletePhoto = onDeletePhoto,
         onReportPhoto = onReportPhoto,
         onPhotoViewed = onPhotoViewed
@@ -129,8 +143,12 @@ fun FullScreenPhotoViewer(
     initialIndex: Int = 0,
     currentUsername: String = "",
     isOwner: Boolean? = null,
+    commentsByPostId: Map<String, List<com.example.data.model.CommentEntity>> = emptyMap(),
     onDismiss: () -> Unit,
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLoadComments: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onAddComment: ((photoData: FullScreenPhotoData, text: String) -> Unit)? = null,
+    onShareChanged: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
     onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
@@ -215,7 +233,11 @@ fun FullScreenPhotoViewer(
                             totalCount = displayedPhotos.size,
                             currentUsername = currentUsername,
                             isOwner = isOwner,
+                            commentsByPostId = commentsByPostId,
                             onLikeChanged = onLikeChanged,
+                            onLoadComments = onLoadComments,
+                            onAddComment = onAddComment,
+                            onShareChanged = onShareChanged,
                             onDeletePhoto = { deletedPhoto ->
                                 displayedPhotos.remove(deletedPhoto)
                                 onDeletePhoto?.invoke(deletedPhoto)
@@ -241,20 +263,26 @@ fun InstagramPostCard(
     totalCount: Int,
     currentUsername: String = "",
     isOwner: Boolean? = null,
+    commentsByPostId: Map<String, List<com.example.data.model.CommentEntity>> = emptyMap(),
     onLikeChanged: ((photoId: String, isLiked: Boolean, newCount: Int) -> Unit)? = null,
+    onLoadComments: ((photoData: FullScreenPhotoData) -> Unit)? = null,
+    onAddComment: ((photoData: FullScreenPhotoData, text: String) -> Unit)? = null,
+    onShareChanged: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onDeletePhoto: ((photoData: FullScreenPhotoData) -> Unit)? = null,
     onReportPhoto: ((photoData: FullScreenPhotoData, reason: String, details: String) -> Unit)? = null,
     onPhotoViewed: ((photoData: FullScreenPhotoData) -> Unit)? = null
 ) {
     LaunchedEffect(photoData.id, photoData.firestoreDocId) {
         onPhotoViewed?.invoke(photoData)
+        onLoadComments?.invoke(photoData)
     }
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
-    var isLiked by remember(photoData.id) { mutableStateOf(photoData.initialIsLiked) }
-    var likesCount by remember(photoData.id) { mutableStateOf(photoData.initialLikes) }
+    var isLiked by remember(photoData.id, photoData.initialIsLiked) { mutableStateOf(photoData.initialIsLiked) }
+    var likesCount by remember(photoData.id, photoData.initialLikes) { mutableStateOf(photoData.initialLikes) }
+    var sharesCount by remember(photoData.id, photoData.sharesCount) { mutableStateOf(photoData.sharesCount) }
     var showBigHeartAnim by remember { mutableStateOf(false) }
     var isSaved by remember(photoData.id) { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
@@ -280,8 +308,34 @@ fun InstagramPostCard(
         }
     }
 
-    // Dynamic Comments State based on actual post
-    val commentsList = remember(photoData.id) { mutableStateListOf<PhotoCommentItem>() }
+    // Dynamic Comments State synced with Firestore / ViewModel
+    val cleanPhotoId = remember(photoData.id) { photoData.id.removePrefix("photo_") }
+    val persistedComments = remember(commentsByPostId, photoData.id, photoData.firestoreDocId, cleanPhotoId) {
+        val rawList = commentsByPostId["photo_$cleanPhotoId"]
+            ?: commentsByPostId[photoData.id]
+            ?: photoData.firestoreDocId?.takeIf { it.isNotBlank() }?.let { commentsByPostId[it] }
+            ?: commentsByPostId[cleanPhotoId]
+            ?: emptyList()
+        rawList.map { c ->
+            PhotoCommentItem(
+                id = "${c.id}_${c.timestamp}_${c.username}",
+                authorName = c.username,
+                authorUsername = c.username,
+                text = c.text,
+                timeAgo = android.text.format.DateUtils.getRelativeTimeSpanString(
+                    c.timestamp,
+                    System.currentTimeMillis(),
+                    android.text.format.DateUtils.MINUTE_IN_MILLIS
+                ).toString()
+            )
+        }
+    }
+    val localComments = remember(photoData.id) { mutableStateListOf<PhotoCommentItem>() }
+    val likedCommentIds = remember(photoData.id) { mutableStateMapOf<String, Boolean>() }
+    val commentsList = remember(persistedComments, localComments.size, onAddComment) {
+        if (onAddComment != null) persistedComments.reversed() else localComments.toList()
+    }
+    val displayCommentsCount = maxOf(commentsList.size, photoData.initialComments)
     var showCommentSheet by remember { mutableStateOf(false) }
     var newCommentText by remember { mutableStateOf("") }
 
@@ -322,12 +376,22 @@ fun InstagramPostCard(
     }
 
     fun sharePost() {
-        com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+        val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
             context = context,
             subject = "YouSnap Photo",
-            text = "Check out @$displayUsername's photo on YouSnap!\n$postShareUrl",
+            text = postShareUrl,
             chooserTitle = "Share post via"
         )
+        if (!shared) {
+            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                context = context,
+                label = "Post Link",
+                url = postShareUrl,
+                toastMessage = "Post link copied! 🔗"
+            )
+        }
+        sharesCount += 1
+        onShareChanged?.invoke(photoData)
     }
 
     fun toggleSave() {
@@ -589,7 +653,7 @@ fun InstagramPostCard(
                                 com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                     context = context,
                                     subject = "YouSnap Profile",
-                                    text = "Check out @$displayUsername's profile on YouSnap!\n$profileShareUrl",
+                                    text = profileShareUrl,
                                     chooserTitle = "Share profile via"
                                 )
                             }
@@ -727,7 +791,10 @@ fun InstagramPostCard(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .clickable { showCommentSheet = true }
+                        .clickable {
+                            onLoadComments?.invoke(photoData)
+                            showCommentSheet = true
+                        }
                         .testTag("post_comment_button_${photoData.id}")
                 ) {
                     Icon(
@@ -736,10 +803,10 @@ fun InstagramPostCard(
                         tint = WarmCreamTextPrimary,
                         modifier = Modifier.size(24.dp)
                     )
-                    if (commentsList.isNotEmpty()) {
+                    if (displayCommentsCount > 0) {
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "${commentsList.size}",
+                            text = "$displayCommentsCount",
                             color = WarmCreamTextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.5.sp
@@ -748,18 +815,31 @@ fun InstagramPostCard(
                 }
 
                 // 3. SHARE PAPERPLANE BUTTON
-                IconButton(
-                    onClick = { sharePost() },
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .size(36.dp)
+                        .clickable { sharePost() }
                         .testTag("post_share_button_${photoData.id}")
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = "Share",
-                        tint = WarmCreamTextPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    IconButton(
+                        onClick = { sharePost() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.Send,
+                            contentDescription = "Share",
+                            tint = WarmCreamTextPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    if (sharesCount > 0) {
+                        Text(
+                            text = "$sharesCount",
+                            color = WarmCreamTextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
+                    }
                 }
             }
 
@@ -869,21 +949,27 @@ fun InstagramPostCard(
                     }
                 }
 
-                if (commentsList.size > 2) {
+                if (displayCommentsCount > commentsList.size || commentsList.size > 2) {
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "View all ${commentsList.size} comments",
+                        text = "View all $displayCommentsCount comments",
                         color = WarmCreamTextSecondary,
                         fontSize = 13.sp,
-                        modifier = Modifier.clickable { showCommentSheet = true }
+                        modifier = Modifier.clickable {
+                            onLoadComments?.invoke(photoData)
+                            showCommentSheet = true
+                        }
                     )
                 }
             } else {
                 Text(
-                    text = "Add a comment...",
+                    text = if (displayCommentsCount > 0) "View all $displayCommentsCount comments" else "Add a comment...",
                     color = WarmCreamTextSecondary,
                     fontSize = 12.5.sp,
-                    modifier = Modifier.clickable { showCommentSheet = true }
+                    modifier = Modifier.clickable {
+                        onLoadComments?.invoke(photoData)
+                        showCommentSheet = true
+                    }
                 )
             }
 
@@ -982,7 +1068,7 @@ fun InstagramPostCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Comments (${commentsList.size})",
+                        text = "Comments ($displayCommentsCount)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                         color = Color.Black
@@ -1090,16 +1176,17 @@ fun InstagramPostCard(
                                     )
                                 }
 
+                                val isCommentLiked = likedCommentIds[comment.id] ?: comment.isLiked
                                 IconButton(
                                     onClick = {
-                                        commentsList[idx] = comment.copy(isLiked = !comment.isLiked)
+                                        likedCommentIds[comment.id] = !isCommentLiked
                                     },
                                     modifier = Modifier.size(28.dp)
                                 ) {
                                     Icon(
-                                        imageVector = if (comment.isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                                        imageVector = if (isCommentLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
                                         contentDescription = "Like comment",
-                                        tint = if (comment.isLiked) Color(0xFFFF2A6D) else Color(0xFF757575),
+                                        tint = if (isCommentLiked) Color(0xFFFF2A6D) else Color(0xFF757575),
                                         modifier = Modifier.size(14.dp)
                                     )
                                 }
@@ -1143,15 +1230,19 @@ fun InstagramPostCard(
                             val postCommentAction = {
                                 val trimmed = newCommentText.trim()
                                 if (trimmed.isNotEmpty()) {
-                                    commentsList.add(
-                                        0,
-                                        PhotoCommentItem(
-                                            authorName = "You",
-                                            authorUsername = "you",
-                                            text = trimmed,
-                                            timeAgo = "Just now"
+                                    if (onAddComment != null) {
+                                        onAddComment.invoke(photoData, trimmed)
+                                    } else {
+                                        localComments.add(
+                                            0,
+                                            PhotoCommentItem(
+                                                authorName = currentUsername.ifBlank { "You" },
+                                                authorUsername = currentUsername.ifBlank { "you" },
+                                                text = trimmed,
+                                                timeAgo = "Just now"
+                                            )
                                         )
-                                    )
+                                    }
                                     newCommentText = ""
                                     keyboardController?.hide()
                                     focusManager.clearFocus()

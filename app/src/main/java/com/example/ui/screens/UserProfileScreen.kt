@@ -68,11 +68,13 @@ fun UserProfileScreen(
         rawPhotos
             .filter { it.creatorUsername.equals(username, ignoreCase = true) }
             .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else it.id }
+            .sortedByDescending { it.createdAtMillis.takeIf { c -> c > 0L } ?: it.id.toLongOrNull() ?: 0L }
     }
     val userReels = remember(rawReels, username) {
         rawReels
             .filter { it.creatorUsername.equals(username, ignoreCase = true) }
             .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
+            .sortedByDescending { it.createdAtMillis.takeIf { c -> c > 0L } ?: it.timestamp }
     }
 
     val isFollowing = followingMap.entries
@@ -100,6 +102,8 @@ fun UserProfileScreen(
     var selectedPhotoIndexForViewer by remember { mutableStateOf<Int?>(null) }
     val photoLikesMap = remember { mutableStateMapOf<String, Int>() }
     val photoLikedStatusMap = remember { mutableStateMapOf<String, Boolean>() }
+    val homePostCommentsMap by viewModel.homePostComments.collectAsState()
+    val homePostSharesMap by viewModel.homePostSharesCount.collectAsState()
     var showMoreMenu by remember { mutableStateOf(false) }
     var showReportSheet by remember { mutableStateOf(false) }
     var isRefreshing by remember { mutableStateOf(false) }
@@ -153,7 +157,7 @@ fun UserProfileScreen(
                                     com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                         context = context,
                                         subject = "YouSnap Profile",
-                                        text = "Check out $displayName (@$username) on YouSnap!\n$profileUrl",
+                                        text = profileUrl,
                                         chooserTitle = "Share profile via"
                                     )
                                 },
@@ -617,9 +621,21 @@ fun UserProfileScreen(
         // Full-Screen Photo Viewer
         selectedPhotoIndexForViewer?.let { startIndex ->
             val updatedPhotos = userPhotos.map { p ->
+                val cleanId = p.id.removePrefix("photo_")
+                val photoKey = "photo_$cleanId"
                 val currentLikes = photoLikesMap[p.id] ?: p.initialLikes
                 val isLiked = photoLikedStatusMap[p.id] ?: p.initialIsLiked
-                p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
+                val currentShares = homePostSharesMap[photoKey] ?: homePostSharesMap[p.id] ?: p.sharesCount
+                val currentComments = maxOf(
+                    p.initialComments,
+                    (homePostCommentsMap[photoKey] ?: homePostCommentsMap[p.id] ?: emptyList()).size
+                )
+                p.copy(
+                    initialLikes = currentLikes,
+                    initialIsLiked = isLiked,
+                    initialComments = currentComments,
+                    sharesCount = currentShares
+                )
             }
             if (updatedPhotos.isEmpty()) {
                 LaunchedEffect(Unit) { selectedPhotoIndexForViewer = null }
@@ -632,6 +648,7 @@ fun UserProfileScreen(
                     initialIndex = startIndex.coerceIn(0, updatedPhotos.lastIndex),
                     currentUsername = currentProfile.username,
                     isOwner = false,
+                    commentsByPostId = homePostCommentsMap,
                     onDismiss = { selectedPhotoIndexForViewer = null },
                     onLikeChanged = { photoId, liked, newCount ->
                         photoLikedStatusMap[photoId] = liked
@@ -639,6 +656,15 @@ fun UserProfileScreen(
                         updatedPhotos.find { it.id == photoId }?.let { photo ->
                             viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
                         }
+                    },
+                    onLoadComments = { photo ->
+                        viewModel.loadCommentsForHomePost(photo.id, photo.firestoreDocId)
+                    },
+                    onAddComment = { photo, text ->
+                        viewModel.addCommentToHomePost("photo_${photo.id.removePrefix("photo_")}", text)
+                    },
+                    onShareChanged = { photo ->
+                        viewModel.incrementPostShares(photo)
                     },
                     onReportPhoto = { photoData, reason, details ->
                         viewModel.reportPost(
@@ -935,7 +961,74 @@ fun PinLockScreen(
     viewModel: YouSnapViewModel,
     onUnlockSuccess: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("Pin Lock Screen")
+    var pinInput by remember { mutableStateOf("") }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Lock,
+            contentDescription = "Security PIN Lock",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(48.dp)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Enter Security PIN",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Enter your 6-digit PIN to unlock YouSnap.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        OutlinedTextField(
+            value = pinInput,
+            onValueChange = { value ->
+                if (value.length <= 6 && value.all { it.isDigit() }) {
+                    pinInput = value
+                    errorText = null
+                }
+            },
+            label = { Text("6-digit PIN") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
+            ),
+            isError = errorText != null,
+            modifier = Modifier.fillMaxWidth(0.75f).testTag("pin_lock_input")
+        )
+        if (errorText != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = errorText.orEmpty(),
+                color = MaterialTheme.colorScheme.error,
+                fontSize = 12.sp
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = {
+                if (viewModel.verifyAppPin(pinInput)) {
+                    onUnlockSuccess()
+                } else {
+                    errorText = "Incorrect PIN. Please try again."
+                }
+            },
+            enabled = pinInput.length == 6,
+            modifier = Modifier.fillMaxWidth(0.75f).testTag("pin_lock_unlock_button")
+        ) {
+            Text("Unlock")
+        }
     }
 }

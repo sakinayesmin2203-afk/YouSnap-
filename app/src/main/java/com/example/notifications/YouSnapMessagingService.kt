@@ -17,7 +17,6 @@ class YouSnapMessagingService : FirebaseMessagingService() {
 
         val uid = try {
             FirebaseAuth.getInstance().currentUser?.uid
-                ?: prefs.getString("active_user_uid", null)?.takeIf { it.isNotBlank() }
         } catch (_: Throwable) {
             null
         }

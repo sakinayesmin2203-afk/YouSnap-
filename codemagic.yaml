@@ -68,17 +68,29 @@ workflows:
             fi
           fi
 
-          # Optional: if KEYSTORE_BASE64 is configured in Codemagic secrets, decode it for release builds
+          # 1. If KEYSTORE_BASE64 is configured in Codemagic secrets, decode it for release builds
           if [ -n "$KEYSTORE_BASE64" ]; then
             TARGET_KEYSTORE="${KEYSTORE_PATH:-$CM_BUILD_DIR/release-keystore.jks}"
             TARGET_PATH="$TARGET_KEYSTORE" python3 -c "import base64, os, pathlib; pathlib.Path(os.environ['TARGET_PATH']).write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'].strip()))" 2>/dev/null || true
             if [ -s "$TARGET_KEYSTORE" ] && [ -n "$CM_ENV" ]; then
               echo "KEYSTORE_PATH=$TARGET_KEYSTORE" >> "$CM_ENV"
+              export KEYSTORE_PATH="$TARGET_KEYSTORE"
             fi
+          elif [ -z "$KEYSTORE_PATH" ] && [ -f "my-upload-key.jks" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            # 2. Fallback to repo's fixed my-upload-key.jks when password/alias secrets are configured
+            if [ -n "$CM_ENV" ]; then
+              echo "KEYSTORE_PATH=$PWD/my-upload-key.jks" >> "$CM_ENV"
+            fi
+            export KEYSTORE_PATH="$PWD/my-upload-key.jks"
           fi
 
-          echo "Active signing keystore SHA-1 / SHA-256:"
-          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
+          if [ -n "$KEYSTORE_PATH" ] && [ -s "$KEYSTORE_PATH" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ]; then
+            echo "Using fixed Release Keystore: $KEYSTORE_PATH (SHA-1 / SHA-256 stays identical on every build):"
+            keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | grep -E "SHA1:|SHA256:" || true
+          else
+            echo "WARNING: Release keystore secrets (KEYSTORE_BASE64 or KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD) not set; falling back to debug.keystore:"
+            keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
+          fi
 
       - name: Prepare Gradle wrapper
         script: |

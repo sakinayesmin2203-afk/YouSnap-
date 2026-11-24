@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -245,11 +246,19 @@ fun PrivacySecurityScreen(
     var currentPassword by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
+    var showCurrentPwd by remember { mutableStateOf(false) }
+    var showNewPwd by remember { mutableStateOf(false) }
+    var showConfirmPwd by remember { mutableStateOf(false) }
+    var isUpdatingPassword by remember { mutableStateOf(false) }
 
     // Change Password Dialog
     if (showChangePasswordDialog) {
         AlertDialog(
-            onDismissRequest = { showChangePasswordDialog = false },
+            onDismissRequest = {
+                if (!isUpdatingPassword) {
+                    showChangePasswordDialog = false
+                }
+            },
             icon = {
                 Icon(
                     imageVector = Icons.Default.Lock,
@@ -261,13 +270,28 @@ fun PrivacySecurityScreen(
             title = { Text("Change Password", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Enter your current password and set a new password.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                    
+                    Text(
+                        "Enter your current password and choose a new password (min 6 characters).",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+
                     OutlinedTextField(
                         value = currentPassword,
                         onValueChange = { currentPassword = it },
                         label = { Text("Current Password") },
                         singleLine = true,
+                        enabled = !isUpdatingPassword,
+                        visualTransformation = if (showCurrentPwd) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { showCurrentPwd = !showCurrentPwd }) {
+                                Icon(
+                                    imageVector = if (showCurrentPwd) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Toggle current password visibility"
+                                )
+                            }
+                        },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -277,6 +301,17 @@ fun PrivacySecurityScreen(
                         onValueChange = { newPassword = it },
                         label = { Text("New Password") },
                         singleLine = true,
+                        enabled = !isUpdatingPassword,
+                        visualTransformation = if (showNewPwd) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { showNewPwd = !showNewPwd }) {
+                                Icon(
+                                    imageVector = if (showNewPwd) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Toggle new password visibility"
+                                )
+                            }
+                        },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -286,6 +321,17 @@ fun PrivacySecurityScreen(
                         onValueChange = { confirmPassword = it },
                         label = { Text("Confirm New Password") },
                         singleLine = true,
+                        enabled = !isUpdatingPassword,
+                        visualTransformation = if (showConfirmPwd) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { showConfirmPwd = !showConfirmPwd }) {
+                                Icon(
+                                    imageVector = if (showConfirmPwd) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Toggle confirm password visibility"
+                                )
+                            }
+                        },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -293,23 +339,50 @@ fun PrivacySecurityScreen(
             },
             confirmButton = {
                 Button(
+                    enabled = !isUpdatingPassword,
                     onClick = {
-                        if (newPassword.isNotBlank() && newPassword == confirmPassword) {
-                            showChangePasswordDialog = false
-                            currentPassword = ""
-                            newPassword = ""
-                            confirmPassword = ""
-                            Toast.makeText(viewModel.app, "Password updated successfully! 🔒", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(viewModel.app, "Passwords do not match or are empty!", Toast.LENGTH_SHORT).show()
+                        when {
+                            currentPassword.isBlank() -> {
+                                Toast.makeText(viewModel.app, "Please enter your current password.", Toast.LENGTH_SHORT).show()
+                            }
+                            newPassword.length < 6 -> {
+                                Toast.makeText(viewModel.app, "New password must be at least 6 characters.", Toast.LENGTH_SHORT).show()
+                            }
+                            newPassword != confirmPassword -> {
+                                Toast.makeText(viewModel.app, "New passwords do not match!", Toast.LENGTH_SHORT).show()
+                            }
+                            else -> {
+                                isUpdatingPassword = true
+                                viewModel.changePassword(currentPassword, newPassword) { success, message ->
+                                    isUpdatingPassword = false
+                                    Toast.makeText(viewModel.app, message, Toast.LENGTH_LONG).show()
+                                    if (success) {
+                                        showChangePasswordDialog = false
+                                        currentPassword = ""
+                                        newPassword = ""
+                                        confirmPassword = ""
+                                    }
+                                }
+                            }
                         }
                     }
                 ) {
-                    Text("Update Password")
+                    if (isUpdatingPassword) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("Update Password")
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showChangePasswordDialog = false }) {
+                TextButton(
+                    enabled = !isUpdatingPassword,
+                    onClick = { showChangePasswordDialog = false }
+                ) {
                     Text("Cancel")
                 }
             }
@@ -2145,8 +2218,6 @@ fun MonetizationScreen(
     val livePhotoUploads by viewModel.photoUploadsCount.collectAsState()
     val liveStoriesUploaded by viewModel.storiesUploadedCount.collectAsState()
 
-    var isAutoFillEnabled by remember { mutableStateOf(false) }
-
     // Targets
     val targetFollowers = 500
     val targetViews = 5000
@@ -2154,12 +2225,11 @@ fun MonetizationScreen(
     val targetStories = 20
 
     val isFilledFromApplication = normalizedStatus == "pending" || normalizedStatus == "approved"
-    val shouldShowFilled = isAutoFillEnabled || isFilledFromApplication
 
-    val followers = if (shouldShowFilled) maxOf(liveFollowers, targetFollowers) else liveFollowers
-    val videoViews = if (shouldShowFilled) maxOf(liveVideoViews, targetViews) else liveVideoViews
-    val photoUploads = if (shouldShowFilled) maxOf(livePhotoUploads, targetPhotos) else livePhotoUploads
-    val storiesUploaded = if (shouldShowFilled) maxOf(liveStoriesUploaded, targetStories) else liveStoriesUploaded
+    val followers = if (isFilledFromApplication) maxOf(liveFollowers, targetFollowers) else liveFollowers
+    val videoViews = if (isFilledFromApplication) maxOf(liveVideoViews, targetViews) else liveVideoViews
+    val photoUploads = if (isFilledFromApplication) maxOf(livePhotoUploads, targetPhotos) else livePhotoUploads
+    val storiesUploaded = if (isFilledFromApplication) maxOf(liveStoriesUploaded, targetStories) else liveStoriesUploaded
 
     // Condition satisfaction checks
     val isFollowersMet = followers >= targetFollowers
@@ -2273,7 +2343,7 @@ fun MonetizationScreen(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.Start
             ) {
                 Text(
                     text = "Eligibility Requirements",
@@ -2281,37 +2351,6 @@ fun MonetizationScreen(
                     fontSize = 15.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-
-                OutlinedButton(
-                    onClick = { isAutoFillEnabled = !isAutoFillEnabled },
-                    shape = RoundedCornerShape(50.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    border = BorderStroke(
-                        1.dp,
-                        if (isAutoFillEnabled) Color(0xFF2EB85C) else Color(0xFFE1306C)
-                    ),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isAutoFillEnabled) {
-                            Color(0xFF2EB85C).copy(alpha = 0.12f)
-                        } else {
-                            Color(0xFFE1306C).copy(alpha = 0.08f)
-                        },
-                        contentColor = if (isAutoFillEnabled) Color(0xFF2EB85C) else Color(0xFFE1306C)
-                    ),
-                    modifier = Modifier.testTag("monetization_auto_fill_button")
-                ) {
-                    Icon(
-                        imageVector = if (isAutoFillEnabled) Icons.Default.CheckCircle else Icons.Default.AutoFixHigh,
-                        contentDescription = "Auto Fill",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isAutoFillEnabled) "Auto Filled" else "Auto Fill",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
             }
 
             // Metric Tracker 1: Followers

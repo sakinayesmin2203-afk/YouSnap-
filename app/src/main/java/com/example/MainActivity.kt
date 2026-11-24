@@ -109,33 +109,64 @@ class MainActivity : ComponentActivity() {
         intent?.data = null
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        handleNotificationIntent(intent)
-        handleDeepLinkIntent(intent)
+    private fun configureAppCheck(context: android.content.Context, launchIntent: Intent?) {
+        val tag = "AppCheckInit"
+        val debugTokenExtra = "FIREBASE_APPCHECK_DEBUG_TOKEN"
+        val debugStorePrefix = "com.google.firebase.appcheck.debug.store."
+        val debugSecretKey = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 
-        // Safe Firebase Initialization to prevent any startup crash
         try {
-            if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
                 try {
-                    com.google.firebase.FirebaseApp.initializeApp(this)
+                    com.google.firebase.FirebaseApp.initializeApp(context)
                 } catch (e: Throwable) {
-                    android.util.Log.w("MainActivity", "Default FirebaseApp init skipped or failed: ${e.message}")
+                    android.util.Log.w(tag, "Default FirebaseApp init skipped or failed: ${e.message}")
                 }
-                // If default init was not possible, initialize with explicit project options
-                if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) {
+                if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
                     val options = com.google.firebase.FirebaseOptions.Builder()
                         .setApplicationId("1:87251634633:android:b0490cfd2b846fadc74018")
                         .setApiKey("AIzaSyC8Kf0iuclEjg2OGgn8pgx-FQESSsMwvEY")
                         .setProjectId("yousnap-app")
                         .setStorageBucket("yousnap-app.firebasestorage.app")
                         .build()
-                    com.google.firebase.FirebaseApp.initializeApp(this, options)
+                    com.google.firebase.FirebaseApp.initializeApp(context, options)
                 }
             }
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Firebase safe initialization handled: ${e.message}")
+
+            if (BuildConfig.DEBUG) {
+                val debugToken = launchIntent?.getStringExtra(debugTokenExtra)
+                if (!debugToken.isNullOrEmpty()) {
+                    val persistenceKey = com.google.firebase.FirebaseApp.getInstance().persistenceKey
+                    val prefs = context.getSharedPreferences(
+                        "$debugStorePrefix$persistenceKey",
+                        android.content.Context.MODE_PRIVATE
+                    )
+                    // Synchronous commit() is required before installing DebugAppCheckProviderFactory
+                    prefs.edit().putString(debugSecretKey, debugToken).commit()
+                }
+                com.google.firebase.appcheck.FirebaseAppCheck.getInstance()
+                    .installAppCheckProviderFactory(
+                        com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory.getInstance()
+                    )
+            } else {
+                com.google.firebase.appcheck.FirebaseAppCheck.getInstance()
+                    .installAppCheckProviderFactory(
+                        com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory.getInstance()
+                    )
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(tag, "Failed to initialize Firebase App Check", e)
         }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // STEP 1: Initialize Firebase and App Check before UI, ViewModels, or Firebase calls
+        configureAppCheck(this, intent)
+
+        handleNotificationIntent(intent)
+        handleDeepLinkIntent(intent)
 
         // Initialize Google Mobile Ads SDK (AdMob)
         try {

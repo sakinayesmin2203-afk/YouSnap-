@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import androidx.annotation.Keep
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ads.AdMobRevenueTracker
@@ -11,13 +12,18 @@ import com.example.data.model.*
 import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.utils.CompressionState
 import com.example.ui.utils.DeepLinkHelper
+import com.example.ui.utils.FeedRankingAlgorithm
+import com.example.ui.utils.SecurityUtils
 import com.example.ui.utils.VideoCompressor
 import com.example.ui.utils.YouSnapDeepLink
 import com.example.data.repository.SupabaseRepository
 import com.example.data.repository.UploadResult
 import com.example.data.repository.UploadTransferState
 import com.example.notifications.YouSnapNotificationHelper
+import com.google.firebase.FirebaseTooManyRequestsException
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
@@ -33,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -108,6 +115,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val homePostComments = MutableStateFlow<Map<String, List<CommentEntity>>>(emptyMap())
     val homePostLikedState = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val homePostLikesCount = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val homePostSharesCount = MutableStateFlow<Map<String, Int>>(emptyMap())
     val homePostBookmarked = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val isHomeRefreshing = MutableStateFlow(false)
     val userPrivacyMap = MutableStateFlow<Map<String, Boolean>>(emptyMap())
@@ -117,9 +125,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     val uploadStatusMessage = MutableStateFlow("Preparing media...")
     val uploadErrorMessage = MutableStateFlow<String?>(null)
     val activeReelComments = MutableStateFlow<List<CommentEntity>>(emptyList())
+    val reelCommentsByReelId = MutableStateFlow<Map<Int, List<CommentEntity>>>(emptyMap())
     val currentCommentText = MutableStateFlow("")
     private val recentlyUploadedUrls = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val inFlightUploadDocKeys = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val inFlightPostLikeMutations = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val inFlightPostCommentMutations = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val inFlightPostShareMutations = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val inFlightReelLikeMutations = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val inFlightReelCommentMutations = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val inFlightReelShareMutations = java.util.concurrent.ConcurrentHashMap<Int, Long>()
     private var refreshFeedJob: kotlinx.coroutines.Job? = null
     private val pendingSyncLock = Any()
     private val reelFirestoreDocIdByMediaUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -147,6 +162,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     private var reelsCollectionListener: ListenerRegistration? = null
     private var videosCollectionListener: ListenerRegistration? = null
     private var usersCollectionListener: ListenerRegistration? = null
+    private var commentsCollectionListener: ListenerRegistration? = null
+    private var reelCommentsCollectionListener: ListenerRegistration? = null
+    private var viralExpirationJob: kotlinx.coroutines.Job? = null
 
     fun clearUploadError() {
         uploadErrorMessage.value = null
@@ -243,18 +261,22 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try { loadPersonalPhotosFromPrefs() } catch (e: Throwable) {}
         try { loadReelsFromPrefs() } catch (e: Throwable) {}
         try { loadStoriesFromPrefs() } catch (e: Throwable) {}
+        try { loadHomeCommentsFromPrefs() } catch (e: Throwable) {}
+        try { loadReelCommentsFromPrefs() } catch (e: Throwable) {}
         try { loadProfileVisitsFromPrefs() } catch (e: Throwable) {}
         try { recalculateCreatorStats() } catch (e: Throwable) {}
         try { listenToAuthChanges() } catch (e: Throwable) {}
-        try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
-        try { startListeningToFeedAndContent() } catch (e: Throwable) {}
-        try { refreshHomeFeed() } catch (e: Throwable) {}
         try { loadSearchHistory() } catch (e: Throwable) {}
-        try { loadFollowingFromFirestore() } catch (e: Throwable) {}
-        try { startListeningToNotifications() } catch (e: Throwable) {}
-        try { startListeningToAccountStatus() } catch (e: Throwable) {}
-        try { startListeningToMonetizationStatus() } catch (e: Throwable) {}
-        try { syncFcmToken() } catch (e: Throwable) {}
+        if (auth.currentUser != null) {
+            try { fetchAndSyncUserProfile() } catch (e: Throwable) {}
+            try { startListeningToFeedAndContent() } catch (e: Throwable) {}
+            try { refreshHomeFeed() } catch (e: Throwable) {}
+            try { loadFollowingFromFirestore() } catch (e: Throwable) {}
+            try { startListeningToNotifications() } catch (e: Throwable) {}
+            try { startListeningToAccountStatus() } catch (e: Throwable) {}
+            try { startListeningToMonetizationStatus() } catch (e: Throwable) {}
+            try { syncFcmToken() } catch (e: Throwable) {}
+        }
     }
 
     override fun onCleared() {
@@ -263,6 +285,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         stopListeningToAccountStatus()
         stopListeningToMonetizationStatus()
         stopListeningToFeedAndContent()
+        viralExpirationJob?.cancel()
+        viralExpirationJob = null
         storyListenerRegistration?.remove()
         storyListenerRegistration = null
     }
@@ -385,8 +409,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 AdMobRevenueTracker.setFallbackViewerUid(activeUserUid())
                 if (firebaseAuth.currentUser != null) {
                     fetchAndSyncUserProfile()
+                    startListeningToFeedAndContent()
+                    refreshHomeFeed(showIndicator = false)
+                    loadFollowingFromFirestore()
+                    startListeningToNotifications()
                     startListeningToAccountStatus()
                     startListeningToMonetizationStatus()
+                    syncFcmToken()
                 }
             }
         } catch (e: Throwable) {
@@ -480,10 +509,20 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val email = auth.currentUser?.email ?: prefs.getString("active_user_email", null)
         val cached = loadProfileFromPrefs(uid, email)
         if (cached != null) {
-            _profileState.value = cached
-            myFollowersCount.value = cached.followersCount
-            myFollowingCount.value = cached.followingCount
-            monetizationStatus.value = normalizeMonetizationStatus(cached.monetizationStatus)
+            val migratedPin = if (cached.appPin.isNotBlank() && !SecurityUtils.isHashedPin(cached.appPin)) {
+                SecurityUtils.hashPin(cached.appPin)
+            } else cached.appPin
+            val normalizedCached = if (migratedPin != cached.appPin) {
+                cached.copy(appPin = migratedPin).also { saveProfileToPrefs(it, uid) }
+            } else cached
+            _profileState.value = normalizedCached
+            _settingsState.value = _settingsState.value.copy(
+                appPin = normalizedCached.appPin,
+                isPinEnabled = normalizedCached.isPinEnabled
+            )
+            myFollowersCount.value = normalizedCached.followersCount
+            myFollowingCount.value = normalizedCached.followingCount
+            monetizationStatus.value = normalizeMonetizationStatus(normalizedCached.monetizationStatus)
             loadProfileVisitsFromPrefs()
             recalculateCreatorStats()
         }
@@ -517,10 +556,29 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             userUidByUsername[profile.username.trim().lowercase()] = uid
                             usernameByUid[uid] = profile.username.trim()
                         }
-                        val resolvedProfile = profile.copy(
+                        val rawResolvedProfile = profile.copy(
                             monetizationStatus = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
                         )
+                        val shouldMigratePin = rawResolvedProfile.appPin.isNotBlank() &&
+                            !SecurityUtils.isHashedPin(rawResolvedProfile.appPin)
+                        val finalPinHash = if (shouldMigratePin) {
+                            SecurityUtils.hashPin(rawResolvedProfile.appPin)
+                        } else {
+                            rawResolvedProfile.appPin
+                        }
+                        if (shouldMigratePin && auth.currentUser?.uid == uid) {
+                            db.collection("users").document(uid)
+                                .set(mapOf("appPin" to finalPinHash), SetOptions.merge())
+                        }
+                        val resolvedProfile = if (shouldMigratePin) {
+                            rawResolvedProfile.copy(appPin = finalPinHash)
+                        } else rawResolvedProfile
+
                         _profileState.value = resolvedProfile
+                        _settingsState.value = _settingsState.value.copy(
+                            appPin = resolvedProfile.appPin,
+                            isPinEnabled = resolvedProfile.isPinEnabled
+                        )
                         myFollowersCount.value = resolvedProfile.followersCount
                         myFollowingCount.value = resolvedProfile.followingCount
                         monetizationStatus.value = resolvedProfile.monetizationStatus
@@ -593,6 +651,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         stopListeningToNotifications()
         stopListeningToAccountStatus()
         stopListeningToMonetizationStatus()
+        stopListeningToFeedAndContent()
         sessionLoggedAdViewMediaKeys.clear()
         AdMobRevenueTracker.clearActiveMediaContext()
         AdMobRevenueTracker.setFallbackViewerUid(null)
@@ -1202,7 +1261,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "category" to resolvedCategory,
                         "timestamp" to timestamp,
                         "likesCount" to 0,
-                        "commentsCount" to 0
+                        "commentsCount" to 0,
+                        "sharesCount" to 0,
+                        "likedBy" to emptyList<String>()
                     )
                     else -> mapOf(
                         "id" to timestamp.toString(),
@@ -1223,7 +1284,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "timestamp" to timestamp,
                         "likesCount" to 0,
                         "commentsCount" to 0,
+                        "sharesCount" to 0,
                         "viewsCount" to 0,
+                        "likedBy" to emptyList<String>(),
                         "bgGradientStart" to gradientStart,
                         "bgGradientEnd" to gradientEnd
                     )
@@ -1767,6 +1830,46 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.w("YouSnapViewModel", "Could not attach videos listener: ${t.message}")
             }
         }
+
+        if (commentsCollectionListener == null) {
+            try {
+                commentsCollectionListener = db.collection("comments")
+                    .limit(500)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Comments listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyHomeCommentsSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach comments listener: ${t.message}")
+            }
+        }
+
+        if (reelCommentsCollectionListener == null) {
+            try {
+                reelCommentsCollectionListener = db.collection("reels_comments")
+                    .limit(500)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.w("YouSnapViewModel", "Reel comments listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+                        applyReelCommentsSnapshot(
+                            documents = snapshot.documents,
+                            isFromCache = snapshot.metadata.isFromCache
+                        )
+                    }
+            } catch (t: Throwable) {
+                android.util.Log.w("YouSnapViewModel", "Could not attach reel comments listener: ${t.message}")
+            }
+        }
     }
 
     fun stopListeningToFeedAndContent() {
@@ -1780,6 +1883,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         videosCollectionListener = null
         usersCollectionListener?.remove()
         usersCollectionListener = null
+        commentsCollectionListener?.remove()
+        commentsCollectionListener = null
+        reelCommentsCollectionListener?.remove()
+        reelCommentsCollectionListener = null
     }
 
     private fun isDocumentRestricted(doc: DocumentSnapshot): Boolean {
@@ -1805,6 +1912,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val pendingStoryDocIds = getPendingUploadDocIds("stories")
         val restrictedDocIds = documents.filter { isDocumentRestricted(it) }.map { it.id }.toSet()
 
+        val nowMs = System.currentTimeMillis()
         val remoteStories = documents.mapNotNull { doc ->
             if ("stories/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
             if (isDocumentRestricted(doc)) return@mapNotNull null
@@ -1822,7 +1930,19 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     storyCreatorUidByOwner[story.ownerUsername.trim().lowercase()] = ownerUid
                 }
             }
-            normalizeStoryMedia(story.copy(mediaUrl = fixedUrl, firestoreDocId = doc.id))
+            val viral = FeedRankingAlgorithm.extractViralMetadata(doc)
+            val createdAtMs = FeedRankingAlgorithm.extractCreatedAtMillis(doc, story.timestamp)
+            normalizeStoryMedia(
+                story.copy(
+                    mediaUrl = fixedUrl,
+                    firestoreDocId = doc.id,
+                    isViral = viral.isViral,
+                    viralDurationDays = viral.viralDurationDays,
+                    viralDurationHours = viral.viralDurationHours,
+                    viralExpiresAt = viral.viralExpiresAt,
+                    createdAtMillis = createdAtMs
+                )
+            )
         }
 
         val remoteDocIds = remoteStories.map { it.firestoreDocId }.filter { it.isNotBlank() }.toSet()
@@ -1836,12 +1956,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 (local.mediaUrl.isBlank() || !isUrlOrKeyDeleted(local.mediaUrl, deletedUrls))
         }.map { normalizeStoryMedia(it) }
 
-        val mergedStories = (remoteStories + protectedPendingStories)
-            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" }
-            .sortedByDescending { it.timestamp }
+        val mergedStories = FeedRankingAlgorithm.rankStories(
+            stories = (remoteStories + protectedPendingStories)
+                .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.ownerUsername}_${it.storyId}" },
+            nowMs = nowMs
+        )
 
         allStories.value = mergedStories
         saveStoriesToPrefs()
+        scheduleNextViralExpirationCheck()
 
         val activeViewerStory = currentStoryState.value
         if (activeViewerStory != null) {
@@ -1870,9 +1993,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val myUsername = _profileState.value.username.trim()
         val usersList = allUsers.value
         val existingLikedSnapshot = homePostLikedState.value
+        val existingLikesCountSnapshot = homePostLikesCount.value
+        val existingSharesCountSnapshot = homePostSharesCount.value
+        val existingPhotosByKey = personalPhotosState.value.associateBy { it.firestoreDocId?.takeIf { d -> d.isNotBlank() } ?: it.id }
+        val nowMs = System.currentTimeMillis()
+        val mutationWindowMs = 15_000L
 
         val remoteLikedByKey = mutableMapOf<String, Boolean>()
         val remoteLikesCountByKey = mutableMapOf<String, Int>()
+        val remoteSharesCountByKey = mutableMapOf<String, Int>()
 
         val remotePhotos = documents.mapNotNull { doc ->
             if ("posts/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
@@ -1891,29 +2020,73 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 ?: uname
             val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
                 ?: matchedUser?.profilePic.orEmpty()
-            val likesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
-            val commentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0)
+            val remoteLikesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
+            val remoteCommentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0)
+            val remoteSharesCount = (doc.getLong("sharesCount") ?: 0L).toInt().coerceAtLeast(0)
             val postKey = "photo_$id"
+            val existingPhoto = existingPhotosByKey[doc.id]
+                ?: personalPhotosState.value.firstOrNull { it.id == id || it.firestoreDocId == doc.id }
+
+            val hasInFlightLike = listOf(id, postKey, doc.id).any { k ->
+                nowMs - (inFlightPostLikeMutations[k] ?: 0L) < mutationWindowMs
+            }
+            val hasInFlightComment = listOf(id, postKey, doc.id).any { k ->
+                nowMs - (inFlightPostCommentMutations[k] ?: 0L) < mutationWindowMs
+            }
+            val hasInFlightShare = listOf(id, postKey, doc.id).any { k ->
+                nowMs - (inFlightPostShareMutations[k] ?: 0L) < mutationWindowMs
+            }
+
             val hasLikedByField = doc.contains("likedBy")
             val likedByList = (doc.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
-            val isLiked = if (hasLikedByField) {
+            val remoteIsLiked = if (hasLikedByField) {
                 (myUid.isNotBlank() && likedByList.contains(myUid)) ||
                     (myUsername.isNotBlank() && likedByList.any { it.equals(myUsername, ignoreCase = true) })
             } else {
-                existingLikedSnapshot[postKey] ?: existingLikedSnapshot[id] ?: false
+                existingLikedSnapshot[postKey] ?: existingLikedSnapshot[id] ?: existingPhoto?.initialIsLiked ?: false
             }
 
-            remoteLikesCountByKey[id] = likesCount
-            remoteLikesCountByKey[postKey] = likesCount
-            if (hasLikedByField) {
-                remoteLikedByKey[id] = isLiked
-                remoteLikedByKey[postKey] = isLiked
+            val resolvedIsLiked = if (hasInFlightLike) {
+                existingLikedSnapshot[postKey] ?: existingLikedSnapshot[id] ?: existingPhoto?.initialIsLiked ?: remoteIsLiked
+            } else {
+                remoteIsLiked
+            }
+            val resolvedLikesCount = if (hasInFlightLike) {
+                existingLikesCountSnapshot[postKey] ?: existingLikesCountSnapshot[id] ?: existingPhoto?.initialLikes ?: remoteLikesCount
+            } else {
+                remoteLikesCount
+            }
+            val loadedCommentsSize = maxOf(
+                homePostComments.value[postKey]?.size ?: 0,
+                homePostComments.value[id]?.size ?: 0,
+                homePostComments.value[doc.id]?.size ?: 0
+            )
+            val resolvedCommentsCount = if (hasInFlightComment) {
+                maxOf(remoteCommentsCount, loadedCommentsSize, existingPhoto?.initialComments ?: 0)
+            } else {
+                maxOf(remoteCommentsCount, loadedCommentsSize)
+            }
+            val resolvedSharesCount = if (hasInFlightShare) {
+                maxOf(remoteSharesCount, existingSharesCountSnapshot[postKey] ?: existingSharesCountSnapshot[id] ?: existingPhoto?.sharesCount ?: 0)
+            } else {
+                remoteSharesCount
+            }
+
+            remoteLikesCountByKey[id] = resolvedLikesCount
+            remoteLikesCountByKey[postKey] = resolvedLikesCount
+            remoteSharesCountByKey[id] = resolvedSharesCount
+            remoteSharesCountByKey[postKey] = resolvedSharesCount
+            if (hasLikedByField || hasInFlightLike) {
+                remoteLikedByKey[id] = resolvedIsLiked
+                remoteLikedByKey[postKey] = resolvedIsLiked
             }
 
             val resolvedShareLink = doc.getString("shareLink")?.takeIf { it.isNotBlank() }
                 ?: DeepLinkHelper.buildPostUrl(doc.id)
             photoShareLinkByKey[doc.id] = resolvedShareLink
             photoShareLinkByKey[id] = resolvedShareLink
+            val viral = FeedRankingAlgorithm.extractViralMetadata(doc)
+            val createdAtMs = FeedRankingAlgorithm.extractCreatedAtMillis(doc, ts)
 
             FullScreenPhotoData(
                 id = id,
@@ -1923,12 +2096,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 creatorUsername = uname,
                 creatorAvatar = avatar,
                 creatorUid = doc.getString("creatorUid") ?: doc.getString("userId") ?: "",
-                initialLikes = likesCount,
-                initialComments = commentsCount,
-                initialIsLiked = isLiked,
+                initialLikes = resolvedLikesCount,
+                initialComments = resolvedCommentsCount,
+                sharesCount = resolvedSharesCount,
+                initialIsLiked = resolvedIsLiked,
                 timeAgo = if (ts > 0L) formatRelativeTime(ts) else "Just now",
                 firestoreDocId = doc.id,
-                shareLink = resolvedShareLink
+                shareLink = resolvedShareLink,
+                isViral = viral.isViral,
+                viralDurationDays = viral.viralDurationDays,
+                viralDurationHours = viral.viralDurationHours,
+                viralExpiresAt = viral.viralExpiresAt,
+                createdAtMillis = createdAtMs
             )
         }
 
@@ -1946,22 +2125,30 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 (local.imageUrl.isBlank() || !isUrlOrKeyDeleted(local.imageUrl, deletedUrls))
         }
 
-        val mergedPhotos = (remotePhotos + protectedPendingPhotos)
-            .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id }
-            .sortedByDescending { it.id.toLongOrNull() ?: 0L }
+        val mergedPhotos = FeedRankingAlgorithm.rankPhotos(
+            photos = (remotePhotos + protectedPendingPhotos)
+                .distinctBy { if (it.imageUrl.isNotBlank()) it.imageUrl else it.id },
+            nowMs = nowMs
+        )
 
         personalPhotosState.value = mergedPhotos
         savePersonalPhotosToPrefs()
+        scheduleNextViralExpirationCheck()
 
-        val activeIds = mergedPhotos.flatMap { listOf(it.id, "photo_${it.id}") }.toSet()
+        val activeIds = mergedPhotos.flatMap {
+            listOfNotNull(it.id, "photo_${it.id}", it.firestoreDocId?.takeIf { d -> d.isNotBlank() })
+        }.toSet()
         val nextLikesCount = homePostLikesCount.value.filterKeys { it in activeIds }.toMutableMap()
         val nextLikedState = homePostLikedState.value.filterKeys { it in activeIds }.toMutableMap()
+        val nextSharesCount = homePostSharesCount.value.filterKeys { it in activeIds }.toMutableMap()
         if (!hasPendingWrites) {
             nextLikesCount.putAll(remoteLikesCountByKey)
             nextLikedState.putAll(remoteLikedByKey)
+            nextSharesCount.putAll(remoteSharesCountByKey)
         }
         homePostLikesCount.value = nextLikesCount
         homePostLikedState.value = nextLikedState
+        homePostSharesCount.value = nextSharesCount
         homePostComments.value = homePostComments.value.filterKeys { it in activeIds }
         homePostBookmarked.value = homePostBookmarked.value.filterKeys { it in activeIds }
 
@@ -1990,6 +2177,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         existingThumbByUrl: Map<String, String>,
         existingUidByUrl: Map<String, String>
     ): List<ReelEntity> {
+        val nowMs = System.currentTimeMillis()
+        val mutationWindowMs = 15_000L
+        val existingById = _reelsState.value.associateBy { it.id }
+        val existingByUrl = _reelsState.value.filter { it.mediaUrl.isNotBlank() }.associateBy { it.mediaUrl }
+
         return documents.mapNotNull { doc ->
             if ("$sourceCollection/${doc.id}" in pendingDeleteKeys) return@mapNotNull null
             if (isDocumentRestricted(doc)) return@mapNotNull null
@@ -2012,10 +2204,33 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 ?: matchedUser?.profilePic.orEmpty()
             val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
             val likedByList = (doc.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
-            val isLiked = (myUid.isNotBlank() && likedByList.contains(myUid)) ||
+            val remoteIsLiked = (myUid.isNotBlank() && likedByList.contains(myUid)) ||
                 (myUsername.isNotBlank() && likedByList.any { it.equals(myUsername, ignoreCase = true) })
             val isFollowingCreator = followingMap.entries
                 .firstOrNull { it.key.equals(uname, ignoreCase = true) }?.value ?: false
+
+            val existingReel = existingById[reelId] ?: existingByUrl[fixedUrl]
+            val hasInFlightLike = nowMs - (inFlightReelLikeMutations[reelId] ?: 0L) < mutationWindowMs
+            val hasInFlightComment = nowMs - (inFlightReelCommentMutations[reelId] ?: 0L) < mutationWindowMs
+            val hasInFlightShare = nowMs - (inFlightReelShareMutations[reelId] ?: 0L) < mutationWindowMs
+
+            val remoteLikesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
+            val remoteCommentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0)
+            val remoteSharesCount = (doc.getLong("sharesCount") ?: 0L).toInt().coerceAtLeast(0)
+            val loadedReelCommentsSize = reelCommentsByReelId.value[reelId]?.size ?: 0
+
+            val resolvedIsLiked = if (hasInFlightLike && existingReel != null) existingReel.isLiked else remoteIsLiked
+            val resolvedLikesCount = if (hasInFlightLike && existingReel != null) existingReel.likesCount else remoteLikesCount
+            val resolvedCommentsCount = if (hasInFlightComment && existingReel != null) {
+                maxOf(remoteCommentsCount, loadedReelCommentsSize, existingReel.commentsCount)
+            } else {
+                maxOf(remoteCommentsCount, loadedReelCommentsSize)
+            }
+            val resolvedSharesCount = if (hasInFlightShare && existingReel != null) {
+                maxOf(remoteSharesCount, existingReel.sharesCount)
+            } else {
+                remoteSharesCount
+            }
 
             if (fixedUrl.isNotBlank()) {
                 reelFirestoreDocIdByMediaUrl[fixedUrl] = doc.id
@@ -2032,6 +2247,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 ?: DeepLinkHelper.buildReelUrl(doc.id)
             reelShareLinkByKey[doc.id] = resolvedShareLink
             reelShareLinkByKey[reelId.toString()] = resolvedShareLink
+            val viral = FeedRankingAlgorithm.extractViralMetadata(doc)
+            val createdAtMs = FeedRankingAlgorithm.extractCreatedAtMillis(doc, ts)
 
             ReelEntity(
                 id = reelId,
@@ -2043,14 +2260,20 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 thumbnailUrl = doc.getString("thumbnailUrl").orEmpty().ifBlank { existingThumbByUrl[fixedUrl] ?: "" },
                 caption = doc.getString("caption") ?: doc.getString("title") ?: "",
                 audioTitle = audioTitle,
-                likesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0),
-                commentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0),
+                likesCount = resolvedLikesCount,
+                commentsCount = resolvedCommentsCount,
+                sharesCount = resolvedSharesCount,
                 viewsCount = (doc.getLong("viewsCount") ?: 0L).toInt().coerceAtLeast(0),
-                isLiked = isLiked,
+                isLiked = resolvedIsLiked,
                 isFollowingCreator = isFollowingCreator,
                 timestamp = ts,
                 bgGradientStart = doc.getString("bgGradientStart") ?: "#161616",
-                bgGradientEnd = doc.getString("bgGradientEnd") ?: "#161616"
+                bgGradientEnd = doc.getString("bgGradientEnd") ?: "#161616",
+                isViral = viral.isViral,
+                viralDurationDays = viral.viralDurationDays,
+                viralDurationHours = viral.viralDurationHours,
+                viralExpiresAt = viral.viralExpiresAt,
+                createdAtMillis = createdAtMs
             )
         }
     }
@@ -2139,12 +2362,16 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 (local.mediaUrl.isBlank() || !isUrlOrKeyDeleted(local.mediaUrl, deletedUrls))
         }
 
-        val mergedReels = (combinedRemote + protectedPendingReels)
-            .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" }
-            .sortedByDescending { it.timestamp }
+        val nowMs = System.currentTimeMillis()
+        val mergedReels = FeedRankingAlgorithm.rankReels(
+            reels = (combinedRemote + protectedPendingReels)
+                .distinctBy { if (it.mediaUrl.isNotBlank()) it.mediaUrl else "${it.id}_${it.timestamp}" },
+            nowMs = nowMs
+        )
 
         _reelsState.value = mergedReels
         saveReelsToPrefs()
+        scheduleNextViralExpirationCheck()
         recalculateCreatorStats()
 
         val activeIds = mergedReels.map { it.id }.toSet()
@@ -2163,6 +2390,67 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             searchResultPosts.value = mergedReels.filter {
                 it.caption.contains(searchQuery.value, ignoreCase = true) ||
                     it.creatorUsername.contains(searchQuery.value, ignoreCase = true)
+            }
+        }
+    }
+
+    private fun scheduleNextViralExpirationCheck() {
+        viralExpirationJob?.cancel()
+        val nowMs = System.currentTimeMillis()
+        val earliestExpiryMs = FeedRankingAlgorithm.findEarliestFutureExpiryMs(
+            photos = personalPhotosState.value,
+            reels = _reelsState.value,
+            stories = allStories.value,
+            nowMs = nowMs
+        ) ?: return
+
+        viralExpirationJob = viewModelScope.launch {
+            while (isActive) {
+                val currentMs = System.currentTimeMillis()
+                val nextExpiry = FeedRankingAlgorithm.findEarliestFutureExpiryMs(
+                    photos = personalPhotosState.value,
+                    reels = _reelsState.value,
+                    stories = allStories.value,
+                    nowMs = currentMs
+                ) ?: break
+                val remainingMs = nextExpiry - currentMs
+                if (remainingMs <= 0L) {
+                    rerankFeedsForViralExpiration(currentMs)
+                } else {
+                    delay(minOf(remainingMs + 150L, 60_000L))
+                    val afterWaitMs = System.currentTimeMillis()
+                    if (afterWaitMs >= nextExpiry) {
+                        rerankFeedsForViralExpiration(afterWaitMs)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun rerankFeedsForViralExpiration(nowMs: Long = System.currentTimeMillis()) {
+        val rankedPhotos = FeedRankingAlgorithm.rankPhotos(personalPhotosState.value, nowMs)
+        if (rankedPhotos != personalPhotosState.value) {
+            personalPhotosState.value = rankedPhotos
+            savePersonalPhotosToPrefs()
+        }
+
+        val rankedReels = FeedRankingAlgorithm.rankReels(_reelsState.value, nowMs)
+        if (rankedReels != _reelsState.value) {
+            _reelsState.value = rankedReels
+            saveReelsToPrefs()
+        }
+
+        val rankedStories = FeedRankingAlgorithm.rankStories(allStories.value, nowMs)
+        if (rankedStories != allStories.value) {
+            allStories.value = rankedStories
+            saveStoriesToPrefs()
+        }
+
+        val q = searchQuery.value.trim()
+        if (q.isNotEmpty()) {
+            searchResultPosts.value = rankedReels.filter {
+                it.caption.contains(q, ignoreCase = true) ||
+                    it.creatorUsername.contains(q, ignoreCase = true)
             }
         }
     }
@@ -2203,7 +2491,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val postsSnapshot = fetchLatest("posts")
                 val reelsSnapshot = fetchLatest("reels")
                 val videosSnapshot = fetchLatest("videos")
+                val commentsSnapshot = fetchLatest("comments")
+                val reelCommentsSnapshot = fetchLatest("reels_comments")
 
+                if (commentsSnapshot != null) {
+                    applyHomeCommentsSnapshot(commentsSnapshot.documents, commentsSnapshot.metadata.isFromCache)
+                }
+                if (reelCommentsSnapshot != null) {
+                    applyReelCommentsSnapshot(reelCommentsSnapshot.documents, reelCommentsSnapshot.metadata.isFromCache)
+                }
                 if (storiesSnapshot != null) {
                     applyStoriesSnapshot(storiesSnapshot.documents, storiesSnapshot.metadata.isFromCache)
                 }
@@ -2234,76 +2530,381 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         refreshFeedJob = launchedJob
     }
 
+    private fun applyHomeCommentsSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && homePostComments.value.isNotEmpty()) {
+            return
+        }
+        val grouped = mutableMapOf<String, MutableList<CommentEntity>>()
+        val seenSignatures = mutableSetOf<String>()
+
+        fun addForKey(key: String, entity: CommentEntity) {
+            if (key.isBlank()) return
+            val sig = "$key|${entity.username}|${entity.text}|${entity.timestamp}"
+            if (seenSignatures.add(sig)) {
+                grouped.getOrPut(key) { mutableListOf() }.add(entity)
+            }
+        }
+
+        for (doc in documents) {
+            val rawPostId = doc.getString("postId")?.trim().orEmpty()
+            val cleanPostId = doc.getString("cleanPostId")?.trim()?.takeIf { it.isNotBlank() }
+                ?: rawPostId.removePrefix("photo_")
+            val firestoreDocId = doc.getString("firestoreDocId")?.trim().orEmpty()
+            if (rawPostId.isBlank() && cleanPostId.isBlank() && firestoreDocId.isBlank()) continue
+
+            val username = doc.getString("username")?.takeIf { it.isNotBlank() } ?: "user"
+            val text = doc.getString("text")?.trim().orEmpty()
+            if (text.isBlank()) continue
+            val ts = doc.getLong("timestamp") ?: System.currentTimeMillis()
+            val intId = (doc.getLong("id")?.toInt()) ?: doc.id.hashCode()
+            val entity = CommentEntity(
+                id = intId,
+                postId = rawPostId.ifBlank { "photo_$cleanPostId" },
+                username = username,
+                text = text,
+                timestamp = ts
+            )
+
+            if (cleanPostId.isNotBlank()) {
+                addForKey(cleanPostId, entity)
+                addForKey("photo_$cleanPostId", entity)
+            }
+            if (rawPostId.isNotBlank()) {
+                addForKey(rawPostId, entity)
+            }
+            if (firestoreDocId.isNotBlank()) {
+                addForKey(firestoreDocId, entity)
+            }
+        }
+
+        // Preserve any very recent optimistic local comments not yet returned by server snapshot
+        val recentCutoff = System.currentTimeMillis() - 15_000L
+        homePostComments.value.forEach { (key, existingList) ->
+            existingList.filter { it.timestamp >= recentCutoff }.forEach { recent ->
+                addForKey(key, recent)
+            }
+        }
+
+        val sortedMap = grouped.mapValues { (_, list) -> list.sortedBy { it.timestamp } }
+        homePostComments.value = sortedMap
+        saveHomeCommentsToPrefs()
+
+        personalPhotosState.value = personalPhotosState.value.map { photo ->
+            val countFromComments = maxOf(
+                sortedMap["photo_${photo.id}"]?.size ?: 0,
+                sortedMap[photo.id]?.size ?: 0,
+                photo.firestoreDocId?.let { sortedMap[it]?.size ?: 0 } ?: 0
+            )
+            if (countFromComments > photo.initialComments) {
+                photo.copy(initialComments = countFromComments)
+            } else photo
+        }
+        selectedHomePost.value = selectedHomePost.value?.let { opened ->
+            personalPhotosState.value.firstOrNull {
+                it.id == opened.id || (!opened.firestoreDocId.isNullOrBlank() && it.firestoreDocId == opened.firestoreDocId)
+            } ?: opened
+        }
+    }
+
+    private fun applyReelCommentsSnapshot(
+        documents: List<DocumentSnapshot>,
+        isFromCache: Boolean
+    ) {
+        if (documents.isEmpty() && isFromCache && reelCommentsByReelId.value.isNotEmpty()) {
+            return
+        }
+        val grouped = mutableMapOf<Int, MutableList<CommentEntity>>()
+        val seenSignatures = mutableSetOf<String>()
+
+        for (doc in documents) {
+            val rawReelId = doc.getString("reelId")?.trim()
+                ?: doc.getLong("reelId")?.toString()
+                ?: ""
+            val reelDocId = doc.getString("reelDocId")?.trim().orEmpty()
+            val resolvedReelId = rawReelId.toIntOrNull()
+                ?: reelFirestoreDocIdById.entries.firstOrNull { it.value == reelDocId }?.key
+                ?: continue
+            val username = doc.getString("username")?.takeIf { it.isNotBlank() } ?: "user"
+            val text = doc.getString("text")?.trim().orEmpty()
+            if (text.isBlank()) continue
+            val ts = doc.getLong("timestamp") ?: System.currentTimeMillis()
+            val intId = (doc.getLong("id")?.toInt()) ?: doc.id.hashCode()
+            val sig = "$resolvedReelId|$username|$text|$ts"
+            if (seenSignatures.add(sig)) {
+                grouped.getOrPut(resolvedReelId) { mutableListOf() }.add(
+                    CommentEntity(
+                        id = intId,
+                        reelId = resolvedReelId,
+                        username = username,
+                        text = text,
+                        timestamp = ts
+                    )
+                )
+            }
+        }
+
+        val recentCutoff = System.currentTimeMillis() - 15_000L
+        reelCommentsByReelId.value.forEach { (rId, existingList) ->
+            existingList.filter { it.timestamp >= recentCutoff }.forEach { recent ->
+                val sig = "$rId|${recent.username}|${recent.text}|${recent.timestamp}"
+                if (seenSignatures.add(sig)) {
+                    grouped.getOrPut(rId) { mutableListOf() }.add(recent)
+                }
+            }
+        }
+
+        val sortedMap = grouped.mapValues { (_, list) -> list.sortedBy { it.timestamp } }
+        reelCommentsByReelId.value = sortedMap
+        saveReelCommentsToPrefs()
+
+        val activeId = activeCommentsReelId
+        if (activeId != null) {
+            activeReelComments.value = sortedMap[activeId].orEmpty()
+        }
+
+        _reelsState.value = _reelsState.value.map { reel ->
+            val countFromComments = sortedMap[reel.id]?.size ?: 0
+            if (countFromComments > reel.commentsCount) {
+                reel.copy(commentsCount = countFromComments)
+            } else reel
+        }
+        selectedReelForPreview.value = selectedReelForPreview.value?.let { currentPreview ->
+            _reelsState.value.firstOrNull { it.id == currentPreview.id } ?: currentPreview
+        }
+    }
+
+    fun loadCommentsForHomePost(postId: String, firestoreDocId: String? = null) {
+        val cleanId = postId.removePrefix("photo_")
+        val photoKey = "photo_$cleanId"
+        val docId = firestoreDocId?.takeIf { it.isNotBlank() }
+            ?: personalPhotosState.value.firstOrNull { it.id == cleanId || it.id == postId }?.firestoreDocId
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val collectedDocs = LinkedHashMap<String, DocumentSnapshot>()
+                val queries = buildList {
+                    if (photoKey.isNotBlank()) add(db.collection("comments").whereEqualTo("postId", photoKey).get())
+                    if (cleanId.isNotBlank()) {
+                        add(db.collection("comments").whereEqualTo("postId", cleanId).get())
+                        add(db.collection("comments").whereEqualTo("cleanPostId", cleanId).get())
+                    }
+                    if (!docId.isNullOrBlank()) {
+                        add(db.collection("comments").whereEqualTo("firestoreDocId", docId).get())
+                        add(db.collection("comments").whereEqualTo("postId", docId).get())
+                    }
+                }
+                for (task in queries) {
+                    val snap = withTimeoutOrNull(5000L) { awaitTask(task) } ?: continue
+                    snap.documents.forEach { collectedDocs[it.id] = it }
+                }
+                if (collectedDocs.isNotEmpty()) {
+                    val mergedList = collectedDocs.values.mapNotNull { doc ->
+                        val text = doc.getString("text")?.trim().orEmpty()
+                        if (text.isBlank()) return@mapNotNull null
+                        val uname = doc.getString("username")?.takeIf { it.isNotBlank() } ?: "user"
+                        val ts = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                        CommentEntity(
+                            id = doc.getLong("id")?.toInt() ?: doc.id.hashCode(),
+                            postId = photoKey,
+                            username = uname,
+                            text = text,
+                            timestamp = ts
+                        )
+                    }.distinctBy { "${it.username}|${it.text}|${it.timestamp}" }
+                        .sortedBy { it.timestamp }
+
+                    withContext(Dispatchers.Main) {
+                        val currentMap = homePostComments.value.toMutableMap()
+                        val existing = (currentMap[photoKey].orEmpty() + currentMap[cleanId].orEmpty() + mergedList)
+                            .distinctBy { "${it.username}|${it.text}|${it.timestamp}" }
+                            .sortedBy { it.timestamp }
+                        currentMap[photoKey] = existing
+                        if (cleanId.isNotBlank()) currentMap[cleanId] = existing
+                        if (!docId.isNullOrBlank()) currentMap[docId] = existing
+                        homePostComments.value = currentMap
+                        saveHomeCommentsToPrefs()
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "loadCommentsForHomePost notice: ${e.message}")
+            }
+        }
+    }
+
     fun loadCommentsForReel(id: Int) {
         activeCommentsReelId = id
+        activeReelComments.value = reelCommentsByReelId.value[id].orEmpty()
         db.collection("reels_comments").whereEqualTo("reelId", id.toString()).get().addOnSuccessListener { snapshot ->
-            val list = snapshot.documents.mapNotNull { it.toObject(CommentEntity::class.java) }
-            activeReelComments.value = list
+            val list = snapshot.documents.mapNotNull { doc ->
+                val text = doc.getString("text")?.trim().orEmpty()
+                if (text.isBlank()) return@mapNotNull null
+                CommentEntity(
+                    id = doc.getLong("id")?.toInt() ?: doc.id.hashCode(),
+                    reelId = id,
+                    username = doc.getString("username")?.takeIf { it.isNotBlank() } ?: "user",
+                    text = text,
+                    timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                )
+            }
+            val merged = (reelCommentsByReelId.value[id].orEmpty() + list)
+                .distinctBy { "${it.username}|${it.text}|${it.timestamp}" }
+                .sortedBy { it.timestamp }
+            reelCommentsByReelId.value = reelCommentsByReelId.value + (id to merged)
+            if (activeCommentsReelId == id) {
+                activeReelComments.value = merged
+            }
+            saveReelCommentsToPrefs()
         }
     }
 
     fun toggleLikeHomePost(postId: String) {
-        val isCurrentlyLiked = homePostLikedState.value[postId] ?: false
-        val newLiked = !isCurrentlyLiked
-        homePostLikedState.value = homePostLikedState.value + (postId to newLiked)
         val cleanId = postId.removePrefix("photo_")
+        val photoKey = "photo_$cleanId"
+        val isCurrentlyLiked = homePostLikedState.value[photoKey]
+            ?: homePostLikedState.value[postId]
+            ?: homePostLikedState.value[cleanId]
+            ?: false
+        val newLiked = !isCurrentlyLiked
         val targetPhoto = personalPhotosState.value.find { it.id == cleanId || it.id == postId }
-        val baseCount = homePostLikesCount.value[postId] ?: targetPhoto?.initialLikes ?: 0
+            ?: selectedHomePost.value?.takeIf { it.id == cleanId || it.id == postId }
+        val baseCount = homePostLikesCount.value[photoKey]
+            ?: homePostLikesCount.value[postId]
+            ?: homePostLikesCount.value[cleanId]
+            ?: targetPhoto?.initialLikes
+            ?: 0
         val newCount = if (newLiked) baseCount + 1 else (baseCount - 1).coerceAtLeast(0)
-        homePostLikesCount.value = homePostLikesCount.value + (postId to newCount)
+
+        val keys = listOfNotNull(postId, cleanId, photoKey, targetPhoto?.firestoreDocId?.takeIf { it.isNotBlank() }).distinct()
+        val nowMs = System.currentTimeMillis()
+        keys.forEach { inFlightPostLikeMutations[it] = nowMs }
+
+        homePostLikedState.value = homePostLikedState.value + keys.associateWith { newLiked }
+        homePostLikesCount.value = homePostLikesCount.value + keys.associateWith { newCount }
         personalPhotosState.value = personalPhotosState.value.map { p ->
-            if (p.id == cleanId || p.id == postId) p.copy(initialLikes = newCount, initialIsLiked = newLiked) else p
+            if (p.id == cleanId || p.id == postId || (targetPhoto != null && p.firestoreDocId == targetPhoto.firestoreDocId && !p.firestoreDocId.isNullOrBlank())) {
+                p.copy(initialLikes = newCount, initialIsLiked = newLiked)
+            } else p
+        }
+        selectedHomePost.value = selectedHomePost.value?.let { opened ->
+            if (opened.id == cleanId || opened.id == postId) opened.copy(initialLikes = newCount, initialIsLiked = newLiked) else opened
         }
         savePersonalPhotosToPrefs()
 
-        syncPostLikeToFirestore(targetPhoto, cleanId, newLiked)
+        syncPostLikeToFirestore(targetPhoto, cleanId, newLiked, newCount)
     }
 
     fun notifyPhotoLikedFromViewer(photo: FullScreenPhotoData, isLiked: Boolean, newCount: Int) {
-        val keys = listOf(photo.id, "photo_${photo.id}").distinct()
+        val cleanId = photo.id.removePrefix("photo_")
+        val keys = listOfNotNull(photo.id, cleanId, "photo_$cleanId", photo.firestoreDocId?.takeIf { it.isNotBlank() }).distinct()
+        val nowMs = System.currentTimeMillis()
+        keys.forEach { inFlightPostLikeMutations[it] = nowMs }
+
         homePostLikedState.value = homePostLikedState.value + keys.associateWith { isLiked }
         homePostLikesCount.value = homePostLikesCount.value + keys.associateWith { newCount }
         personalPhotosState.value = personalPhotosState.value.map { p ->
-            if (p.id == photo.id || p.imageUrl == photo.imageUrl) {
+            if (p.id == photo.id || p.id == cleanId || (photo.imageUrl.isNotBlank() && p.imageUrl == photo.imageUrl)) {
                 p.copy(initialLikes = newCount, initialIsLiked = isLiked)
             } else p
         }
+        selectedHomePost.value = selectedHomePost.value?.let { opened ->
+            if (opened.id == photo.id || opened.id == cleanId) opened.copy(initialLikes = newCount, initialIsLiked = isLiked) else opened
+        }
         savePersonalPhotosToPrefs()
 
-        syncPostLikeToFirestore(photo, photo.id, isLiked)
+        syncPostLikeToFirestore(photo, cleanId, isLiked, newCount)
     }
 
-    private fun syncPostLikeToFirestore(targetPhoto: FullScreenPhotoData?, cleanId: String, newLiked: Boolean) {
+    private suspend fun resolvePostDocRefs(
+        targetPhoto: FullScreenPhotoData?,
+        cleanId: String
+    ): List<com.google.firebase.firestore.DocumentReference> {
+        val refs = LinkedHashMap<String, com.google.firebase.firestore.DocumentReference>()
+        val directDocId = targetPhoto?.firestoreDocId?.takeIf { it.isNotBlank() }
+        if (directDocId != null) {
+            val directRef = db.collection("posts").document(directDocId)
+            val snap = try { withTimeoutOrNull(5000L) { awaitTask(directRef.get()) } } catch (_: Exception) { null }
+            if (snap != null && snap.exists()) {
+                refs[directRef.path] = directRef
+            }
+        }
+        if (refs.isEmpty() && cleanId.isNotBlank()) {
+            val snap = try {
+                withTimeoutOrNull(5000L) {
+                    awaitTask(db.collection("posts").whereEqualTo("id", cleanId).limit(3).get())
+                }
+            } catch (_: Exception) { null }
+            snap?.documents?.forEach { refs[it.reference.path] = it.reference }
+        }
+        if (refs.isEmpty() && targetPhoto != null && targetPhoto.imageUrl.isNotBlank()) {
+            val snap = try {
+                withTimeoutOrNull(5000L) {
+                    awaitTask(db.collection("posts").whereEqualTo("imageUrl", targetPhoto.imageUrl).limit(3).get())
+                }
+            } catch (_: Exception) { null }
+            snap?.documents?.forEach { refs[it.reference.path] = it.reference }
+        }
+        if (refs.isEmpty() && directDocId != null) {
+            refs["posts/$directDocId"] = db.collection("posts").document(directDocId)
+        }
+        return refs.values.toList()
+    }
+
+    private fun syncPostLikeToFirestore(
+        targetPhoto: FullScreenPhotoData?,
+        cleanId: String,
+        newLiked: Boolean,
+        expectedCount: Int
+    ) {
         val myUid = activeUserUid().orEmpty().ifBlank { _profileState.value.username.ifBlank { "user" } }
-        val docId = targetPhoto?.firestoreDocId
+        val myUsername = _profileState.value.username.trim()
+        val mutationKeys = listOfNotNull(cleanId, "photo_$cleanId", targetPhoto?.id, targetPhoto?.firestoreDocId).distinct()
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val delta = if (newLiked) 1L else -1L
-                var updated = false
-                if (!docId.isNullOrBlank()) {
-                    awaitTask(
-                        db.collection("posts").document(docId).update(
-                            mapOf(
-                                "likesCount" to FieldValue.increment(delta),
-                                "likedBy" to if (newLiked) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
-                            )
-                        )
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                val refs = resolvePostDocRefs(targetPhoto, cleanId)
+                for (ref in refs) {
+                    val snap = try { withTimeoutOrNull(5000L) { awaitTask(ref.get()) } } catch (_: Exception) { null }
+                    val existingLikedBy = (snap?.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }?.toMutableList()
+                        ?: mutableListOf()
+                    val alreadyContainsMe = existingLikedBy.contains(myUid) ||
+                        (myUsername.isNotBlank() && existingLikedBy.any { it.equals(myUsername, ignoreCase = true) })
+                    val currentCount = (snap?.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
+                    val nextCount = if (newLiked) {
+                        if (alreadyContainsMe) maxOf(currentCount, expectedCount) else currentCount + 1
+                    } else {
+                        if (alreadyContainsMe) (currentCount - 1).coerceAtLeast(0) else expectedCount.coerceAtLeast(0)
+                    }
+
+                    if (newLiked) {
+                        if (!existingLikedBy.contains(myUid)) existingLikedBy.add(myUid)
+                    } else {
+                        existingLikedBy.removeAll { it == myUid || (myUsername.isNotBlank() && it.equals(myUsername, ignoreCase = true)) }
+                    }
+
+                    val payload = mapOf(
+                        "likesCount" to nextCount,
+                        "likedBy" to existingLikedBy.distinct()
                     )
-                    updated = true
-                }
-                if (!updated && cleanId.isNotBlank()) {
-                    val snap = awaitTask(db.collection("posts").whereEqualTo("id", cleanId).limit(1).get())
-                    for (doc in snap.documents) {
-                        doc.reference.update(
-                            mapOf(
-                                "likesCount" to FieldValue.increment(delta),
-                                "likedBy" to if (newLiked) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
-                            )
-                        )
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeoutOrNull(10_000L) {
+                                awaitTask(ref.set(payload, SetOptions.merge()))
+                            }
+                            break
+                        } catch (_: Exception) {
+                            if (attempt < 3) delay(attempt * 500L)
+                        }
                     }
                 }
             } catch (e: Exception) {
                 android.util.Log.w("YouSnapViewModel", "Post like sync notice: ${e.message}")
+            } finally {
+                mutationKeys.forEach { inFlightPostLikeMutations.remove(it) }
             }
         }
 
@@ -2318,6 +2919,54 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 postMediaUrl = targetPhoto.imageUrl,
                 fixedDocId = "notif_like_${safeSender}_${targetPhoto.id}"
             )
+        }
+    }
+
+    fun incrementPostShares(photo: FullScreenPhotoData) {
+        val cleanId = photo.id.removePrefix("photo_")
+        val photoKey = "photo_$cleanId"
+        val currentShares = homePostSharesCount.value[photoKey]
+            ?: homePostSharesCount.value[photo.id]
+            ?: homePostSharesCount.value[cleanId]
+            ?: photo.sharesCount
+        val nextShares = currentShares + 1
+        val keys = listOfNotNull(photo.id, cleanId, photoKey, photo.firestoreDocId?.takeIf { it.isNotBlank() }).distinct()
+        val nowMs = System.currentTimeMillis()
+        keys.forEach { inFlightPostShareMutations[it] = nowMs }
+
+        homePostSharesCount.value = homePostSharesCount.value + keys.associateWith { nextShares }
+        personalPhotosState.value = personalPhotosState.value.map { p ->
+            if (p.id == photo.id || p.id == cleanId || (photo.imageUrl.isNotBlank() && p.imageUrl == photo.imageUrl)) {
+                p.copy(sharesCount = nextShares)
+            } else p
+        }
+        selectedHomePost.value = selectedHomePost.value?.let { opened ->
+            if (opened.id == photo.id || opened.id == cleanId) opened.copy(sharesCount = nextShares) else opened
+        }
+        savePersonalPhotosToPrefs()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                val refs = resolvePostDocRefs(photo, cleanId)
+                for (ref in refs) {
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeoutOrNull(10_000L) {
+                                awaitTask(ref.set(mapOf("sharesCount" to FieldValue.increment(1)), SetOptions.merge()))
+                            }
+                            break
+                        } catch (_: Exception) {
+                            if (attempt < 3) delay(attempt * 500L)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Post share sync notice: ${e.message}")
+            } finally {
+                keys.forEach { inFlightPostShareMutations.remove(it) }
+            }
         }
     }
 
@@ -2564,40 +3213,90 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return
         val user = profileState.value
+        val myUid = activeUserUid().orEmpty().ifBlank { user.username.ifBlank { "user" } }
         val cleanId = postId.removePrefix("photo_")
-        val targetPhoto = personalPhotosState.value.find { it.id == cleanId || it.id == postId }
+        val photoKey = "photo_$cleanId"
+        val targetPhoto = personalPhotosState.value.find {
+            it.id == cleanId || it.id == postId || it.firestoreDocId == postId
+        } ?: selectedHomePost.value?.takeIf {
+            it.id == cleanId || it.id == postId || it.firestoreDocId == postId
+        }
+        val resolvedDocId = targetPhoto?.firestoreDocId?.takeIf { it.isNotBlank() }
+        val nowMs = System.currentTimeMillis()
         val comment = CommentEntity(
-            id = System.currentTimeMillis().toInt(),
-            postId = postId,
-            username = user.username,
+            id = nowMs.toInt(),
+            postId = photoKey,
+            username = user.username.ifBlank { "user" },
             text = cleanText,
-            timestamp = System.currentTimeMillis()
+            timestamp = nowMs
         )
+
+        val keys = listOfNotNull(postId, cleanId, photoKey, resolvedDocId).distinct()
+        keys.forEach { inFlightPostCommentMutations[it] = nowMs }
+
         val currentMap = homePostComments.value.toMutableMap()
-        val currentList = currentMap[postId]?.toMutableList() ?: mutableListOf()
-        currentList.add(comment)
-        currentMap[postId] = currentList
+        val mergedList = (currentMap[photoKey].orEmpty() + currentMap[cleanId].orEmpty() + comment)
+            .distinctBy { "${it.username}|${it.text}|${it.timestamp}" }
+            .sortedBy { it.timestamp }
+        keys.forEach { key -> currentMap[key] = mergedList }
         homePostComments.value = currentMap
+        saveHomeCommentsToPrefs()
 
         personalPhotosState.value = personalPhotosState.value.map { p ->
-            if (p.id == cleanId || p.id == postId) p.copy(initialComments = p.initialComments + 1) else p
+            if (p.id == cleanId || p.id == postId || (resolvedDocId != null && p.firestoreDocId == resolvedDocId)) {
+                p.copy(initialComments = maxOf(p.initialComments + 1, mergedList.size))
+            } else p
+        }
+        selectedHomePost.value = selectedHomePost.value?.let { opened ->
+            if (opened.id == cleanId || opened.id == postId) {
+                opened.copy(initialComments = maxOf(opened.initialComments + 1, mergedList.size))
+            } else opened
         }
         savePersonalPhotosToPrefs()
 
-        val doc = mapOf(
-            "postId" to postId,
-            "username" to user.username,
+        val commentDoc = mapOf(
+            "postId" to photoKey,
+            "cleanPostId" to cleanId,
+            "firestoreDocId" to (resolvedDocId ?: ""),
+            "username" to user.username.ifBlank { "user" },
+            "userName" to user.name.ifBlank { user.username.ifBlank { "User" } },
+            "userUid" to myUid,
             "text" to cleanText,
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to nowMs,
+            "createdAt" to FieldValue.serverTimestamp()
         )
-        db.collection("comments").add(doc)
 
-        val docId = targetPhoto?.firestoreDocId
-        if (!docId.isNullOrBlank()) {
-            db.collection("posts").document(docId).update("commentsCount", FieldValue.increment(1))
-        } else if (cleanId.isNotBlank()) {
-            db.collection("posts").whereEqualTo("id", cleanId).limit(1).get().addOnSuccessListener { snap ->
-                snap.documents.forEach { it.reference.update("commentsCount", FieldValue.increment(1)) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                for (attempt in 1..3) {
+                    try {
+                        withTimeoutOrNull(10_000L) {
+                            awaitTask(db.collection("comments").add(commentDoc))
+                        }
+                        break
+                    } catch (_: Exception) {
+                        if (attempt < 3) delay(attempt * 500L)
+                    }
+                }
+                val refs = resolvePostDocRefs(targetPhoto, cleanId)
+                for (ref in refs) {
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeoutOrNull(10_000L) {
+                                awaitTask(ref.set(mapOf("commentsCount" to FieldValue.increment(1)), SetOptions.merge()))
+                            }
+                            break
+                        } catch (_: Exception) {
+                            if (attempt < 3) delay(attempt * 500L)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Home post comment sync notice: ${e.message}")
+            } finally {
+                keys.forEach { inFlightPostCommentMutations.remove(it) }
             }
         }
 
@@ -2833,35 +3532,114 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    private suspend fun resolveReelDocRefs(reel: ReelEntity): List<com.google.firebase.firestore.DocumentReference> {
+        val refs = LinkedHashMap<String, com.google.firebase.firestore.DocumentReference>()
+        val mappedCol = reelCollectionById[reel.id]
+            ?: reel.mediaUrl.takeIf { it.isNotBlank() }?.let { reelCollectionByMediaUrl[it] }
+        val mappedDocId = reelFirestoreDocIdById[reel.id]
+            ?: reel.mediaUrl.takeIf { it.isNotBlank() }?.let { reelFirestoreDocIdByMediaUrl[it] }
+            ?: reel.timestamp.takeIf { it > 0L }?.let { reelFirestoreDocIdByTimestamp[it] }
+
+        if (!mappedCol.isNullOrBlank() && !mappedDocId.isNullOrBlank()) {
+            val directRef = db.collection(mappedCol).document(mappedDocId)
+            val snap = try { withTimeoutOrNull(5000L) { awaitTask(directRef.get()) } } catch (_: Exception) { null }
+            if (snap != null && snap.exists()) {
+                refs[directRef.path] = directRef
+            }
+        }
+
+        if (refs.isEmpty()) {
+            val collections = listOfNotNull(mappedCol, "reels", "videos").distinct()
+            for (col in collections) {
+                if (reel.mediaUrl.isNotBlank()) {
+                    val snap = try {
+                        withTimeoutOrNull(5000L) {
+                            awaitTask(db.collection(col).whereEqualTo("mediaUrl", reel.mediaUrl).limit(3).get())
+                        }
+                    } catch (_: Exception) { null }
+                    snap?.documents?.forEach { refs[it.reference.path] = it.reference }
+                }
+                if (refs.isEmpty()) {
+                    val snap = try {
+                        withTimeoutOrNull(5000L) {
+                            awaitTask(db.collection(col).whereEqualTo("reelIntId", reel.id).limit(3).get())
+                        }
+                    } catch (_: Exception) { null }
+                    snap?.documents?.forEach { refs[it.reference.path] = it.reference }
+                }
+                if (refs.isEmpty()) {
+                    val snap = try {
+                        withTimeoutOrNull(5000L) {
+                            awaitTask(db.collection(col).whereEqualTo("id", reel.id.toString()).limit(3).get())
+                        }
+                    } catch (_: Exception) { null }
+                    snap?.documents?.forEach { refs[it.reference.path] = it.reference }
+                }
+                if (refs.isNotEmpty()) break
+            }
+        }
+        return refs.values.toList()
+    }
+
     fun toggleLikeReel(reel: ReelEntity) {
-        val newLiked = !reel.isLiked
-        val newCount = if (newLiked) reel.likesCount + 1 else (reel.likesCount - 1).coerceAtLeast(0)
+        val currentReel = _reelsState.value.firstOrNull { it.id == reel.id } ?: reel
+        val newLiked = !currentReel.isLiked
+        val newCount = if (newLiked) currentReel.likesCount + 1 else (currentReel.likesCount - 1).coerceAtLeast(0)
+        inFlightReelLikeMutations[currentReel.id] = System.currentTimeMillis()
+
         _reelsState.value = _reelsState.value.map {
-            if (it.id == reel.id) it.copy(isLiked = newLiked, likesCount = newCount) else it
+            if (it.id == currentReel.id) it.copy(isLiked = newLiked, likesCount = newCount) else it
+        }
+        selectedReelForPreview.value = selectedReelForPreview.value?.let {
+            if (it.id == currentReel.id) it.copy(isLiked = newLiked, likesCount = newCount) else it
         }
         saveReelsToPrefs()
 
         val uid = activeUserUid().orEmpty().ifBlank { _profileState.value.username.ifBlank { "user" } }
-        val updateLikes: (com.google.firebase.firestore.DocumentSnapshot) -> Unit = { doc ->
-            val likes = doc.get("likedBy") as? List<*> ?: emptyList<String>()
-            if (likes.contains(uid)) {
-                doc.reference.update("likedBy", FieldValue.arrayRemove(uid), "likesCount", FieldValue.increment(-1))
-            } else {
-                doc.reference.update("likedBy", FieldValue.arrayUnion(uid), "likesCount", FieldValue.increment(1))
-            }
-        }
-        val query = if (reel.mediaUrl.isNotBlank()) {
-            db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl)
-        } else {
-            db.collection("reels").whereEqualTo("reelIntId", reel.id)
-        }
-        query.get().addOnSuccessListener { snapshot ->
-            if (!snapshot.isEmpty) {
-                snapshot.documents.forEach(updateLikes)
-            } else {
-                db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { fallback ->
-                    fallback.documents.forEach(updateLikes)
+        val myUsername = _profileState.value.username.trim()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                val refs = resolveReelDocRefs(currentReel)
+                for (ref in refs) {
+                    val snap = try { withTimeoutOrNull(5000L) { awaitTask(ref.get()) } } catch (_: Exception) { null }
+                    val existingLikedBy = (snap?.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }?.toMutableList()
+                        ?: mutableListOf()
+                    val alreadyContainsMe = existingLikedBy.contains(uid) ||
+                        (myUsername.isNotBlank() && existingLikedBy.any { it.equals(myUsername, ignoreCase = true) })
+                    val currentLikes = (snap?.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
+                    val nextLikes = if (newLiked) {
+                        if (alreadyContainsMe) maxOf(currentLikes, newCount) else currentLikes + 1
+                    } else {
+                        if (alreadyContainsMe) (currentLikes - 1).coerceAtLeast(0) else newCount.coerceAtLeast(0)
+                    }
+
+                    if (newLiked) {
+                        if (!existingLikedBy.contains(uid)) existingLikedBy.add(uid)
+                    } else {
+                        existingLikedBy.removeAll { it == uid || (myUsername.isNotBlank() && it.equals(myUsername, ignoreCase = true)) }
+                    }
+
+                    val payload = mapOf(
+                        "likesCount" to nextLikes,
+                        "likedBy" to existingLikedBy.distinct()
+                    )
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeoutOrNull(10_000L) {
+                                awaitTask(ref.set(payload, SetOptions.merge()))
+                            }
+                            break
+                        } catch (_: Exception) {
+                            if (attempt < 3) delay(attempt * 500L)
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Reel like sync notice: ${e.message}")
+            } finally {
+                inFlightReelLikeMutations.remove(currentReel.id)
             }
         }
 
@@ -2869,12 +3647,12 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val safeSender = _profileState.value.username.lowercase().replace(Regex("[^a-z0-9_]"), "").ifBlank { "user" }
             createAndPushFirestoreNotification(
                 type = "like",
-                recipientUsername = reel.creatorUsername,
-                recipientUid = reel.creatorUid,
+                recipientUsername = currentReel.creatorUsername,
+                recipientUid = currentReel.creatorUid,
                 detail = "liked your reel.",
-                postId = reel.id.toString(),
-                postMediaUrl = reel.mediaUrl,
-                fixedDocId = "notif_like_reel_${safeSender}_${reel.id}"
+                postId = currentReel.id.toString(),
+                postMediaUrl = currentReel.mediaUrl,
+                fixedDocId = "notif_like_reel_${safeSender}_${currentReel.id}"
             )
         }
     }
@@ -2979,22 +3757,39 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun incrementReelShares(reel: ReelEntity) {
-        val query = if (reel.mediaUrl.isNotBlank()) {
-            db.collection("reels").whereEqualTo("mediaUrl", reel.mediaUrl)
-        } else {
-            db.collection("reels").whereEqualTo("reelIntId", reel.id)
+        val currentReel = _reelsState.value.firstOrNull { it.id == reel.id } ?: reel
+        val nextShares = currentReel.sharesCount + 1
+        inFlightReelShareMutations[currentReel.id] = System.currentTimeMillis()
+
+        _reelsState.value = _reelsState.value.map {
+            if (it.id == currentReel.id) it.copy(sharesCount = nextShares) else it
         }
-        query.get().addOnSuccessListener { snapshot ->
-            if (!snapshot.isEmpty) {
-                for (doc in snapshot.documents) {
-                    doc.reference.update("sharesCount", FieldValue.increment(1))
-                }
-            } else {
-                db.collection("reels").whereEqualTo("id", reel.id.toString()).get().addOnSuccessListener { fallback ->
-                    for (doc in fallback.documents) {
-                        doc.reference.update("sharesCount", FieldValue.increment(1))
+        selectedReelForPreview.value = selectedReelForPreview.value?.let {
+            if (it.id == currentReel.id) it.copy(sharesCount = nextShares) else it
+        }
+        saveReelsToPrefs()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                val refs = resolveReelDocRefs(currentReel)
+                for (ref in refs) {
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeoutOrNull(10_000L) {
+                                awaitTask(ref.set(mapOf("sharesCount" to FieldValue.increment(1)), SetOptions.merge()))
+                            }
+                            break
+                        } catch (_: Exception) {
+                            if (attempt < 3) delay(attempt * 500L)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Reel share sync notice: ${e.message}")
+            } finally {
+                inFlightReelShareMutations.remove(currentReel.id)
             }
         }
     }
@@ -3005,40 +3800,83 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         val user = profileState.value
         val reelId = activeCommentsReelId ?: selectedReelForPreview.value?.id ?: return
         val activeReel = _reelsState.value.find { it.id == reelId } ?: selectedReelForPreview.value
+        val nowMs = System.currentTimeMillis()
         val newComment = CommentEntity(
-            id = System.currentTimeMillis().toInt(),
+            id = nowMs.toInt(),
             reelId = reelId,
-            username = user.username,
+            username = user.username.ifBlank { "user" },
             text = text,
-            timestamp = System.currentTimeMillis()
+            timestamp = nowMs
         )
-        activeReelComments.value = activeReelComments.value + newComment
+        inFlightReelCommentMutations[reelId] = nowMs
+
+        val updatedComments = (reelCommentsByReelId.value[reelId].orEmpty() + newComment)
+            .distinctBy { "${it.username}|${it.text}|${it.timestamp}" }
+            .sortedBy { it.timestamp }
+        reelCommentsByReelId.value = reelCommentsByReelId.value + (reelId to updatedComments)
+        activeReelComments.value = updatedComments
         currentCommentText.value = ""
+        saveReelCommentsToPrefs()
+
         _reelsState.value = _reelsState.value.map {
-            if (it.id == reelId) it.copy(commentsCount = it.commentsCount + 1) else it
+            if (it.id == reelId) it.copy(commentsCount = maxOf(it.commentsCount + 1, updatedComments.size)) else it
+        }
+        selectedReelForPreview.value = selectedReelForPreview.value?.let {
+            if (it.id == reelId) it.copy(commentsCount = maxOf(it.commentsCount + 1, updatedComments.size)) else it
         }
         saveReelsToPrefs()
 
-        val comment = mapOf(
+        val resolvedDocId = reelFirestoreDocIdById[reelId]
+            ?: activeReel?.mediaUrl?.takeIf { it.isNotBlank() }?.let { reelFirestoreDocIdByMediaUrl[it] }
+            ?: ""
+        val myUid = (auth.currentUser?.uid ?: activeUserUid()).orEmpty()
+        val commentDoc = mapOf(
             "reelId" to reelId.toString(),
-            "username" to user.username,
+            "reelDocId" to resolvedDocId,
+            "userUid" to myUid,
+            "username" to user.username.ifBlank { "user" },
             "text" to text,
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to nowMs,
+            "createdAt" to FieldValue.serverTimestamp()
         )
-        db.collection("reels_comments").add(comment).addOnSuccessListener {
-            loadCommentsForReel(reelId)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                try { db.enableNetwork() } catch (_: Exception) {}
+                flushPendingFirestoreDocs()
+                for (attempt in 1..3) {
+                    try {
+                        withTimeoutOrNull(10_000L) {
+                            awaitTask(db.collection("reels_comments").add(commentDoc))
+                        }
+                        break
+                    } catch (_: Exception) {
+                        if (attempt < 3) delay(attempt * 500L)
+                    }
+                }
+                if (activeReel != null) {
+                    val refs = resolveReelDocRefs(activeReel)
+                    for (ref in refs) {
+                        for (attempt in 1..3) {
+                            try {
+                                withTimeoutOrNull(10_000L) {
+                                    awaitTask(ref.set(mapOf("commentsCount" to FieldValue.increment(1)), SetOptions.merge()))
+                                }
+                                break
+                            } catch (_: Exception) {
+                                if (attempt < 3) delay(attempt * 500L)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("YouSnapViewModel", "Reel comment sync notice: ${e.message}")
+            } finally {
+                inFlightReelCommentMutations.remove(reelId)
+            }
         }
 
         if (activeReel != null) {
-            val query = if (activeReel.mediaUrl.isNotBlank()) {
-                db.collection("reels").whereEqualTo("mediaUrl", activeReel.mediaUrl)
-            } else {
-                db.collection("reels").whereEqualTo("reelIntId", activeReel.id)
-            }
-            query.get().addOnSuccessListener { snapshot ->
-                snapshot.documents.forEach { it.reference.update("commentsCount", FieldValue.increment(1)) }
-            }
-
             val preview = text.take(80)
             createAndPushFirestoreNotification(
                 type = "comment",
@@ -3278,7 +4116,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             searchResultPosts.value = emptyList()
         } else {
             searchResultUsers.value = allUsers.value.filter { it.username.contains(query, ignoreCase = true) || it.name.contains(query, ignoreCase = true) }
-            searchResultPosts.value = reelsState.value.filter { it.caption.contains(query, ignoreCase = true) || it.creatorUsername.contains(query, ignoreCase = true) }
+            val matching = reelsState.value.filter { it.caption.contains(query, ignoreCase = true) || it.creatorUsername.contains(query, ignoreCase = true) }
+            searchResultPosts.value = FeedRankingAlgorithm.rankReels(matching, System.currentTimeMillis())
         }
     }
 
@@ -3816,9 +4655,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                     handleSnapshot(notifDocsByUid, snapshot)
                 }
-        }
-
-        if (myUsername.isNotBlank() && myUsername != "user") {
+        } else if (myUsername.isNotBlank() && myUsername != "user") {
             notifUsernameListener = db.collection("notifications")
                 .whereEqualTo("recipientUsername", myUsername)
                 .limit(100)
@@ -4297,7 +5134,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun submitSupportTicket(subject: String, description: String) {
-        db.collection("support_tickets").add(mapOf("subject" to subject, "description" to description, "timestamp" to System.currentTimeMillis()))
+        val uid = auth.currentUser?.uid ?: activeUserUid().orEmpty()
+        if (uid.isBlank()) return
+        db.collection("support_tickets").add(
+            mapOf(
+                "userId" to uid,
+                "subject" to subject,
+                "description" to description,
+                "status" to "Open",
+                "timestamp" to System.currentTimeMillis(),
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+        )
     }
 
     fun resetFeedAlgorithm() {}
@@ -4380,15 +5228,92 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     }
     
     fun setAppPin(pin: String, isEnabled: Boolean) {
-        val uid = auth.currentUser?.uid ?: return
-        db.collection("users").document(uid).update("appPin", pin, "isPinEnabled", isEnabled)
-        _settingsState.value = _settingsState.value.copy(appPin = pin, isPinEnabled = isEnabled)
-        // Also update profile state for immediate UI feedback
-        _profileState.value = _profileState.value.copy(isPinEnabled = isEnabled)
+        val cleanPin = pin.trim()
+        val hashedPin = if (isEnabled && cleanPin.isNotEmpty()) {
+            if (SecurityUtils.isHashedPin(cleanPin)) cleanPin else SecurityUtils.hashPin(cleanPin)
+        } else {
+            ""
+        }
+        val uid = auth.currentUser?.uid
+        if (!uid.isNullOrBlank()) {
+            db.collection("users").document(uid).set(
+                mapOf("appPin" to hashedPin, "isPinEnabled" to isEnabled),
+                SetOptions.merge()
+            )
+        }
+        _settingsState.value = _settingsState.value.copy(appPin = hashedPin, isPinEnabled = isEnabled)
+        val updatedProfile = _profileState.value.copy(appPin = hashedPin, isPinEnabled = isEnabled)
+        _profileState.value = updatedProfile
+        saveProfileToPrefs(updatedProfile, uid ?: activeUserUid())
     }
 
     fun setAppPin(pin: String) {
         setAppPin(pin, pin.isNotEmpty())
+    }
+
+    fun verifyAppPin(enteredPin: String): Boolean {
+        val storedPin = _settingsState.value.appPin.ifBlank { _profileState.value.appPin }
+        if (storedPin.isBlank()) return false
+        val matched = SecurityUtils.verifyPin(enteredPin, storedPin)
+        if (matched && !SecurityUtils.isHashedPin(storedPin)) {
+            setAppPin(enteredPin, true)
+        }
+        return matched
+    }
+
+    fun changePassword(
+        currentPassword: String,
+        newPassword: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val user = auth.currentUser
+        if (user == null) {
+            onResult(false, "Please sign in with your account first to change your password.")
+            return
+        }
+        val hasPasswordProvider = user.providerData.any {
+            it.providerId == EmailAuthProvider.PROVIDER_ID
+        }
+        val email = user.email?.trim().orEmpty()
+        if (!hasPasswordProvider || email.isBlank()) {
+            onResult(
+                false,
+                "Password change applies to email/password accounts. Google sign-in accounts manage passwords via Google Account."
+            )
+            return
+        }
+        if (currentPassword.isBlank()) {
+            onResult(false, "Please enter your current password.")
+            return
+        }
+        if (newPassword.length < 6) {
+            onResult(false, "New password must be at least 6 characters.")
+            return
+        }
+
+        val credential = EmailAuthProvider.getCredential(email, currentPassword)
+        user.reauthenticate(credential)
+            .addOnSuccessListener {
+                user.updatePassword(newPassword)
+                    .addOnSuccessListener {
+                        registeredPassword.value = newPassword
+                        onResult(true, "Password updated successfully!")
+                    }
+                    .addOnFailureListener { updateErr ->
+                        onResult(
+                            false,
+                            updateErr.localizedMessage ?: "Failed to update password. Please try again."
+                        )
+                    }
+            }
+            .addOnFailureListener { reauthErr ->
+                val errorMessage = when (reauthErr) {
+                    is FirebaseAuthInvalidCredentialsException -> "Current password is incorrect."
+                    is FirebaseTooManyRequestsException -> "Too many attempts. Please try again later."
+                    else -> reauthErr.localizedMessage ?: "Re-authentication failed. Please check your current password."
+                }
+                onResult(false, errorMessage)
+            }
     }
 
     fun unblockUser(id: Int, username: String) {
@@ -4589,10 +5514,18 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("creatorUid", photo.creatorUid)
             obj.put("initialLikes", photo.initialLikes)
             obj.put("initialComments", photo.initialComments)
+            obj.put("sharesCount", photo.sharesCount)
             obj.put("initialIsLiked", photo.initialIsLiked)
             obj.put("timeAgo", photo.timeAgo)
             obj.put("firestoreDocId", photo.firestoreDocId ?: "")
             obj.put("shareLink", photo.shareLink)
+            obj.put("isViral", photo.isViral)
+            obj.put("viralDurationDays", photo.viralDurationDays)
+            obj.put("viralDurationHours", photo.viralDurationHours)
+            if (!photo.viralExpiresAt.isNullOrBlank()) {
+                obj.put("viralExpiresAt", photo.viralExpiresAt)
+            }
+            obj.put("createdAtMillis", photo.createdAtMillis)
             array.put(obj)
         }
         prefs.edit().putString("personal_photos", array.toString()).apply()
@@ -4603,6 +5536,9 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         try {
             val array = JSONArray(json)
             val list = mutableListOf<FullScreenPhotoData>()
+            val likedMap = mutableMapOf<String, Boolean>()
+            val likesMap = mutableMapOf<String, Int>()
+            val sharesMap = mutableMapOf<String, Int>()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val docId = obj.optString("firestoreDocId", "").takeIf { it.isNotBlank() }
@@ -4610,6 +5546,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val shareLink = obj.optString("shareLink", "").ifBlank {
                     DeepLinkHelper.buildPostUrl(docId ?: id)
                 }
+                val initialLikes = obj.optInt("initialLikes", 0)
+                val initialIsLiked = obj.optBoolean("initialIsLiked", false)
+                val sharesCount = obj.optInt("sharesCount", 0)
+                likedMap[id] = initialIsLiked
+                likedMap["photo_$id"] = initialIsLiked
+                likesMap[id] = initialLikes
+                likesMap["photo_$id"] = initialLikes
+                sharesMap[id] = sharesCount
+                sharesMap["photo_$id"] = sharesCount
                 list.add(FullScreenPhotoData(
                     id = id,
                     title = obj.optString("title", ""),
@@ -4618,15 +5563,25 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     creatorUsername = obj.optString("creatorUsername", "user"),
                     creatorAvatar = obj.optString("creatorAvatar", ""),
                     creatorUid = obj.optString("creatorUid", ""),
-                    initialLikes = obj.optInt("initialLikes", 0),
+                    initialLikes = initialLikes,
                     initialComments = obj.optInt("initialComments", 0),
-                    initialIsLiked = obj.optBoolean("initialIsLiked", false),
+                    sharesCount = sharesCount,
+                    initialIsLiked = initialIsLiked,
                     timeAgo = obj.optString("timeAgo", "Recently"),
                     firestoreDocId = docId,
-                    shareLink = shareLink
+                    shareLink = shareLink,
+                    isViral = obj.optBoolean("isViral", false),
+                    viralDurationDays = obj.optInt("viralDurationDays", 0),
+                    viralDurationHours = obj.optInt("viralDurationHours", 0),
+                    viralExpiresAt = obj.optString("viralExpiresAt", "").takeIf { it.isNotBlank() },
+                    createdAtMillis = obj.optLong("createdAtMillis", 0L)
                 ))
             }
-            personalPhotosState.value = list
+            personalPhotosState.value = FeedRankingAlgorithm.rankPhotos(list, System.currentTimeMillis())
+            homePostLikedState.value = likedMap
+            homePostLikesCount.value = likesMap
+            homePostSharesCount.value = sharesMap
+            scheduleNextViralExpirationCheck()
         } catch (e: Exception) {
             android.util.Log.e("YouSnapViewModel", "Error loading photos: ${e.message}")
         }
@@ -4645,12 +5600,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("mediaUrl", reel.mediaUrl)
             obj.put("thumbnailUrl", reel.thumbnailUrl)
             obj.put("caption", reel.caption)
+            obj.put("audioTitle", reel.audioTitle)
             obj.put("likesCount", reel.likesCount)
             obj.put("commentsCount", reel.commentsCount)
+            obj.put("sharesCount", reel.sharesCount)
+            obj.put("isLiked", reel.isLiked)
+            obj.put("isFollowingCreator", reel.isFollowingCreator)
             obj.put("viewsCount", reel.viewsCount)
             obj.put("timestamp", reel.timestamp)
             obj.put("bgGradientStart", reel.bgGradientStart)
             obj.put("bgGradientEnd", reel.bgGradientEnd)
+            obj.put("isViral", reel.isViral)
+            obj.put("viralDurationDays", reel.viralDurationDays)
+            obj.put("viralDurationHours", reel.viralDurationHours)
+            if (!reel.viralExpiresAt.isNullOrBlank()) {
+                obj.put("viralExpiresAt", reel.viralExpiresAt)
+            }
+            obj.put("createdAtMillis", reel.createdAtMillis)
             array.put(obj)
         }
         prefs.edit().putString("cached_reels", array.toString()).apply()
@@ -4672,17 +5638,132 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     mediaUrl = obj.optString("mediaUrl", ""),
                     thumbnailUrl = obj.optString("thumbnailUrl", ""),
                     caption = obj.optString("caption", ""),
+                    audioTitle = obj.optString("audioTitle", "Original Audio"),
                     likesCount = obj.optInt("likesCount", 0),
                     commentsCount = obj.optInt("commentsCount", 0),
+                    sharesCount = obj.optInt("sharesCount", 0),
+                    isLiked = obj.optBoolean("isLiked", false),
+                    isFollowingCreator = obj.optBoolean("isFollowingCreator", false),
                     viewsCount = obj.optInt("viewsCount", 0),
                     timestamp = obj.optLong("timestamp", 0L),
                     bgGradientStart = obj.optString("bgGradientStart", "#161616"),
-                    bgGradientEnd = obj.optString("bgGradientEnd", "#161616")
+                    bgGradientEnd = obj.optString("bgGradientEnd", "#161616"),
+                    isViral = obj.optBoolean("isViral", false),
+                    viralDurationDays = obj.optInt("viralDurationDays", 0),
+                    viralDurationHours = obj.optInt("viralDurationHours", 0),
+                    viralExpiresAt = obj.optString("viralExpiresAt", "").takeIf { it.isNotBlank() },
+                    createdAtMillis = obj.optLong("createdAtMillis", 0L)
                 ))
             }
-            _reelsState.value = list
+            _reelsState.value = FeedRankingAlgorithm.rankReels(list, System.currentTimeMillis())
+            scheduleNextViralExpirationCheck()
         } catch (e: Exception) {
             android.util.Log.e("YouSnapViewModel", "Error loading reels: ${e.message}")
+        }
+    }
+
+    private fun saveHomeCommentsToPrefs() {
+        try {
+            val root = JSONObject()
+            homePostComments.value.forEach { (postKey, list) ->
+                val arr = JSONArray()
+                list.forEach { c ->
+                    arr.put(JSONObject().apply {
+                        put("id", c.id)
+                        put("postId", c.postId)
+                        put("username", c.username)
+                        put("text", c.text)
+                        put("timestamp", c.timestamp)
+                    })
+                }
+                root.put(postKey, arr)
+            }
+            prefs.edit().putString("cached_home_comments", root.toString()).apply()
+        } catch (e: Exception) {
+            android.util.Log.w("YouSnapViewModel", "saveHomeCommentsToPrefs notice: ${e.message}")
+        }
+    }
+
+    private fun loadHomeCommentsFromPrefs() {
+        val raw = prefs.getString("cached_home_comments", null) ?: return
+        try {
+            val root = JSONObject(raw)
+            val map = mutableMapOf<String, List<CommentEntity>>()
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val postKey = keys.next()
+                val arr = root.optJSONArray(postKey) ?: continue
+                val list = mutableListOf<CommentEntity>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    list.add(
+                        CommentEntity(
+                            id = o.optInt("id", i),
+                            postId = o.optString("postId", postKey),
+                            username = o.optString("username", "user"),
+                            text = o.optString("text", ""),
+                            timestamp = o.optLong("timestamp", 0L)
+                        )
+                    )
+                }
+                map[postKey] = list
+            }
+            homePostComments.value = map
+        } catch (e: Exception) {
+            android.util.Log.w("YouSnapViewModel", "loadHomeCommentsFromPrefs notice: ${e.message}")
+        }
+    }
+
+    private fun saveReelCommentsToPrefs() {
+        try {
+            val root = JSONObject()
+            reelCommentsByReelId.value.forEach { (reelId, list) ->
+                val arr = JSONArray()
+                list.forEach { c ->
+                    arr.put(JSONObject().apply {
+                        put("id", c.id)
+                        put("reelId", c.reelId)
+                        put("username", c.username)
+                        put("text", c.text)
+                        put("timestamp", c.timestamp)
+                    })
+                }
+                root.put(reelId.toString(), arr)
+            }
+            prefs.edit().putString("cached_reel_comments", root.toString()).apply()
+        } catch (e: Exception) {
+            android.util.Log.w("YouSnapViewModel", "saveReelCommentsToPrefs notice: ${e.message}")
+        }
+    }
+
+    private fun loadReelCommentsFromPrefs() {
+        val raw = prefs.getString("cached_reel_comments", null) ?: return
+        try {
+            val root = JSONObject(raw)
+            val map = mutableMapOf<Int, List<CommentEntity>>()
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val keyStr = keys.next()
+                val reelId = keyStr.toIntOrNull() ?: continue
+                val arr = root.optJSONArray(keyStr) ?: continue
+                val list = mutableListOf<CommentEntity>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    list.add(
+                        CommentEntity(
+                            id = o.optInt("id", i),
+                            reelId = o.optInt("reelId", reelId),
+                            username = o.optString("username", "user"),
+                            text = o.optString("text", ""),
+                            timestamp = o.optLong("timestamp", 0L)
+                        )
+                    )
+                }
+                map[reelId] = list
+            }
+            reelCommentsByReelId.value = map
+        } catch (e: Exception) {
+            android.util.Log.w("YouSnapViewModel", "loadReelCommentsFromPrefs notice: ${e.message}")
         }
     }
 
@@ -4700,6 +5781,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             obj.put("bgGradientEnd", story.bgGradientEnd)
             obj.put("timestamp", story.timestamp)
             obj.put("firestoreDocId", story.firestoreDocId)
+            obj.put("isViral", story.isViral)
+            obj.put("viralDurationDays", story.viralDurationDays)
+            obj.put("viralDurationHours", story.viralDurationHours)
+            if (!story.viralExpiresAt.isNullOrBlank()) {
+                obj.put("viralExpiresAt", story.viralExpiresAt)
+            }
+            obj.put("createdAtMillis", story.createdAtMillis)
             array.put(obj)
         }
         prefs.edit().putString("cached_stories", array.toString()).apply()
@@ -4721,16 +5809,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     bgGradientStart = obj.optString("bgGradientStart", "#E59424"),
                     bgGradientEnd = obj.optString("bgGradientEnd", "#C48B5E"),
                     timestamp = obj.optLong("timestamp", 0L),
-                    firestoreDocId = obj.optString("firestoreDocId", "")
+                    firestoreDocId = obj.optString("firestoreDocId", ""),
+                    isViral = obj.optBoolean("isViral", false),
+                    viralDurationDays = obj.optInt("viralDurationDays", 0),
+                    viralDurationHours = obj.optInt("viralDurationHours", 0),
+                    viralExpiresAt = obj.optString("viralExpiresAt", "").takeIf { it.isNotBlank() },
+                    createdAtMillis = obj.optLong("createdAtMillis", 0L)
                 ))
             }
-            allStories.value = list
+            allStories.value = FeedRankingAlgorithm.rankStories(list, System.currentTimeMillis())
+            scheduleNextViralExpirationCheck()
         } catch (e: Exception) {
             android.util.Log.e("YouSnapViewModel", "Error loading stories: ${e.message}")
         }
     }
 }
 
+@Keep
 data class StoryModel(
     val storyId: String = "",
     val ownerUsername: String = "",
@@ -4743,7 +5838,14 @@ data class StoryModel(
     val bgGradientStart: String = "",
     val bgGradientEnd: String = "",
     val timestamp: Long = 0L,
-    val firestoreDocId: String = ""
+    val firestoreDocId: String = "",
+    @get:com.google.firebase.firestore.PropertyName("isViral")
+    @com.google.firebase.firestore.PropertyName("isViral")
+    val isViral: Boolean = false,
+    val viralDurationDays: Int = 0,
+    val viralDurationHours: Int = 0,
+    val viralExpiresAt: String? = null,
+    val createdAtMillis: Long = 0L
 )
 
 data class ViewerProfile(

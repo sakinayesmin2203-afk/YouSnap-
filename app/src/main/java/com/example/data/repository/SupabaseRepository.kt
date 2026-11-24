@@ -143,31 +143,37 @@ class SupabaseRepository {
                 responseBody = "SUPABASE_API_KEY is not configured in Secrets"
             }
 
-            // 2. If direct fails (and not an explicit Supabase RLS block where worker also can't bypass unless configured),
-            // try Cloudflare worker fallback endpoint with live progress too
+            // 2. If direct fails, try Cloudflare Worker fallback authenticated with the user's Firebase ID Token
             if (!isSuccess) {
-                try {
-                    onProgress(0f)
-                    val workerUrl = SupabaseStorageService.WORKER_ENDPOINT + encodedFilename
-                    val workerRequestBody = ProgressRequestBody(file, mediaType, byteProgressWrapper)
-                    val workerRequest = Request.Builder()
-                        .url(workerUrl)
-                        .addHeader("User-Agent", "YouSnap-Android/1.0")
-                        .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                        .addHeader("apikey", apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") })
-                        .addHeader("Content-Type", contentType)
-                        .post(workerRequestBody)
-                        .build()
+                val workerAuthHeader = SupabaseStorageService.getWorkerAuthorizationHeader()
+                if (!workerAuthHeader.isNullOrBlank()) {
+                    try {
+                        onProgress(0f)
+                        val workerUrl = SupabaseStorageService.WORKER_ENDPOINT + encodedFilename
+                        val workerRequestBody = ProgressRequestBody(file, mediaType, byteProgressWrapper)
+                        val workerBuilder = Request.Builder()
+                            .url(workerUrl)
+                            .addHeader("User-Agent", "YouSnap-Android/1.0")
+                            .addHeader("Authorization", workerAuthHeader)
+                            .addHeader("Content-Type", contentType)
+                            .post(workerRequestBody)
 
-                    client.newCall(workerRequest).execute().use { workerResponse ->
-                        if (workerResponse.isSuccessful) {
-                            isSuccess = true
+                        if (apiKey.isNotBlank()) {
+                            workerBuilder.addHeader("apikey", apiKey)
+                        }
+
+                        client.newCall(workerBuilder.build()).execute().use { workerResponse ->
                             responseCode = workerResponse.code
                             responseBody = workerResponse.body?.string() ?: ""
+                            if (workerResponse.isSuccessful) {
+                                isSuccess = true
+                            }
                         }
+                    } catch (we: Exception) {
+                        android.util.Log.e("SupabaseRepository", "Worker fallback failed: ${we.message}")
                     }
-                } catch (we: Exception) {
-                    android.util.Log.e("SupabaseRepository", "Worker fallback failed: ${we.message}")
+                } else {
+                    android.util.Log.w("SupabaseRepository", "Skipped Worker upload fallback: no authenticated Firebase user token")
                 }
             }
 
@@ -421,49 +427,53 @@ class SupabaseRepository {
                     }
                 }
 
-                // 2. Cloudflare Worker Single & Batch DELETE (using Worker's own configured service key)
-                val workerSingleNoKey = Request.Builder()
-                    .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
-                    .addHeader("User-Agent", "YouSnap-Android/1.0")
-                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                    .delete()
-                    .build()
-                if (executeAndVerify(workerSingleNoKey, targetKey, "Worker single delete")) {
-                    return true
-                }
+                // 2. Cloudflare Worker Single & Batch DELETE (authenticated with Firebase Auth ID Token)
+                val workerAuthHeader = SupabaseStorageService.getWorkerAuthorizationHeader()
+                if (!workerAuthHeader.isNullOrBlank()) {
+                    val workerSingleBuilder = Request.Builder()
+                        .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
+                        .addHeader("User-Agent", "YouSnap-Android/1.0")
+                        .addHeader("Authorization", workerAuthHeader)
+                        .delete()
+                    if (executeAndVerify(workerSingleBuilder.build(), targetKey, "Worker single delete")) {
+                        return true
+                    }
 
-                val workerBatchNoKey = Request.Builder()
-                    .url(workerBatchUrl)
-                    .addHeader("User-Agent", "YouSnap-Android/1.0")
-                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                    .delete(batchPayloadJson.toRequestBody(jsonMediaType))
-                    .build()
-                if (executeAndVerify(workerBatchNoKey, targetKey, "Worker batch delete")) {
-                    return true
-                }
+                    val workerBatchBuilder = Request.Builder()
+                        .url(workerBatchUrl)
+                        .addHeader("User-Agent", "YouSnap-Android/1.0")
+                        .addHeader("Authorization", workerAuthHeader)
+                        .delete(batchPayloadJson.toRequestBody(jsonMediaType))
+                    if (executeAndVerify(workerBatchBuilder.build(), targetKey, "Worker batch delete")) {
+                        return true
+                    }
 
-                // 3. Cloudflare Worker Single & Batch DELETE with apikey header fallback
-                val fallbackApiKey = apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") }
-                val workerSingleWithKey = Request.Builder()
-                    .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
-                    .addHeader("User-Agent", "YouSnap-Android/1.0")
-                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                    .addHeader("apikey", fallbackApiKey)
-                    .delete()
-                    .build()
-                if (executeAndVerify(workerSingleWithKey, targetKey, "Worker single delete (apikey)")) {
-                    return true
-                }
+                    // 3. Cloudflare Worker Single & Batch DELETE with apikey header if configured
+                    if (apiKey.isNotBlank()) {
+                        val workerSingleWithKey = Request.Builder()
+                            .url(SupabaseStorageService.WORKER_ENDPOINT + encodedPath)
+                            .addHeader("User-Agent", "YouSnap-Android/1.0")
+                            .addHeader("Authorization", workerAuthHeader)
+                            .addHeader("apikey", apiKey)
+                            .delete()
+                            .build()
+                        if (executeAndVerify(workerSingleWithKey, targetKey, "Worker single delete (apikey)")) {
+                            return true
+                        }
 
-                val workerBatchWithKey = Request.Builder()
-                    .url(workerBatchUrl)
-                    .addHeader("User-Agent", "YouSnap-Android/1.0")
-                    .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                    .addHeader("apikey", fallbackApiKey)
-                    .delete(batchPayloadJson.toRequestBody(jsonMediaType))
-                    .build()
-                if (executeAndVerify(workerBatchWithKey, targetKey, "Worker batch delete (apikey)")) {
-                    return true
+                        val workerBatchWithKey = Request.Builder()
+                            .url(workerBatchUrl)
+                            .addHeader("User-Agent", "YouSnap-Android/1.0")
+                            .addHeader("Authorization", workerAuthHeader)
+                            .addHeader("apikey", apiKey)
+                            .delete(batchPayloadJson.toRequestBody(jsonMediaType))
+                            .build()
+                        if (executeAndVerify(workerBatchWithKey, targetKey, "Worker batch delete (apikey)")) {
+                            return true
+                        }
+                    }
+                } else {
+                    android.util.Log.w("SupabaseRepository", "Skipped Worker delete fallback: no authenticated Firebase user token")
                 }
 
                 return false
@@ -687,29 +697,34 @@ class SupabaseRepository {
             return@withContext directResult
         }
 
-        // Fallback to Cloudflare Worker list endpoint in case direct SELECT RLS returned [] or failed
-        try {
-            val workerListUrl = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
-            val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-            val workerReq = Request.Builder()
-                .url(workerListUrl)
-                .addHeader("User-Agent", "YouSnap-Android/1.0")
-                .addHeader("Authorization", SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN)
-                .addHeader("apikey", apiKey.ifBlank { SupabaseStorageService.WORKER_AUTHORIZATION_TOKEN.removePrefix("Bearer ") })
-                .addHeader("Content-Type", "application/json")
-                .post(body)
-                .build()
+        // Fallback to Cloudflare Worker list endpoint authenticated with Firebase Auth ID Token
+        val workerAuthHeader = SupabaseStorageService.getWorkerAuthorizationHeader()
+        if (!workerAuthHeader.isNullOrBlank()) {
+            try {
+                val workerListUrl = "https://yousnap-cdn.sakinayesmin2203.workers.dev/storage/v1/object/list/${SupabaseStorageService.BUCKET_NAME}"
+                val body = payload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                val workerReqBuilder = Request.Builder()
+                    .url(workerListUrl)
+                    .addHeader("User-Agent", "YouSnap-Android/1.0")
+                    .addHeader("Authorization", workerAuthHeader)
+                    .addHeader("Content-Type", "application/json")
+                    .post(body)
 
-            client.newCall(workerReq).execute().use { response ->
-                if (response.isSuccessful) {
-                    val workerItems = parseObjectList(response.body?.string().orEmpty())
-                    if (!workerItems.isNullOrEmpty()) {
-                        return@withContext workerItems
+                if (apiKey.isNotBlank()) {
+                    workerReqBuilder.addHeader("apikey", apiKey)
+                }
+
+                client.newCall(workerReqBuilder.build()).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val workerItems = parseObjectList(response.body?.string().orEmpty())
+                        if (!workerItems.isNullOrEmpty()) {
+                            return@withContext workerItems
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                android.util.Log.w("SupabaseRepository", "Worker list fallback notice: ${e.message}")
             }
-        } catch (e: Exception) {
-            android.util.Log.w("SupabaseRepository", "Worker list fallback notice: ${e.message}")
         }
 
         directResult

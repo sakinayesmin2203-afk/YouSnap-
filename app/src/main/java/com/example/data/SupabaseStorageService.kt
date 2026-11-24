@@ -1,6 +1,10 @@
 package com.example.data
 
+import android.util.Log
 import com.example.BuildConfig
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 class SupabaseStorageService {
     companion object {
@@ -55,6 +59,37 @@ class SupabaseStorageService {
         val AUTHORIZATION_TOKEN: String
             get() = DIRECT_AUTHORIZATION_HEADER ?: "Bearer $API_KEY"
 
-        const val WORKER_AUTHORIZATION_TOKEN = "Bearer yousnap_secret_token_9126441937"
+        /**
+         * Fetches the signed-in user's real Firebase ID Token for authenticating requests
+         * to the Cloudflare Worker instead of a hardcoded static bearer token.
+         */
+        suspend fun getFirebaseIdToken(forceRefresh: Boolean = false): String? {
+            val currentUser = try {
+                FirebaseAuth.getInstance().currentUser
+            } catch (_: Throwable) {
+                null
+            } ?: return null
+
+            return suspendCancellableCoroutine { continuation ->
+                currentUser.getIdToken(forceRefresh)
+                    .addOnSuccessListener { tokenResult ->
+                        val token = tokenResult?.token?.trim()
+                        if (continuation.isActive) {
+                            continuation.resume(token?.takeIf { it.isNotEmpty() })
+                        }
+                    }
+                    .addOnFailureListener { error ->
+                        Log.w("SupabaseStorageService", "Failed to fetch Firebase ID token: ${error.message}")
+                        if (continuation.isActive) {
+                            continuation.resume(null)
+                        }
+                    }
+            }
+        }
+
+        suspend fun getWorkerAuthorizationHeader(forceRefresh: Boolean = false): String? {
+            val idToken = getFirebaseIdToken(forceRefresh) ?: return null
+            return "Bearer $idToken"
+        }
     }
 }

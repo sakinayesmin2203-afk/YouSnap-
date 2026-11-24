@@ -67,7 +67,7 @@ fun ProfileScreen(
         viewModel.refreshHomeFeed(showIndicator = false)
     }
 
-    // Filter reels to only show the user's uploaded ones, deduplicated
+    // Filter reels to only show the user's uploaded ones, deduplicated and chronological
     val personalReels = remember(userReels, profile.username, currentUid) {
         userReels
             .filter {
@@ -75,9 +75,10 @@ fun ProfileScreen(
                     (!currentUid.isNullOrBlank() && it.creatorUid == currentUid)
             }
             .distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.timestamp}" }
+            .sortedByDescending { it.createdAtMillis.takeIf { c -> c > 0L } ?: it.timestamp }
     }
     
-    // Dynamic Personal Photos (Only current user's photos, deduplicated)
+    // Dynamic Personal Photos (Only current user's photos, deduplicated and chronological)
     val rawPersonalPhotos by viewModel.personalPhotosState.collectAsState()
     val personalPhotos = remember(rawPersonalPhotos, profile.username, currentUid) {
         rawPersonalPhotos
@@ -86,6 +87,7 @@ fun ProfileScreen(
                     (!currentUid.isNullOrBlank() && it.creatorUid == currentUid)
             }
             .distinctBy { if (it.imageUrl.isNotEmpty()) it.imageUrl else "${it.id}" }
+            .sortedByDescending { it.createdAtMillis.takeIf { c -> c > 0L } ?: it.id.toLongOrNull() ?: 0L }
     }
     
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
@@ -93,6 +95,8 @@ fun ProfileScreen(
     var selectedPhotoIndexForViewer by remember { mutableStateOf<Int?>(null) }
     val photoLikesMap = remember { mutableStateMapOf<String, Int>() }
     val photoLikedStatusMap = remember { mutableStateMapOf<String, Boolean>() }
+    val homePostCommentsMap by viewModel.homePostComments.collectAsState()
+    val homePostSharesMap by viewModel.homePostSharesCount.collectAsState()
 
     val followersCount by viewModel.myFollowersCount.collectAsState()
     val followingCount by viewModel.myFollowingCount.collectAsState()
@@ -173,7 +177,7 @@ fun ProfileScreen(
                                     com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                         context = context,
                                         subject = "YouSnap Profile",
-                                        text = "Check out $displayName (@${profile.username}) on YouSnap!\n$profileUrl",
+                                        text = profileUrl,
                                         chooserTitle = "Share Profile via"
                                     )
                                 },
@@ -685,12 +689,20 @@ fun ProfileScreen(
                         onFollowToggle = { viewModel.toggleFollowCreator(activePreviewReel) },
                         onShareClick = {
                             val reelUrl = viewModel.getReelShareUrl(activePreviewReel)
-                            com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                            val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                 context = context,
                                 subject = "YouSnap Reel",
-                                text = "🎥 Watch @${activePreviewReel.creatorUsername}'s Reel on YouSnap!\n$reelUrl",
+                                text = reelUrl,
                                 chooserTitle = "Share Reel via"
                             )
+                            if (!shared) {
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Reel Link",
+                                    url = reelUrl,
+                                    toastMessage = "Reel link copied! 🔗"
+                                )
+                            }
                             viewModel.incrementReelShares(activePreviewReel)
                         },
                         modifier = Modifier.fillMaxSize()
@@ -762,9 +774,21 @@ fun ProfileScreen(
         // Full-Screen Instagram-Style Scrollable Photo Viewer Dialog
         selectedPhotoIndexForViewer?.let { startIndex ->
             val updatedPhotos = personalPhotos.map { p ->
+                val cleanId = p.id.removePrefix("photo_")
+                val photoKey = "photo_$cleanId"
                 val currentLikes = photoLikesMap[p.id] ?: p.initialLikes
                 val isLiked = photoLikedStatusMap[p.id] ?: p.initialIsLiked
-                p.copy(initialLikes = currentLikes, initialIsLiked = isLiked)
+                val currentShares = homePostSharesMap[photoKey] ?: homePostSharesMap[p.id] ?: p.sharesCount
+                val currentComments = maxOf(
+                    p.initialComments,
+                    (homePostCommentsMap[photoKey] ?: homePostCommentsMap[p.id] ?: emptyList()).size
+                )
+                p.copy(
+                    initialLikes = currentLikes,
+                    initialIsLiked = isLiked,
+                    initialComments = currentComments,
+                    sharesCount = currentShares
+                )
             }
             if (updatedPhotos.isEmpty()) {
                 LaunchedEffect(Unit) { selectedPhotoIndexForViewer = null }
@@ -772,7 +796,9 @@ fun ProfileScreen(
                 FullScreenPhotoViewer(
                     photos = updatedPhotos,
                     initialIndex = startIndex.coerceIn(0, updatedPhotos.lastIndex),
+                    currentUsername = profile.username,
                     isOwner = true,
+                    commentsByPostId = homePostCommentsMap,
                     onDismiss = { selectedPhotoIndexForViewer = null },
                     onLikeChanged = { photoId, liked, newCount ->
                         photoLikedStatusMap[photoId] = liked
@@ -780,6 +806,15 @@ fun ProfileScreen(
                         updatedPhotos.find { it.id == photoId }?.let { photo ->
                             viewModel.notifyPhotoLikedFromViewer(photo, liked, newCount)
                         }
+                    },
+                    onLoadComments = { photo ->
+                        viewModel.loadCommentsForHomePost(photo.id, photo.firestoreDocId)
+                    },
+                    onAddComment = { photo, text ->
+                        viewModel.addCommentToHomePost("photo_${photo.id.removePrefix("photo_")}", text)
+                    },
+                    onShareChanged = { photo ->
+                        viewModel.incrementPostShares(photo)
                     },
                     onDeletePhoto = { photoToDelete ->
                         viewModel.deletePhotoPost(

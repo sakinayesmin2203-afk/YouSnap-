@@ -121,6 +121,7 @@ fun HomeScreen(
     val homePostCommentsMap by viewModel.homePostComments.collectAsState()
     val homePostLikedState by viewModel.homePostLikedState.collectAsState()
     val homePostLikesCount by viewModel.homePostLikesCount.collectAsState()
+    val homePostSharesCount by viewModel.homePostSharesCount.collectAsState()
     val homePostBookmarked by viewModel.homePostBookmarked.collectAsState()
     val isHomeRefreshing by viewModel.isHomeRefreshing.collectAsState()
     val userPrivacyMap by viewModel.userPrivacyMap.collectAsState()
@@ -611,11 +612,20 @@ fun HomeScreen(
                     item(key = "profile_opened_post_${profilePost.id}") {
                         LaunchedEffect(profilePost.firestoreDocId, profilePost.id) {
                             viewModel.logPhotoAdViewOnce(profilePost)
+                            viewModel.loadCommentsForHomePost(profilePost.id, profilePost.firestoreDocId)
                         }
-                        val isLiked = homePostLikedState[profilePost.id] ?: profilePost.initialIsLiked
-                        val likesCount = homePostLikesCount[profilePost.id] ?: profilePost.initialLikes
-                        val commentsForPost = homePostCommentsMap[profilePost.id] ?: emptyList()
-                        val isBookmarked = homePostBookmarked[profilePost.id] ?: false
+                        val cleanProfilePostId = profilePost.id.removePrefix("photo_")
+                        val photoKey = "photo_$cleanProfilePostId"
+                        val isLiked = homePostLikedState[photoKey] ?: homePostLikedState[profilePost.id] ?: profilePost.initialIsLiked
+                        val likesCount = homePostLikesCount[photoKey] ?: homePostLikesCount[profilePost.id] ?: profilePost.initialLikes
+                        val sharesCount = homePostSharesCount[photoKey] ?: homePostSharesCount[profilePost.id] ?: profilePost.sharesCount
+                        val commentsForPost = homePostCommentsMap[photoKey]
+                            ?: homePostCommentsMap[profilePost.id]
+                            ?: profilePost.firestoreDocId?.takeIf { it.isNotBlank() }?.let { homePostCommentsMap[it] }
+                            ?: homePostCommentsMap[cleanProfilePostId]
+                            ?: emptyList()
+                        val displayCommentsCount = maxOf(profilePost.initialComments, commentsForPost.size)
+                        val isBookmarked = homePostBookmarked[photoKey] ?: homePostBookmarked[profilePost.id] ?: false
 
                         val isOwner = currentProfile.username.lowercase() == profilePost.creatorUsername.lowercase()
 
@@ -628,7 +638,8 @@ fun HomeScreen(
                             imageUrl = profilePost.imageUrl,
                             caption = profilePost.title,
                             likesCount = likesCount,
-                            commentsCount = commentsForPost.size,
+                            commentsCount = displayCommentsCount,
+                            sharesCount = sharesCount,
                             isLiked = isLiked,
                             isBookmarked = isBookmarked,
                             timeAgo = profilePost.timeAgo,
@@ -644,6 +655,7 @@ fun HomeScreen(
                             isBookmarked = isBookmarked,
                             onLikeToggle = { viewModel.toggleLikeHomePost(profilePost.id) },
                             onCommentClick = {
+                                viewModel.loadCommentsForHomePost(postItem.id, profilePost.firestoreDocId)
                                 activePostForComments = postItem
                             },
                             onShareClick = {
@@ -651,7 +663,7 @@ fun HomeScreen(
                                 val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                     context = context,
                                     subject = "YouSnap Post",
-                                    text = "Check out @${profilePost.creatorUsername}'s photo on YouSnap! 📸✨\n$postUrl",
+                                    text = postUrl,
                                     chooserTitle = "Share via"
                                 )
                                 if (!shared) {
@@ -662,6 +674,7 @@ fun HomeScreen(
                                         toastMessage = "Link copied! 🔗"
                                     )
                                 }
+                                viewModel.incrementPostShares(profilePost)
                             },
                             onBookmarkToggle = {
                                 val saved = viewModel.toggleBookmarkHomePost(profilePost.id)
@@ -774,8 +787,13 @@ fun HomeScreen(
                                     viewModel.logPhotoAdViewOnce(photo)
                                 }
                                 val postId = "photo_${photo.id}"
-                                val isLiked = homePostLikedState[postId] ?: photo.initialIsLiked
-                                val currentLikes = homePostLikesCount[postId] ?: photo.initialLikes
+                                val isLiked = homePostLikedState[postId] ?: homePostLikedState[photo.id] ?: photo.initialIsLiked
+                                val currentLikes = homePostLikesCount[postId] ?: homePostLikesCount[photo.id] ?: photo.initialLikes
+                                val currentShares = homePostSharesCount[postId] ?: homePostSharesCount[photo.id] ?: photo.sharesCount
+                                val loadedCommentsSize = (homePostCommentsMap[postId]
+                                    ?: homePostCommentsMap[photo.id]
+                                    ?: photo.firestoreDocId?.takeIf { it.isNotBlank() }?.let { homePostCommentsMap[it] })?.size ?: 0
+                                val currentCommentsCount = maxOf(photo.initialComments, loadedCommentsSize)
                                 val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
 
                                 val postItem = HomePostItem(
@@ -790,7 +808,8 @@ fun HomeScreen(
                                     caption = photo.title,
                                     hashtags = "",
                                     likesCount = currentLikes,
-                                    commentsCount = photo.initialComments,
+                                    commentsCount = currentCommentsCount,
+                                    sharesCount = currentShares,
                                     isLiked = isLiked,
                                     timeAgo = photo.timeAgo,
                                     isFromUserProfile = true,
@@ -802,16 +821,19 @@ fun HomeScreen(
                                     shareUrl = viewModel.getPhotoShareUrl(photo),
                                     isLiked = isLiked,
                                     likesCount = currentLikes,
-                                    commentsCount = photo.initialComments,
+                                    commentsCount = currentCommentsCount,
                                     isBookmarked = false,
                                     onLikeToggle = { viewModel.toggleLikeHomePost(postId) },
-                                    onCommentClick = { activePostForComments = postItem },
+                                    onCommentClick = {
+                                        viewModel.loadCommentsForHomePost(postItem.id, photo.firestoreDocId)
+                                        activePostForComments = postItem
+                                    },
                                     onShareClick = {
                                         val postUrl = viewModel.getPhotoShareUrl(photo)
                                         val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                             context = context,
                                             subject = "YouSnap Post",
-                                            text = "Check out @${photo.creatorUsername}'s photo on YouSnap! 📸✨\n$postUrl",
+                                            text = postUrl,
                                             chooserTitle = "Share via"
                                         )
                                         if (!shared) {
@@ -822,6 +844,7 @@ fun HomeScreen(
                                                 toastMessage = "Link copied! 🔗"
                                             )
                                         }
+                                        viewModel.incrementPostShares(photo)
                                     },
                                     onBookmarkToggle = {
                                         Toast.makeText(context, "Post saved to bookmarks! 📌", Toast.LENGTH_SHORT).show()
@@ -834,7 +857,12 @@ fun HomeScreen(
                                         }
                                     },
                                     onPhotoClick = {
-                                        selectedPhotoForViewer = photo.copy(initialIsLiked = isLiked)
+                                        selectedPhotoForViewer = photo.copy(
+                                            initialIsLiked = isLiked,
+                                            initialLikes = currentLikes,
+                                            initialComments = currentCommentsCount,
+                                            sharesCount = currentShares
+                                        )
                                     },
                                     onDismissBanner = null,
                                     isOwner = isPhotoOwner,
@@ -877,12 +905,10 @@ fun HomeScreen(
                                         val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                                             context = viewModel.app,
                                             subject = "YouSnap Reel",
-                                            text = "Check out @${reel.creatorUsername}'s video on YouSnap! 🎬✨\n$reelUrl",
+                                            text = reelUrl,
                                             chooserTitle = "Share via"
                                         )
-                                        if (shared) {
-                                            viewModel.incrementReelShares(reel)
-                                        } else {
+                                        if (!shared) {
                                             com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
                                                 context = viewModel.app,
                                                 label = "Reel Link",
@@ -890,6 +916,7 @@ fun HomeScreen(
                                                 toastMessage = "Link copied!"
                                             )
                                         }
+                                        viewModel.incrementReelShares(reel)
                                     },
                                     onProfileClick = {
                                         if (isReelOwner) {
@@ -926,7 +953,12 @@ fun HomeScreen(
 
         // 3. COMMENTS BOTTOM SHEET (Home Feed Posts)
         activePostForComments?.let { post ->
-            val commentsForPost = homePostCommentsMap[post.id] ?: emptyList()
+            val cleanActiveId = post.id.removePrefix("photo_")
+            val commentsForPost = homePostCommentsMap["photo_$cleanActiveId"]
+                ?: homePostCommentsMap[post.id]
+                ?: post.firestoreDocId?.takeIf { it.isNotBlank() }?.let { homePostCommentsMap[it] }
+                ?: homePostCommentsMap[cleanActiveId]
+                ?: emptyList()
             CommentBottomSheet(
                 comments = commentsForPost,
                 commentText = activePostCommentInput,
@@ -945,17 +977,41 @@ fun HomeScreen(
         // FULLSCREEN VIEWER (from Home Feed Photo clicks)
         selectedPhotoForViewer?.let { photo ->
             val isPhotoOwner = viewModel.isOwnedByCurrentUser(photo.creatorUsername, photo.creatorUid)
+            val cleanViewerId = photo.id.removePrefix("photo_")
+            val viewerKey = "photo_$cleanViewerId"
+            val viewerLikes = homePostLikesCount[viewerKey] ?: homePostLikesCount[photo.id] ?: photo.initialLikes
+            val viewerIsLiked = homePostLikedState[viewerKey] ?: homePostLikedState[photo.id] ?: photo.initialIsLiked
+            val viewerShares = homePostSharesCount[viewerKey] ?: homePostSharesCount[photo.id] ?: photo.sharesCount
+            val viewerCommentsCount = maxOf(
+                photo.initialComments,
+                (homePostCommentsMap[viewerKey] ?: homePostCommentsMap[photo.id] ?: emptyList()).size
+            )
             DisposableEffect(photo.id, photo.firestoreDocId) {
                 viewModel.setAdCreatorContextForPhoto(photo)
                 onDispose { viewModel.clearAdCreatorContext() }
             }
             FullScreenPhotoViewer(
-                photoData = photo,
+                photoData = photo.copy(
+                    initialLikes = viewerLikes,
+                    initialIsLiked = viewerIsLiked,
+                    initialComments = viewerCommentsCount,
+                    sharesCount = viewerShares
+                ),
                 currentUsername = currentProfile?.username ?: "",
                 isOwner = isPhotoOwner,
+                commentsByPostId = homePostCommentsMap,
                 onDismiss = { selectedPhotoForViewer = null },
                 onLikeChanged = { _, liked, count ->
                     viewModel.notifyPhotoLikedFromViewer(photo, liked, count)
+                },
+                onLoadComments = { p ->
+                    viewModel.loadCommentsForHomePost(p.id, p.firestoreDocId)
+                },
+                onAddComment = { p, text ->
+                    viewModel.addCommentToHomePost("photo_${p.id.removePrefix("photo_")}", text)
+                },
+                onShareChanged = { p ->
+                    viewModel.incrementPostShares(p)
                 },
                 onDeletePhoto = if (isPhotoOwner) {
                     { photoToDelete ->
@@ -1491,7 +1547,7 @@ fun FeedPhotoPostCard(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Share",
+                    text = if (post.sharesCount > 0) "Share (${formatEngCount(post.sharesCount)})" else "Share",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = WarmCreamTextSecondary
@@ -1590,7 +1646,7 @@ fun InstagramFeedPost(
     var localIsLiked by remember(reel.id, reel.isLiked) { mutableStateOf(reel.isLiked) }
     var localLikesCount by remember(reel.id, reel.likesCount) { mutableStateOf(reel.likesCount) }
     var localCommentsCount by remember(reel.id, reel.commentsCount) { mutableStateOf(reel.commentsCount) }
-    var localShareCount by remember(reel.id) { mutableStateOf(0) }
+    var localShareCount by remember(reel.id, reel.sharesCount) { mutableStateOf(reel.sharesCount) }
 
     Surface(
         modifier = Modifier
@@ -2075,7 +2131,6 @@ fun InstagramFeedPost(
                         .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .clickable {
-                            localShareCount++
                             onShareClick()
                         }
                         .padding(horizontal = 10.dp),

@@ -14,6 +14,7 @@ data class HomePostItem(
     val hashtags: String = "",
     val likesCount: Int = 0,
     val commentsCount: Int = 0,
+    val sharesCount: Int = 0,
     val isLiked: Boolean = false,
     val isBookmarked: Boolean = false,
     val timeAgo: String = "Just now",

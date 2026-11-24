@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 @Database(
     entities = [ProfileEntity::class, SettingsEntity::class, ReelEntity::class, CommentEntity::class],
-    version = 8,
+    version = 10,
     exportSchema = false
 )
 abstract class YouSnapDatabase : RoomDatabase() {

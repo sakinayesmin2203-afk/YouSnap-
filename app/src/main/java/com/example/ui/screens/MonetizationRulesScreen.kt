@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Copyright
@@ -130,6 +131,12 @@ fun MonetizationRulesScreen(
                 title = "Application Process",
                 description = "Users can apply for monetization only after meeting all the specified criteria.",
                 icon = Icons.Filled.FactCheck
+            ),
+            EligibilityCriterion(
+                number = 6,
+                title = "Payout Threshold",
+                description = "Monetized accounts with approval can receive payouts to their bank account or UPI ID once earnings reach a minimum of \$50.",
+                icon = Icons.Filled.AccountBalanceWallet
             )
         )
     }

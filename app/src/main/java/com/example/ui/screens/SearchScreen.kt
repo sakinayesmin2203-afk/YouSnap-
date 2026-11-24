@@ -39,6 +39,7 @@ import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
 import com.example.ui.components.CommentBottomSheet
 import com.example.ui.components.ReelItem
+import com.example.ui.utils.FeedRankingAlgorithm
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,14 +48,15 @@ fun SearchScreen(
     reels: List<ReelEntity>,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchResultUsers by viewModel.searchResultUsers.collectAsState()
     val searchResultPosts by viewModel.searchResultPosts.collectAsState()
     var selectedReelForPreview by remember { mutableStateOf<ReelEntity?>(null) }
 
-    // Filter reels based on user search query
+    // Filter and rank reels (Active Viral priority boost first, then views/likes/createdAt)
     val filteredReels = remember(searchQuery, reels) {
-        if (searchQuery.trim().isEmpty()) {
+        val base = if (searchQuery.trim().isEmpty()) {
             reels
         } else {
             reels.filter {
@@ -63,6 +65,10 @@ fun SearchScreen(
                 it.creatorName.contains(searchQuery, ignoreCase = true)
             }
         }
+        FeedRankingAlgorithm.rankReels(base, System.currentTimeMillis())
+    }
+    val rankedSearchPosts = remember(searchResultPosts) {
+        FeedRankingAlgorithm.rankReels(searchResultPosts, System.currentTimeMillis())
     }
 
     Scaffold(
@@ -188,7 +194,7 @@ fun SearchScreen(
                         horizontalArrangement = Arrangement.spacedBy(1.dp),
                         verticalArrangement = Arrangement.spacedBy(1.dp)
                     ) {
-                        items(searchResultPosts) { reel ->
+                        items(rankedSearchPosts) { reel ->
                             SearchGridItem(reel = reel, onPreview = { selectedReelForPreview = it })
                         }
                     }
@@ -228,11 +234,22 @@ fun SearchScreen(
                         onCommentClick = { showPreviewComments = true },
                         onFollowToggle = { viewModel.toggleFollowCreator(activePreviewReel) },
                         onShareClick = {
-                            Toast.makeText(
-                                viewModel.app,
-                                "Link copied for sharing!",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            val reelUrl = viewModel.getReelShareUrl(activePreviewReel)
+                            val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
+                                context = context,
+                                subject = "YouSnap Reel",
+                                text = reelUrl,
+                                chooserTitle = "Share Reel via"
+                            )
+                            if (!shared) {
+                                com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                    context = context,
+                                    label = "Reel Link",
+                                    url = reelUrl,
+                                    toastMessage = "Reel link copied! 🔗"
+                                )
+                            }
+                            viewModel.incrementReelShares(activePreviewReel)
                         },
                         modifier = Modifier.fillMaxSize()
                     )

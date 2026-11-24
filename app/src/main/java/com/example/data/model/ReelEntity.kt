@@ -14,6 +14,7 @@ data class ReelEntity(
     val audioTitle: String = "Original Audio",
     val likesCount: Int = 0,
     val commentsCount: Int = 0,
+    val sharesCount: Int = 0,
     val isLiked: Boolean = false,
     val isFollowingCreator: Boolean = false,
     val bgGradientStart: String = "#FF1A75",
@@ -21,5 +22,10 @@ data class ReelEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val viewsCount: Int = 0,
     val mediaUrl: String = "",
-    val thumbnailUrl: String = ""
+    val thumbnailUrl: String = "",
+    val isViral: Boolean = false,
+    val viralDurationDays: Int = 0,
+    val viralDurationHours: Int = 0,
+    val viralExpiresAt: String? = null,
+    val createdAtMillis: Long = 0L
 )

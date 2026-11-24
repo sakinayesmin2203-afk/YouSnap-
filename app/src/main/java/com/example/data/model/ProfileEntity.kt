@@ -1,8 +1,10 @@
 package com.example.data.model
 
+import androidx.annotation.Keep
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+@Keep
 @Entity(tableName = "profile_table")
 data class ProfileEntity(
     @PrimaryKey val id: Int = 1,

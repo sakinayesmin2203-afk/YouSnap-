@@ -352,7 +352,7 @@ fun ReelItem(
                         )
                     }
                     Text(
-                        text = "Share",
+                        text = if (reel.sharesCount > 0) formatViews(reel.sharesCount) else "Share",
                         color = Color.White,
                         fontSize = 10.sp
                     )

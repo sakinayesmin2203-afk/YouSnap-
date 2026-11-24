@@ -67,6 +67,7 @@ import com.example.R
 import com.example.ads.AdMobRevenueTracker
 import com.example.data.model.ReelEntity
 import com.example.ui.Toast
+import com.example.ui.utils.FeedRankingAlgorithm
 import com.example.ui.theme.WarmCreamBackground
 import com.example.ui.theme.WarmCreamTextPrimary
 import com.example.ui.theme.WarmCreamTextSecondary
@@ -95,30 +96,48 @@ sealed class HomeFeedEntry {
 }
 
 /**
- * Builds the Home Feed list with a Native Video Ad inserted after every `adInterval`
- * posts (default: 5 posts across photos and videos).
+ * Builds the unified Home Feed list ranked by Active Viral priority boost first,
+ * followed by engagement (views, likes, comments, shares) and recency (createdAt),
+ * with a Native Video Ad inserted after every `adInterval` posts (default: 5).
  */
 fun buildHomeFeedWithAds(
     photos: List<FullScreenPhotoData>,
     reels: List<ReelEntity>,
-    adInterval: Int = 5
+    adInterval: Int = 5,
+    nowMs: Long = System.currentTimeMillis()
 ): List<HomeFeedEntry> {
     if (photos.isEmpty() && reels.isEmpty()) return emptyList()
+
+    val rankedMedia = buildList {
+        photos.forEach { photo ->
+            add(
+                Triple(
+                    FeedRankingAlgorithm.computePhotoScore(photo, nowMs),
+                    photo.createdAtMillis.takeIf { it > 0L } ?: photo.id.toLongOrNull() ?: 0L,
+                    HomeFeedEntry.Photo(photo)
+                )
+            )
+        }
+        reels.forEach { reel ->
+            add(
+                Triple(
+                    FeedRankingAlgorithm.computeReelScore(reel, nowMs),
+                    reel.createdAtMillis.takeIf { it > 0L } ?: reel.timestamp,
+                    HomeFeedEntry.Video(reel)
+                )
+            )
+        }
+    }.sortedWith(
+        compareByDescending<Triple<Double, Long, HomeFeedEntry>> { it.first }
+            .thenByDescending { it.second }
+    ).map { it.third }
+
     val entries = mutableListOf<HomeFeedEntry>()
     var postCounter = 0
     var adSlotCounter = 1
 
-    photos.forEach { photo ->
-        entries.add(HomeFeedEntry.Photo(photo))
-        postCounter++
-        if (postCounter >= adInterval) {
-            entries.add(HomeFeedEntry.NativeAd(adSlotId = adSlotCounter++))
-            postCounter = 0
-        }
-    }
-
-    reels.forEach { reel ->
-        entries.add(HomeFeedEntry.Video(reel))
+    rankedMedia.forEach { entry ->
+        entries.add(entry)
         postCounter++
         if (postCounter >= adInterval) {
             entries.add(HomeFeedEntry.NativeAd(adSlotId = adSlotCounter++))

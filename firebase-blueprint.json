@@ -1,42 +1,256 @@
 {
   "entities": {
-    "posts": {
-      "fields": {
-        "userId": "string",
-        "creatorUid": "string",
-        "username": "string",
-        "name": "string",
-        "caption": "string",
-        "mediaUrl": "string",
-        "likesCount": "number",
-        "commentsCount": "number",
-        "createdAt": "timestamp"
-      }
+    "User": {
+      "title": "User",
+      "description": "User profile, creator metrics, FCM token, and security preferences",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "bio": { "type": "string" },
+        "profilePic": { "type": "string" },
+        "category": { "type": "string" },
+        "hiddenStoryFrom": { "type": "string" },
+        "email": { "type": "string" },
+        "isPinEnabled": { "type": "boolean" },
+        "appPin": { "type": "string", "description": "Salted SHA-256 PIN digest (never plaintext)" },
+        "isPrivateAccount": { "type": "boolean" },
+        "followersCount": { "type": "integer" },
+        "followingCount": { "type": "integer" },
+        "postCount": { "type": "integer" },
+        "videoViewsCount": { "type": "integer" },
+        "photoUploadsCount": { "type": "integer" },
+        "storiesUploadedCount": { "type": "integer" },
+        "monetizationStatus": { "type": "string" },
+        "isMonetized": { "type": "boolean" },
+        "profileLink": { "type": "string" },
+        "fcmToken": { "type": "string" }
+      },
+      "required": ["username"]
     },
-    "reels": {
-      "fields": {
-        "userId": "string",
-        "creatorUid": "string",
-        "username": "string",
-        "name": "string",
-        "caption": "string",
-        "audioTitle": "string",
-        "mediaUrl": "string",
-        "thumbnailUrl": "string",
-        "likesCount": "number",
-        "commentsCount": "number",
-        "viewsCount": "number",
-        "createdAt": "timestamp"
-      }
+    "Post": {
+      "title": "Post",
+      "description": "Photo post published by a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "firestoreDocId": { "type": "string" },
+        "userId": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "caption": { "type": "string" },
+        "title": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "shareLink": { "type": "string" },
+        "likesCount": { "type": "integer" },
+        "commentsCount": { "type": "integer" },
+        "sharesCount": { "type": "integer" },
+        "likedBy": { "type": "array" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isViral": { "type": "boolean" },
+        "viralDurationDays": { "type": "integer" },
+        "viralDurationHours": { "type": "integer" },
+        "viralExpiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "creatorUid", "username", "timestamp"]
     },
-    "stories": {
-      "fields": {
-        "userId": "string",
-        "creatorUid": "string",
-        "username": "string",
-        "mediaUrl": "string",
-        "createdAt": "timestamp"
-      }
+    "Reel": {
+      "title": "Reel",
+      "description": "Short-form video reel published by a creator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "reelIntId": { "type": "integer" },
+        "firestoreDocId": { "type": "string" },
+        "userId": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "caption": { "type": "string" },
+        "audioTitle": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "shareLink": { "type": "string" },
+        "likesCount": { "type": "integer" },
+        "commentsCount": { "type": "integer" },
+        "sharesCount": { "type": "integer" },
+        "viewsCount": { "type": "integer" },
+        "likedBy": { "type": "array" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isViral": { "type": "boolean" },
+        "viralDurationDays": { "type": "integer" },
+        "viralDurationHours": { "type": "integer" },
+        "viralExpiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "creatorUid", "username", "timestamp"]
+    },
+    "Story": {
+      "title": "Story",
+      "description": "24-hour image, video, or text story",
+      "type": "object",
+      "properties": {
+        "storyId": { "type": "string" },
+        "firestoreDocId": { "type": "string" },
+        "userId": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "username": { "type": "string" },
+        "ownerUsername": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "mediaType": { "type": "string" },
+        "caption": { "type": "string" },
+        "viewerIds": { "type": "array" },
+        "viewsCount": { "type": "integer" },
+        "likes": { "type": "array" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isViral": { "type": "boolean" },
+        "viralDurationDays": { "type": "integer" },
+        "viralDurationHours": { "type": "integer" },
+        "viralExpiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["storyId", "userId", "creatorUid", "username", "timestamp"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "User comment on a post or reel",
+      "type": "object",
+      "properties": {
+        "postId": { "type": "string" },
+        "reelId": { "type": "string" },
+        "userUid": { "type": "string" },
+        "username": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userUid", "username", "text", "timestamp"]
+    },
+    "Follow": {
+      "title": "Follow",
+      "description": "Follow relationship between follower and target user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "followerUid": { "type": "string" },
+        "followerUsername": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "targetUsername": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["followerUid", "targetUsername", "timestamp"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Activity notification targeted to a recipient user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "senderUsername": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "recipientUsername": { "type": "string" },
+        "detail": { "type": "string" },
+        "isFollowingBack": { "type": "boolean" },
+        "isRead": { "type": "boolean" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "senderUid", "isRead", "timestamp"]
+    },
+    "MonetizationRequest": {
+      "title": "MonetizationRequest",
+      "description": "Creator monetization payout application (strictly private to applicant)",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "earnings": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "status", "earnings"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Violation reports, appeals, and user support tickets",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "reporterUserId": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["createdAt"]
+    },
+    "AdEvent": {
+      "title": "AdEvent",
+      "description": "AdMob revenue and monetized view telemetry event",
+      "type": "object",
+      "properties": {
+        "eventType": { "type": "string", "enum": ["view", "ad_revenue"] },
+        "creatorId": { "type": "string" },
+        "viewerId": { "type": "string" },
+        "mediaId": { "type": "string" },
+        "valueMicros": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["eventType", "creatorId", "viewerId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles keyed by Firebase Auth UID"
+    },
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/Post" },
+      "description": "Photo posts"
+    },
+    "/reels/{reelId}": {
+      "schema": { "$ref": "#/entities/Reel" },
+      "description": "Short video reels"
+    },
+    "/videos/{videoId}": {
+      "schema": { "$ref": "#/entities/Reel" },
+      "description": "Legacy video documents"
+    },
+    "/stories/{storyId}": {
+      "schema": { "$ref": "#/entities/Story" },
+      "description": "Active user stories keyed by ownerUsername"
+    },
+    "/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/Comment" },
+      "description": "Comments on photo posts"
+    },
+    "/reels_comments/{commentId}": {
+      "schema": { "$ref": "#/entities/Comment" },
+      "description": "Comments on reels"
+    },
+    "/follows/{followId}": {
+      "schema": { "$ref": "#/entities/Follow" },
+      "description": "Follow relationships"
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "In-app notifications"
+    },
+    "/monetization_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/MonetizationRequest" },
+      "description": "Private creator monetization payout applications"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Private violation reports, appeals, and support tickets"
+    },
+    "/ad_events/{eventId}": {
+      "schema": { "$ref": "#/entities/AdEvent" },
+      "description": "Ad view and revenue telemetry"
     }
   }
 }

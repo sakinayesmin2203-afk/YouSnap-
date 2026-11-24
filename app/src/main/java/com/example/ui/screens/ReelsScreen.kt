@@ -60,6 +60,7 @@ import com.example.ui.components.CommentBottomSheet
 import com.example.ui.components.FullScreenNativeVideoAd
 import com.example.ui.components.ReelsFeedItem
 import com.example.ui.components.buildReelsFeedWithAds
+import com.example.ui.utils.FeedRankingAlgorithm
 import kotlinx.coroutines.delay
 
 private fun formatViews(count: Int): String {
@@ -91,13 +92,14 @@ fun ReelsScreen(
     val isFollowingMap by viewModel.otherUserIsFollowing.collectAsState()
 
     val visibleReels = remember(reels, userPrivacyMap, isFollowingMap, currentUserProfile) {
-        reels.filter { reel ->
+        val filtered = reels.filter { reel ->
             val creator = reel.creatorUsername.lowercase()
             val isOwner = currentUserProfile.username.equals(creator, ignoreCase = true)
             val isPrivate = userPrivacyMap[creator] ?: false
             val isFollowing = isFollowingMap[creator] ?: false
             !isPrivate || isOwner || isFollowing
         }.distinctBy { if (it.mediaUrl.isNotEmpty()) it.mediaUrl else "${it.creatorUsername}_${it.timestamp}" }
+        FeedRankingAlgorithm.rankReels(filtered, System.currentTimeMillis())
     }
 
     // Build feed with a full-screen Native Ad after every 6 video reels
@@ -624,19 +626,19 @@ fun ReelViewportItem(
                         val reelUrl = viewModel.getReelShareUrl(reel)
                         val shared = com.example.ui.utils.DeepLinkHelper.shareLinkSheet(
                             context = context,
-                            subject = "Check out @${reel.creatorUsername}'s Reel on YouSnap!",
-                            text = "🎥 Watch this Reel by @${reel.creatorUsername} on YouSnap!\n\n\"${reel.caption}\"\n\n$reelUrl",
+                            subject = "YouSnap Reel",
+                            text = reelUrl,
                             chooserTitle = "Share Reel via"
                         )
-                        if (shared) {
-                            viewModel.incrementReelShares(reel)
-                        } else {
-                            Toast.makeText(
-                                context,
-                                "Unable to open Share sheet",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                        if (!shared) {
+                            com.example.ui.utils.DeepLinkHelper.copyLinkToClipboard(
+                                context = context,
+                                label = "Reel Link",
+                                url = reelUrl,
+                                toastMessage = "Reel link copied! 🔗"
+                            )
                         }
+                        viewModel.incrementReelShares(reel)
                     },
                     modifier = Modifier
                         .size(44.dp)
@@ -651,7 +653,7 @@ fun ReelViewportItem(
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Share",
+                    text = if (reel.sharesCount > 0) formatViews(reel.sharesCount) else "Share",
                     color = Color.White,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
