@@ -472,9 +472,23 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
             val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
             if (decoded != null) {
+                val bitmapToCompress = if (decoded.hasAlpha()) {
+                    val opaque = Bitmap.createBitmap(
+                        decoded.width,
+                        decoded.height,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    val canvas = android.graphics.Canvas(opaque)
+                    canvas.drawColor(android.graphics.Color.WHITE)
+                    canvas.drawBitmap(decoded, 0f, 0f, null)
+                    decoded.recycle()
+                    opaque
+                } else {
+                    decoded
+                }
                 val out = ByteArrayOutputStream()
-                decoded.compress(Bitmap.CompressFormat.JPEG, 88, out)
-                decoded.recycle()
+                bitmapToCompress.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                bitmapToCompress.recycle()
                 out.toByteArray().takeIf { it.isNotEmpty() } ?: rawBytes
             } else {
                 rawBytes
@@ -483,44 +497,114 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             rawBytes
         }
 
-        return@withContext try {
-            val storageRef = FirebaseStorage.getInstance()
-                .reference
-                .child("profile_images/$uid/avatar.jpg")
-            val metadata = StorageMetadata.Builder()
-                .setContentType("image/jpeg")
-                .build()
+        val metadata = StorageMetadata.Builder()
+            .setContentType("image/jpeg")
+            .build()
 
-            val downloadUrl = withTimeoutOrNull(45_000L) {
-                awaitTask(storageRef.putBytes(uploadBytes, metadata))
-                awaitTask(storageRef.downloadUrl).toString().trim()
-            } ?: return@withContext Result.failure(
-                Exception("Profile photo upload timed out. Please check your internet connection and try again.")
-            )
-
-            val normalizedUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(downloadUrl)
-            if (normalizedUrl.isBlank()) {
-                Result.failure(
-                    Exception("Firebase Storage did not return a valid https:// download URL.")
+        suspend fun tryFirebaseBucket(storage: FirebaseStorage): Result<String> {
+            return try {
+                val storageRef = storage.reference.child("profile_images/$uid/avatar.jpg")
+                val downloadUrl = withTimeoutOrNull(30_000L) {
+                    val uploadSnap = awaitTask(storageRef.putBytes(uploadBytes, metadata))
+                    val targetRef = uploadSnap.metadata?.reference ?: storageRef
+                    awaitTask(targetRef.downloadUrl).toString().trim()
+                } ?: return Result.failure(
+                    Exception("Profile photo upload timed out. Please check your internet connection and try again.")
                 )
-            } else {
-                Result.success(normalizedUrl)
+                val normalized = ProfilePhotoUtils.normalizeRemotePhotoUrl(downloadUrl)
+                if (normalized.isBlank()) {
+                    Result.failure(Exception("Firebase Storage did not return a valid https:// download URL."))
+                } else {
+                    Result.success(normalized)
+                }
+            } catch (e: StorageException) {
+                Result.failure(e)
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-        } catch (e: StorageException) {
-            val detail = when (e.errorCode) {
-                StorageException.ERROR_NOT_AUTHENTICATED,
-                StorageException.ERROR_NOT_AUTHORIZED ->
-                    "Storage permission denied. Please sign in again or check Firebase Storage rules."
-                StorageException.ERROR_RETRY_LIMIT_EXCEEDED ->
-                    "Network timeout while uploading photo. Please try again."
-                else -> e.localizedMessage ?: "Firebase Storage upload failed."
-            }
-            Result.failure(Exception(detail, e))
-        } catch (e: Exception) {
-            Result.failure(
-                Exception("Profile photo upload failed: ${e.localizedMessage ?: "Please try again."}", e)
-            )
         }
+
+        // 1. Try default Firebase Storage bucket (from google-services.json)
+        val primaryResult = tryFirebaseBucket(FirebaseStorage.getInstance())
+        if (primaryResult.isSuccess) return@withContext primaryResult
+
+        val primaryErr = primaryResult.exceptionOrNull()
+        val primaryStorageCode = (primaryErr as? StorageException)?.errorCode
+
+        // 2. If default bucket (.firebasestorage.app) returned 404 / bucket missing, try .appspot.com
+        if (primaryStorageCode == StorageException.ERROR_OBJECT_NOT_FOUND ||
+            primaryStorageCode == StorageException.ERROR_BUCKET_NOT_FOUND ||
+            primaryStorageCode == StorageException.ERROR_PROJECT_NOT_FOUND
+        ) {
+            val appspotBucket = try {
+                val projectId = com.google.firebase.FirebaseApp.getInstance().options.projectId
+                    ?.takeIf { it.isNotBlank() } ?: "yousnap-app"
+                tryFirebaseBucket(FirebaseStorage.getInstance("gs://$projectId.appspot.com"))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            if (appspotBucket.isSuccess) return@withContext appspotBucket
+        }
+
+        // 3. If Firebase Storage is not provisioned/enabled on the Firebase project (e.g. HTTP 404
+        //    "Object does not exist at location." / bucket not found / unconfigured rules),
+        //    upload the avatar through the authenticated Supabase Storage + Cloudflare Worker pipeline.
+        val primaryMsg = primaryErr?.message.orEmpty()
+        val shouldTrySupabaseFallback = (primaryErr is StorageException && (
+            primaryStorageCode == StorageException.ERROR_OBJECT_NOT_FOUND ||
+                primaryStorageCode == StorageException.ERROR_BUCKET_NOT_FOUND ||
+                primaryStorageCode == StorageException.ERROR_PROJECT_NOT_FOUND ||
+                primaryStorageCode == StorageException.ERROR_NOT_AUTHORIZED ||
+                primaryStorageCode == StorageException.ERROR_NOT_AUTHENTICATED
+            )) ||
+            primaryMsg.contains("does not exist", ignoreCase = true) ||
+            primaryMsg.contains("not found", ignoreCase = true) ||
+            primaryMsg.contains("404", ignoreCase = true)
+
+        if (shouldTrySupabaseFallback) {
+            android.util.Log.w(
+                "YouSnapViewModel",
+                "Firebase Storage unavailable (code=$primaryStorageCode: ${primaryErr?.message}); uploading avatar via Supabase Storage fallback"
+            )
+            val safeUid = uid.replace(Regex("[^a-zA-Z0-9_-]"), "").ifEmpty { "user" }.take(32)
+            val avatarFilename = "avatar__${safeUid}__${System.currentTimeMillis()}.jpg"
+            val tempFile = File(app.cacheDir, avatarFilename)
+            try {
+                tempFile.writeBytes(uploadBytes)
+                val supabaseResult = supabaseRepository.uploadFile(
+                    file = tempFile,
+                    filename = avatarFilename,
+                    contentType = "image/jpeg"
+                )
+                val normalizedSupabaseUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(supabaseResult.fileUrl)
+                if (supabaseResult.isSuccess && normalizedSupabaseUrl.isNotBlank()) {
+                    return@withContext Result.success(normalizedSupabaseUrl)
+                }
+                val fallbackMsg = supabaseResult.errorMessage?.takeIf { it.isNotBlank() }
+                    ?: primaryErr?.localizedMessage
+                    ?: "Profile photo upload failed. Please try again."
+                return@withContext Result.failure(Exception(fallbackMsg))
+            } catch (e: Exception) {
+                return@withContext Result.failure(
+                    Exception(
+                        "Profile photo upload failed: ${e.localizedMessage ?: primaryErr?.localizedMessage ?: "Please try again."}",
+                        e
+                    )
+                )
+            } finally {
+                runCatching { tempFile.delete() }
+            }
+        }
+
+        val finalDetail = when (primaryStorageCode) {
+            StorageException.ERROR_NOT_AUTHENTICATED,
+            StorageException.ERROR_NOT_AUTHORIZED ->
+                "Storage permission denied. Please sign in again or check Firebase Storage rules."
+            StorageException.ERROR_RETRY_LIMIT_EXCEEDED ->
+                "Network timeout while uploading photo. Please try again."
+            else -> primaryErr?.localizedMessage ?: "Firebase Storage upload failed."
+        }
+        return@withContext Result.failure(Exception(finalDetail, primaryErr))
     }
 
     fun fetchAllUsers() {

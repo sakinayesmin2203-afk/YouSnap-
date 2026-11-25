@@ -43,9 +43,9 @@ sealed class CompressionState {
 
 object VideoCompressor {
 
-    private const val DEFAULT_MAX_SHORT_SIDE_PX = 720
-    private const val DEFAULT_TARGET_VIDEO_BITRATE_BPS = 2_200_000 // ~2.2 Mbps for crisp 720p mobile video
-    private const val SKIP_COMPRESSION_MAX_BYTES = 2_500_000L // 2.5 MB threshold if already <= 720p
+    private const val DEFAULT_MAX_SHORT_SIDE_PX = 480
+    private const val DEFAULT_TARGET_VIDEO_BITRATE_BPS = 1_200_000 // ~1.2 Mbps for crisp 480p mobile video
+    private const val SKIP_COMPRESSION_MAX_BYTES = 2_500_000L // 2.5 MB threshold if already <= 480p
 
     /**
      * Compresses large videos using AndroidX Media3 Transformer while preserving visual quality
@@ -65,7 +65,7 @@ object VideoCompressor {
         val videoMeta = withContext(Dispatchers.IO) { inspectVideo(appContext, inputUri) }
         val originalSize = videoMeta.sizeBytes
 
-        // Fast-path only if the file is already compact (<= 2.5 MB) and resolution <= 720p
+        // Fast-path only if the file is already compact (<= 2.5 MB) and resolution <= 480p
         val alreadyCompact = originalSize in 1L..SKIP_COMPRESSION_MAX_BYTES &&
             videoMeta.shortSide in 1..maxShortSidePx &&
             (videoMeta.bitrate <= 0 || videoMeta.bitrate <= targetBitrateBps)
@@ -89,7 +89,7 @@ object VideoCompressor {
             }
         }
 
-        // Build resolution scaling effect (keep aspect ratio, downscale only if larger than 720p)
+        // Build resolution scaling effect (keep aspect ratio, downscale only if larger than 480p)
         val videoEffects = mutableListOf<Effect>()
         if (videoMeta.effectiveWidth > 0 && videoMeta.effectiveHeight > 0 && videoMeta.shortSide > maxShortSidePx) {
             val scale = maxShortSidePx.toFloat() / videoMeta.shortSide.toFloat()
@@ -103,7 +103,7 @@ object VideoCompressor {
                 )
             )
         } else {
-            // Ensure at most 720p height when metadata dimensions are unavailable
+            // Ensure at most 480p height when metadata dimensions are unavailable
             if (videoMeta.shortSide == 0) {
                 videoEffects.add(Presentation.createForHeight(maxShortSidePx))
             }
