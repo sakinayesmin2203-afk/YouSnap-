@@ -206,3 +206,68 @@ test("Regular user (owner or viewer) cannot update viral fields, while admin can
     })
   );
 });
+
+test("Owners (including legacy/non-standard docIds) and admins can delete posts/reels/videos/stories, while non-owners cannot", async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection("users").doc(ALICE_UID).set({ username: "alice" });
+    await db.collection("users").doc(BOB_UID).set({ username: "bob" });
+    await db.collection("users").doc(ADMIN_UID).set({ username: "admin_user", isAdmin: true });
+
+    await db.collection("posts").doc("post.with.dots").set({
+      id: "p1",
+      userId: ALICE_UID,
+      creatorUid: ALICE_UID,
+      username: "alice",
+      timestamp: 1001,
+    });
+    await db.collection("reels").doc("reel_1").set({
+      id: "r1",
+      userId: ALICE_UID,
+      creatorUid: ALICE_UID,
+      username: "alice",
+      timestamp: 2001,
+    });
+    await db.collection("videos").doc("video_1").set({
+      id: "v1",
+      userId: ALICE_UID,
+      creatorUid: ALICE_UID,
+      username: "alice",
+      timestamp: 2002,
+    });
+    await db.collection("stories").doc("alice_legacy").set({
+      storyId: "s1",
+      userId: "alice",
+      creatorUid: "",
+      ownerUsername: "alice",
+      username: "alice",
+      timestamp: 3001,
+    });
+    await db.collection("posts").doc("alice_owned_2").set({
+      id: "p2",
+      userId: ALICE_UID,
+      creatorUid: ALICE_UID,
+      username: "alice",
+      timestamp: 1002,
+    });
+  });
+
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
+
+  // Non-owner Bob cannot delete Alice's post, reel, video, or legacy story
+  await assertFails(bobDb.collection("posts").doc("post.with.dots").delete());
+  await assertFails(bobDb.collection("reels").doc("reel_1").delete());
+  await assertFails(bobDb.collection("videos").doc("video_1").delete());
+  await assertFails(bobDb.collection("stories").doc("alice_legacy").delete());
+
+  // Owner Alice can delete her post (even with dots in docId), reel, legacy video, and legacy story
+  await assertSucceeds(aliceDb.collection("posts").doc("post.with.dots").delete());
+  await assertSucceeds(aliceDb.collection("reels").doc("reel_1").delete());
+  await assertSucceeds(aliceDb.collection("videos").doc("video_1").delete());
+  await assertSucceeds(aliceDb.collection("stories").doc("alice_legacy").delete());
+
+  // Admin can delete content
+  await assertSucceeds(adminDb.collection("posts").doc("alice_owned_2").delete());
+});

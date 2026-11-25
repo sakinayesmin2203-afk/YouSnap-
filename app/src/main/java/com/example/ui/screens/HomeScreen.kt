@@ -700,7 +700,7 @@ fun HomeScreen(
                             isOwner = isOwner,
                             onDeleteClick = {
                                 viewModel.deletePhotoPost(
-                                    postId = profilePost.firestoreDocId ?: profilePost.id,
+                                    postId = profilePost.firestoreDocId?.takeIf { it.isNotBlank() } ?: profilePost.id,
                                     imageUrl = profilePost.imageUrl,
                                     creatorUsername = profilePost.creatorUsername,
                                     creatorUid = profilePost.creatorUid
@@ -868,7 +868,7 @@ fun HomeScreen(
                                     isOwner = isPhotoOwner,
                                     onDeleteClick = if (isPhotoOwner) {
                                         {
-                                            viewModel.deletePhotoPost(photo.firestoreDocId ?: photo.id, photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
+                                            viewModel.deletePhotoPost(photo.firestoreDocId?.takeIf { it.isNotBlank() } ?: photo.id, photo.imageUrl, photo.creatorUsername, photo.creatorUid) {}
                                         }
                                     } else null,
                                     onRequestReport = {
@@ -1016,7 +1016,7 @@ fun HomeScreen(
                 onDeletePhoto = if (isPhotoOwner) {
                     { photoToDelete ->
                         viewModel.deletePhotoPost(
-                            postId = photoToDelete.firestoreDocId ?: photoToDelete.id,
+                            postId = photoToDelete.firestoreDocId?.takeIf { it.isNotBlank() } ?: photoToDelete.id,
                             imageUrl = photoToDelete.imageUrl,
                             creatorUsername = photoToDelete.creatorUsername,
                             creatorUid = photoToDelete.creatorUid

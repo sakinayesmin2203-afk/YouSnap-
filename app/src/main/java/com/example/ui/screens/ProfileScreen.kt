@@ -818,7 +818,7 @@ fun ProfileScreen(
                     },
                     onDeletePhoto = { photoToDelete ->
                         viewModel.deletePhotoPost(
-                            postId = photoToDelete.firestoreDocId ?: photoToDelete.id.toString(),
+                            postId = photoToDelete.firestoreDocId?.takeIf { it.isNotBlank() } ?: photoToDelete.id,
                             imageUrl = photoToDelete.imageUrl,
                             creatorUsername = photoToDelete.creatorUsername,
                             creatorUid = photoToDelete.creatorUid,

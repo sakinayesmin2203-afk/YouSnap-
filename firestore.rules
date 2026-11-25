@@ -34,7 +34,32 @@ service cloud.firestore {
     function isContentOwner(data) {
       return isSignedIn() && (
         data.get('creatorUid', '') == request.auth.uid ||
-        data.get('userId', '') == request.auth.uid
+        data.get('userId', '') == request.auth.uid ||
+        data.get('uid', '') == request.auth.uid
+      );
+    }
+
+    function isLegacyUsernameOwner(data) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          (data.get('creatorUid', '') == '' && data.get('userId', '') == '' && data.get('uid', '') == '') ||
+          data.get('userId', '') == data.get('username', '__none__') ||
+          data.get('creatorUid', '') == data.get('username', '__none__') ||
+          data.get('userId', '') == data.get('ownerUsername', '__none__') ||
+          data.get('creatorUid', '') == data.get('ownerUsername', '__none__')
+        )
+        && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('username', '') == data.get('username', '__no_match__') ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('username', '') == data.get('ownerUsername', '__no_match__')
+        );
+    }
+
+    function canDeleteContent(data) {
+      return isSignedIn() && (
+        isContentOwner(data) ||
+        isLegacyUsernameOwner(data) ||
+        isAdminUser()
       );
     }
 
@@ -233,7 +258,7 @@ service cloud.firestore {
         isValidPostEngagementUpdate() ||
         isValidAdminViralUpdate()
       );
-      allow delete: if isValidId(postId) && isContentOwner(existing());
+      allow delete: if canDeleteContent(existing());
     }
 
     // 3. Reels collection
@@ -252,7 +277,7 @@ service cloud.firestore {
         isValidReelEngagementUpdate() ||
         isValidAdminViralUpdate()
       );
-      allow delete: if isValidId(reelId) && isContentOwner(existing());
+      allow delete: if canDeleteContent(existing());
     }
 
     // 4. Legacy Videos collection
@@ -271,7 +296,7 @@ service cloud.firestore {
         isValidReelEngagementUpdate() ||
         isValidAdminViralUpdate()
       );
-      allow delete: if isValidId(videoId) && isContentOwner(existing());
+      allow delete: if canDeleteContent(existing());
     }
 
     // 5. Stories collection (document ID is ownerUsername)
@@ -296,7 +321,7 @@ service cloud.firestore {
         ) ||
         isValidAdminViralUpdate()
       );
-      allow delete: if isValidStoryId(storyId) && isContentOwner(existing());
+      allow delete: if canDeleteContent(existing());
     }
 
     // 6. Post comments
