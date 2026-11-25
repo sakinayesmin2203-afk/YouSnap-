@@ -35,6 +35,7 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.SettingsEntity
 import com.example.ui.Screen
 import com.example.ui.YouSnapViewModel
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
@@ -79,17 +80,34 @@ fun EditProfileScreen(
     var bio by remember { mutableStateOf(profile.bio) }
     var category by remember { mutableStateOf(profile.category) }
     var profilePic by remember { mutableStateOf(profile.profilePic) }
+    var hasPickedLocalPhoto by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(profile.profilePic) {
+        if (!hasPickedLocalPhoto && !isSaving && profile.profilePic.isNotBlank()) {
+            profilePic = profile.profilePic
+        }
+    }
+
+    BackHandler(enabled = isSaving) {}
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
+            hasPickedLocalPhoto = true
             profilePic = uri.toString()
+            errorMessage = null
         }
     }
 
     Scaffold(
-        topBar = { SubScreenTopBar("Edit Profile", onBack) }
+        topBar = {
+            SubScreenTopBar("Edit Profile") {
+                if (!isSaving) onBack()
+            }
+        }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -140,28 +158,33 @@ fun EditProfileScreen(
             }
 
             Text(
-                "Change Profile Photo",
-                color = MaterialTheme.colorScheme.primary,
+                if (isSaving) "Uploading & saving..." else "Change Profile Photo",
+                color = if (isSaving) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f) else MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable {
+                    .clickable(enabled = !isSaving) {
                         galleryLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
                     }
                     .padding(8.dp)
+                    .testTag("change_profile_photo_button")
             )
 
             Spacer(modifier = Modifier.height(8.dp))
 
             OutlinedTextField(
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = {
+                    name = it
+                    errorMessage = null
+                },
                 label = { Text("Name") },
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth().testTag("edit_name_input"),
+                enabled = !isSaving,
                 singleLine = true
             )
 
@@ -181,10 +204,14 @@ fun EditProfileScreen(
 
             OutlinedTextField(
                 value = username,
-                onValueChange = { username = it },
+                onValueChange = {
+                    username = it
+                    errorMessage = null
+                },
                 label = { Text("Username") },
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth().testTag("edit_username_input"),
+                enabled = !isSaving,
                 singleLine = true
             )
 
@@ -194,6 +221,7 @@ fun EditProfileScreen(
                 label = { Text("Category") },
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth().testTag("edit_category_input"),
+                enabled = !isSaving,
                 singleLine = true
             )
 
@@ -206,21 +234,63 @@ fun EditProfileScreen(
                     .fillMaxWidth()
                     .height(110.dp)
                     .testTag("edit_bio_input"),
+                enabled = !isSaving,
                 maxLines = 4
             )
+
+            if (!errorMessage.isNullOrBlank()) {
+                Surface(
+                    color = Color(0xFFFFEBEE),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_profile_error_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = "Error",
+                            tint = Color(0xFFD32F2F),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = errorMessage.orEmpty(),
+                            color = Color(0xFFB71C1C),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.weight(1f))
 
             Button(
                 onClick = {
+                    if (isSaving) return@Button
                     if (username.trim().isEmpty() || name.trim().isEmpty()) {
-                        Toast.makeText(viewModel.app, "Fields cannot be empty!", Toast.LENGTH_SHORT).show()
+                        errorMessage = "Name and Username cannot be empty."
                     } else {
-                        viewModel.updateProfile(name, username, bio, category, profilePic) {
-                            onBack()
+                        errorMessage = null
+                        isSaving = true
+                        viewModel.updateProfile(name, username, bio, category, profilePic) { success, err ->
+                            isSaving = false
+                            if (success) {
+                                Toast.makeText(viewModel.app, "Profile updated successfully!", Toast.LENGTH_SHORT).show()
+                                onBack()
+                            } else {
+                                errorMessage = err ?: "Failed to update profile. Please try again."
+                            }
                         }
                     }
                 },
+                enabled = !isSaving,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
@@ -228,9 +298,48 @@ fun EditProfileScreen(
                     .height(50.dp)
                     .testTag("save_profile_button")
             ) {
-                Text("Save Changes", color = MaterialTheme.colorScheme.surface, fontWeight = FontWeight.Bold)
+                if (isSaving) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.surface,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            "Saving Changes...",
+                            color = MaterialTheme.colorScheme.surface,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    Text("Save Changes", color = MaterialTheme.colorScheme.surface, fontWeight = FontWeight.Bold)
+                }
             }
         }
+    }
+
+    if (!errorMessage.isNullOrBlank()) {
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = Color(0xFFD32F2F),
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = { Text("Profile Update Failed", fontWeight = FontWeight.Bold, color = Color(0xFFD32F2F)) },
+            text = { Text(errorMessage.orEmpty(), fontSize = 14.sp) },
+            confirmButton = {
+                TextButton(onClick = { errorMessage = null }) {
+                    Text("OK", fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 }
 

@@ -84,10 +84,11 @@ fun UserProfileScreen(
         ?: userPhotos.firstOrNull()?.creatorName?.takeIf { it.isNotBlank() }
         ?: userReels.firstOrNull()?.creatorName?.takeIf { it.isNotBlank() }
         ?: username
-    val profilePic = userProfile?.profilePic?.takeIf { it.isNotBlank() }
-        ?: userPhotos.firstOrNull()?.creatorAvatar?.takeIf { it.isNotBlank() }
-        ?: userReels.firstOrNull()?.creatorProfilePic?.takeIf { it.isNotBlank() }
-        ?: ""
+    val profilePic = com.example.ui.utils.ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+        photoURL = userProfile?.profilePic,
+        profilePic = userPhotos.firstOrNull()?.creatorAvatar,
+        avatar = userReels.firstOrNull()?.creatorProfilePic
+    )
     val categoryLabel = userProfile?.category?.takeIf { it.isNotBlank() } ?: "Digital Creator"
     val bioText = userProfile?.bio.orEmpty()
     val followersCount = userProfile?.followersCount ?: 0

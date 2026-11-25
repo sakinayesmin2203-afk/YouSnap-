@@ -412,7 +412,7 @@ fun ReelViewportItem(
         // Bottom and Left Info Overlay (Username, follow button, caption, music label)
         val isCurrentUser = (reel.creatorUsername == currentUserProfile.username || reel.creatorUsername == "sakinay_esmin" || reel.creatorUsername == "Sakinay Esmin")
         val displayedUsername = if (isCurrentUser) currentUserProfile.username else reel.creatorUsername
-        val displayedProfilePic = if (isCurrentUser) currentUserProfile.profilePic else ""
+        val displayedProfilePic = if (isCurrentUser) currentUserProfile.profilePic else reel.creatorProfilePic
         val displayedName = if (isCurrentUser) currentUserProfile.name else reel.creatorUsername
 
         Column(
@@ -448,7 +448,7 @@ fun ReelViewportItem(
                         .background(Color.White.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isCurrentUser && displayedProfilePic.isNotEmpty() && (displayedProfilePic.startsWith("content://") || displayedProfilePic.startsWith("http"))) {
+                    if (displayedProfilePic.isNotEmpty() && displayedProfilePic.startsWith("http")) {
                         AsyncImage(
                             model = displayedProfilePic,
                             contentDescription = "Profile Photo",

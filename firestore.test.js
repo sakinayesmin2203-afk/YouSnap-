@@ -271,3 +271,39 @@ test("Owners (including legacy/non-standard docIds) and admins can delete posts/
   // Admin can delete content
   await assertSucceeds(adminDb.collection("posts").doc("alice_owned_2").delete());
 });
+
+test("User can create and update photoURL, profilePic, and avatar on own users/{uid} doc, while others cannot", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const avatarUrl = "https://firebasestorage.googleapis.com/v0/b/yousnap-app.firebasestorage.app/o/profile_images%2Falice_uid_123%2Favatar.jpg?alt=media";
+
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).set({
+      username: "alice",
+      name: "Alice",
+      photoURL: avatarUrl,
+      profilePic: avatarUrl,
+      avatar: avatarUrl,
+    })
+  );
+
+  const updatedAvatarUrl = "https://firebasestorage.googleapis.com/v0/b/yousnap-app.firebasestorage.app/o/profile_images%2Falice_uid_123%2Favatar.jpg?alt=media&token=abc";
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).set(
+      {
+        photoURL: updatedAvatarUrl,
+        profilePic: updatedAvatarUrl,
+        avatar: updatedAvatarUrl,
+      },
+      { merge: true }
+    )
+  );
+
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).update({
+      photoURL: "https://evil.example/a.jpg",
+      profilePic: "https://evil.example/a.jpg",
+      avatar: "https://evil.example/a.jpg",
+    })
+  );
+});

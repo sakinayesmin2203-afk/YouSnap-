@@ -15,14 +15,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import com.example.R
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import coil.compose.AsyncImage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,7 +67,17 @@ fun SignUpScreen(
     
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmPasswordVisible by remember { mutableStateOf(false) }
+    var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
     var errorDialogText by remember { mutableStateOf<String?>(null) }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            selectedPhotoUri = uri
+        }
+    }
 
     // Soft Grey-Blue Gradient Background
     val backgroundGradient = Brush.verticalGradient(
@@ -176,7 +192,57 @@ fun SignUpScreen(
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(76.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFF1F5F9))
+                                .border(2.dp, Color(0xFF0F2C59), CircleShape)
+                                .clickable(enabled = !isLoading) {
+                                    galleryLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                                .testTag("signup_photo_picker"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selectedPhotoUri != null) {
+                                AsyncImage(
+                                    model = selectedPhotoUri,
+                                    contentDescription = "Selected Profile Photo",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.AddAPhoto,
+                                    contentDescription = "Add Profile Photo",
+                                    tint = Color(0xFF0F2C59),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (selectedPhotoUri != null) "Change Profile Photo" else "Add Profile Photo (Optional)",
+                            color = Color(0xFF0F2C59),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = !isLoading) {
+                                    galleryLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
 
                     // Field 1: User Name (Outlined completely rounded)
                     OutlinedTextField(
@@ -319,6 +385,7 @@ fun SignUpScreen(
                     // Sign Up Pill Button with Intense Orange Gradient
                     Button(
                         onClick = {
+                            if (isLoading) return@Button
                             val nameTrimmed = fullName.trim()
                             val emailTrimmed = emailOrPhone.trim()
                             val passTrimmed = password.trim()
@@ -333,20 +400,25 @@ fun SignUpScreen(
                             } else if (passTrimmed != confirmTrimmed) {
                                 errorDialogText = "Password Mismatch!"
                             } else {
+                                isLoading = true
                                 viewModel.signUpWithFirebase(
                                     name = nameTrimmed,
                                     email = emailTrimmed,
                                     pass = passTrimmed,
+                                    profilePhotoUri = selectedPhotoUri,
                                     onSuccess = {
+                                        isLoading = false
                                         Toast.makeText(context, "Account created successfully!", Toast.LENGTH_LONG).show()
                                         onSignUpSuccess()
                                     },
                                     onError = { error ->
+                                        isLoading = false
                                         errorDialogText = error
                                     }
                                 )
                             }
                         },
+                        enabled = !isLoading,
                         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
                         contentPadding = PaddingValues(),
                         shape = RoundedCornerShape(50),
@@ -354,6 +426,7 @@ fun SignUpScreen(
                             .fillMaxWidth()
                             .height(46.dp)
                             .shadow(4.dp, RoundedCornerShape(50))
+                            .testTag("signup_submit_button")
                     ) {
                         Box(
                             modifier = Modifier
@@ -368,12 +441,20 @@ fun SignUpScreen(
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Sign Up →",
-                                color = Color.White,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            } else {
+                                Text(
+                                    text = "Sign Up →",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }

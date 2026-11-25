@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Application
 import android.net.Uri
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import androidx.annotation.Keep
 import androidx.lifecycle.AndroidViewModel
@@ -13,6 +14,7 @@ import com.example.ui.components.FullScreenPhotoData
 import com.example.ui.utils.CompressionState
 import com.example.ui.utils.DeepLinkHelper
 import com.example.ui.utils.FeedRankingAlgorithm
+import com.example.ui.utils.ProfilePhotoUtils
 import com.example.ui.utils.SecurityUtils
 import com.example.ui.utils.VideoCompressor
 import com.example.ui.utils.YouSnapDeepLink
@@ -27,6 +29,7 @@ import com.google.firebase.FirebaseTooManyRequestsException
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
@@ -36,6 +39,10 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageException
+import com.google.firebase.storage.StorageMetadata
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -389,6 +396,133 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun extractUserProfileFromDoc(doc: DocumentSnapshot): ProfileEntity? {
+        val raw = doc.toObject(ProfileEntity::class.java) ?: return null
+        val resolvedPhoto = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+            photoURL = doc.getString("photoURL"),
+            profilePic = doc.getString("profilePic") ?: raw.profilePic,
+            avatar = doc.getString("avatar")
+        )
+        return raw.copy(profilePic = resolvedPhoto)
+    }
+
+    private fun resolveCurrentUserRemotePhotoUrl(): String {
+        val currentProfilePic = _profileState.value.profilePic
+        val authPhotoUrl = try {
+            auth.currentUser?.photoUrl?.toString()
+        } catch (_: Throwable) {
+            null
+        }
+        return ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+            photoURL = currentProfilePic,
+            profilePic = authPhotoUrl,
+            avatar = null
+        )
+    }
+
+    private suspend fun uploadProfileImageToFirebaseStorage(
+        uid: String,
+        rawUriString: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val currentUser = auth.currentUser
+        if (uid.isBlank() || currentUser == null || currentUser.uid != uid) {
+            return@withContext Result.failure(
+                IllegalStateException("Please sign in with your account before uploading a profile photo.")
+            )
+        }
+        val trimmedUri = rawUriString.trim()
+        if (trimmedUri.isBlank()) {
+            return@withContext Result.failure(
+                IllegalArgumentException("No profile photo selected.")
+            )
+        }
+        val uri = if (trimmedUri.startsWith("/")) {
+            Uri.fromFile(File(trimmedUri))
+        } else {
+            Uri.parse(trimmedUri)
+        }
+
+        val rawBytes = try {
+            val stream = if (uri.scheme.equals("file", ignoreCase = true) && !uri.path.isNullOrBlank()) {
+                File(uri.path!!).inputStream()
+            } else {
+                app.contentResolver.openInputStream(uri)
+            }
+            stream?.use { it.readBytes() }
+        } catch (e: Exception) {
+            return@withContext Result.failure(
+                Exception("Could not read selected image file: ${e.localizedMessage ?: "Access denied"}", e)
+            )
+        }
+
+        if (rawBytes == null || rawBytes.isEmpty()) {
+            return@withContext Result.failure(
+                Exception("Selected image file is empty or unreadable. Please choose another photo.")
+            )
+        }
+
+        val uploadBytes = try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
+            var sampleSize = 1
+            val maxDim = 1024
+            while (bounds.outWidth / sampleSize > maxDim || bounds.outHeight / sampleSize > maxDim) {
+                sampleSize *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
+            if (decoded != null) {
+                val out = ByteArrayOutputStream()
+                decoded.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                decoded.recycle()
+                out.toByteArray().takeIf { it.isNotEmpty() } ?: rawBytes
+            } else {
+                rawBytes
+            }
+        } catch (_: Throwable) {
+            rawBytes
+        }
+
+        return@withContext try {
+            val storageRef = FirebaseStorage.getInstance()
+                .reference
+                .child("profile_images/$uid/avatar.jpg")
+            val metadata = StorageMetadata.Builder()
+                .setContentType("image/jpeg")
+                .build()
+
+            val downloadUrl = withTimeoutOrNull(45_000L) {
+                awaitTask(storageRef.putBytes(uploadBytes, metadata))
+                awaitTask(storageRef.downloadUrl).toString().trim()
+            } ?: return@withContext Result.failure(
+                Exception("Profile photo upload timed out. Please check your internet connection and try again.")
+            )
+
+            val normalizedUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(downloadUrl)
+            if (normalizedUrl.isBlank()) {
+                Result.failure(
+                    Exception("Firebase Storage did not return a valid https:// download URL.")
+                )
+            } else {
+                Result.success(normalizedUrl)
+            }
+        } catch (e: StorageException) {
+            val detail = when (e.errorCode) {
+                StorageException.ERROR_NOT_AUTHENTICATED,
+                StorageException.ERROR_NOT_AUTHORIZED ->
+                    "Storage permission denied. Please sign in again or check Firebase Storage rules."
+                StorageException.ERROR_RETRY_LIMIT_EXCEEDED ->
+                    "Network timeout while uploading photo. Please try again."
+                else -> e.localizedMessage ?: "Firebase Storage upload failed."
+            }
+            Result.failure(Exception(detail, e))
+        } catch (e: Exception) {
+            Result.failure(
+                Exception("Profile photo upload failed: ${e.localizedMessage ?: "Please try again."}", e)
+            )
+        }
+    }
+
     fun fetchAllUsers() {
         try {
             if (usersCollectionListener == null) {
@@ -396,7 +530,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             }
             db.collection("users").limit(100).get().addOnSuccessListener { snapshot ->
                 val users = snapshot.documents.mapNotNull { doc ->
-                    val user = doc.toObject(ProfileEntity::class.java)
+                    val user = extractUserProfileFromDoc(doc)
                     updateUserMonetizationStatusCache(doc, user)
                     user
                 }
@@ -442,12 +576,13 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
     private fun saveProfileToPrefs(profile: ProfileEntity, uid: String? = null) {
         try {
+            val cleanProfilePic = ProfilePhotoUtils.normalizeRemotePhotoUrl(profile.profilePic)
             val obj = JSONObject().apply {
                 put("id", profile.id)
                 put("name", profile.name)
                 put("username", profile.username)
                 put("bio", profile.bio)
-                put("profilePic", profile.profilePic)
+                put("profilePic", cleanProfilePic)
                 put("category", profile.category)
                 put("hiddenStoryFrom", profile.hiddenStoryFrom)
                 put("email", profile.email)
@@ -490,7 +625,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     name = obj.optString("name", "User"),
                     username = obj.optString("username", "user"),
                     bio = obj.optString("bio", ""),
-                    profilePic = obj.optString("profilePic", ""),
+                    profilePic = ProfilePhotoUtils.normalizeRemotePhotoUrl(obj.optString("profilePic", "")),
                     category = obj.optString("category", "Digital Creator"),
                     hiddenStoryFrom = obj.optString("hiddenStoryFrom", ""),
                     email = obj.optString("email", ""),
@@ -548,7 +683,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             db.collection("users").document(uid).get().addOnSuccessListener { doc ->
                 if (doc.exists()) {
                     latestMonetizationUserDoc = doc
-                    val profile = doc.toObject(ProfileEntity::class.java)
+                    val profile = extractUserProfileFromDoc(doc)
                     val remoteLink = doc.getString("profileLink").orEmpty()
                     val expectedLink = DeepLinkHelper.buildProfileUrl(uid)
                     if (remoteLink.isBlank() && sessionBackfilledProfileLinkUids.add(uid)) {
@@ -557,11 +692,35 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                     profileLinkByUid[uid] = remoteLink.ifBlank { expectedLink }
                     if (profile != null) {
+                        val authPhotoUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(auth.currentUser?.photoUrl?.toString())
+                        val resolvedPhoto = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                            photoURL = doc.getString("photoURL"),
+                            profilePic = doc.getString("profilePic"),
+                            avatar = doc.getString("avatar"),
+                            authPhotoUrl = authPhotoUrl
+                        )
+                        val docPhotoUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("photoURL"))
+                        val docProfilePic = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("profilePic"))
+                        val docAvatar = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("avatar"))
+                        val hasLocalDirtyField =
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("photoURL")) ||
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("profilePic")) ||
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("avatar")) ||
+                            doc.getString("profilePic").equals("avatar_default", ignoreCase = true)
+
+                        if (auth.currentUser?.uid == uid &&
+                            ((resolvedPhoto.isNotBlank() && (docPhotoUrl != resolvedPhoto || docProfilePic != resolvedPhoto || docAvatar != resolvedPhoto)) || hasLocalDirtyField)
+                        ) {
+                            db.collection("users").document(uid)
+                                .set(ProfilePhotoUtils.buildAvatarFieldsMap(resolvedPhoto), SetOptions.merge())
+                        }
+
                         if (profile.username.isNotBlank()) {
                             userUidByUsername[profile.username.trim().lowercase()] = uid
                             usernameByUid[uid] = profile.username.trim()
                         }
                         val rawResolvedProfile = profile.copy(
+                            profilePic = resolvedPhoto,
                             monetizationStatus = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
                         )
                         val shouldMigratePin = rawResolvedProfile.appPin.isNotBlank() &&
@@ -686,12 +845,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             userUidByUsername[profile.username.trim().lowercase()] = uid
             usernameByUid[uid] = profile.username.trim()
         }
+        val remotePhoto = ProfilePhotoUtils.normalizeRemotePhotoUrl(profile.profilePic)
         return mapOf(
             "id" to profile.id,
             "name" to profile.name,
             "username" to profile.username,
             "bio" to profile.bio,
-            "profilePic" to profile.profilePic,
+            "photoURL" to remotePhoto,
+            "profilePic" to remotePhoto,
+            "avatar" to remotePhoto,
             "category" to profile.category,
             "hiddenStoryFrom" to profile.hiddenStoryFrom,
             "email" to profile.email,
@@ -812,7 +974,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         db.collection("users").document(cleanId).get()
             .addOnSuccessListener { doc ->
                 if (doc.exists()) {
-                    val user = doc.toObject(ProfileEntity::class.java)
+                    val user = extractUserProfileFromDoc(doc)
                     updateUserMonetizationStatusCache(doc, user)
                     val resolvedUsername = user?.username?.takeIf { it.isNotBlank() }
                         ?: doc.getString("username")?.takeIf { it.isNotBlank() }
@@ -828,7 +990,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         .addOnSuccessListener { querySnap ->
                             val matchedDoc = querySnap.documents.firstOrNull()
                             if (matchedDoc != null) {
-                                val user = matchedDoc.toObject(ProfileEntity::class.java)
+                                val user = extractUserProfileFromDoc(matchedDoc)
                                 updateUserMonetizationStatusCache(matchedDoc, user)
                                 val resolvedUsername = user?.username?.takeIf { it.isNotBlank() } ?: cleanId
                                 clearOpenedHomePost()
@@ -878,8 +1040,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val display = doc.getString("name")?.takeIf { it.isNotBlank() }
                     ?: matchedUser?.name?.takeIf { it.isNotBlank() }
                     ?: uname
-                val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
-                    ?: matchedUser?.profilePic.orEmpty()
+                val avatar = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                    photoURL = matchedUser?.profilePic,
+                    profilePic = doc.getString("creatorAvatar"),
+                    avatar = doc.getString("photoURL")
+                )
                 val shareLink = doc.getString("shareLink")?.takeIf { it.isNotBlank() }
                     ?: DeepLinkHelper.buildPostUrl(doc.id)
                 val photo = FullScreenPhotoData(
@@ -1138,7 +1303,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                 val profile = profileState.value
                 val creatorUid = resolveUploadUserId(safeOwner)
                 val displayName = profile.name.ifBlank { ownerUsername }
-                val creatorAvatar = profile.profilePic
+                val creatorAvatar = resolveCurrentUserRemotePhotoUrl()
                 val resolvedCategory = if (isVideo) category.ifBlank { "Entertainment" } else category.ifBlank { "Photo" }
                 val resolvedAudioTitle = songTitle.ifBlank { "Original Audio" }
                 val firestoreDocId = when {
@@ -1239,6 +1404,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "ownerUsername" to ownerUsername,
                         "name" to displayName,
                         "creatorAvatar" to creatorAvatar,
+                        "photoURL" to creatorAvatar,
                         "mediaUrl" to finalUrl,
                         "mediaType" to if (isVideo) "video" else "image",
                         "caption" to caption,
@@ -1259,6 +1425,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "username" to ownerUsername,
                         "name" to displayName,
                         "creatorAvatar" to creatorAvatar,
+                        "photoURL" to creatorAvatar,
                         "imageUrl" to finalUrl,
                         "mediaUrl" to finalUrl,
                         "caption" to caption,
@@ -1281,6 +1448,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         "username" to ownerUsername,
                         "name" to displayName,
                         "creatorAvatar" to creatorAvatar,
+                        "photoURL" to creatorAvatar,
                         "mediaUrl" to finalUrl,
                         "thumbnailUrl" to "",
                         "audioTitle" to resolvedAudioTitle,
@@ -1858,7 +2026,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     }
                     if (snapshot == null) return@addSnapshotListener
                     val users = snapshot.documents.mapNotNull { doc ->
-                        val user = doc.toObject(ProfileEntity::class.java)
+                        val user = extractUserProfileFromDoc(doc)
                         updateUserMonetizationStatusCache(doc, user)
                         user
                     }
@@ -1876,7 +2044,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                                     .set(mapOf("profileLink" to expectedLink), SetOptions.merge())
                             }
                             profileLinkByUid[myUid] = remoteLink.ifBlank { expectedLink }
-                            myDoc.toObject(ProfileEntity::class.java)?.let { freshProfile ->
+                            extractUserProfileFromDoc(myDoc)?.let { freshProfile ->
                                 val resolvedStatus = resolveMonetizationStatusFromDocs(myDoc, latestMonetizationRequestDocs)
                                 val resolvedProfile = freshProfile.copy(monetizationStatus = resolvedStatus)
                                 _profileState.value = resolvedProfile
@@ -2164,8 +2332,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val display = doc.getString("name")?.takeIf { it.isNotBlank() }
                 ?: matchedUser?.name?.takeIf { it.isNotBlank() }
                 ?: uname
-            val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
-                ?: matchedUser?.profilePic.orEmpty()
+            val avatar = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                photoURL = matchedUser?.profilePic,
+                profilePic = doc.getString("creatorAvatar"),
+                avatar = doc.getString("photoURL")
+            )
             val remoteLikesCount = (doc.getLong("likesCount") ?: 0L).toInt().coerceAtLeast(0)
             val remoteCommentsCount = (doc.getLong("commentsCount") ?: 0L).toInt().coerceAtLeast(0)
             val remoteSharesCount = (doc.getLong("sharesCount") ?: 0L).toInt().coerceAtLeast(0)
@@ -2346,8 +2517,11 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val display = doc.getString("name")?.takeIf { it.isNotBlank() }
                 ?: matchedUser?.name?.takeIf { it.isNotBlank() }
                 ?: uname
-            val avatar = doc.getString("creatorAvatar")?.takeIf { it.isNotBlank() }
-                ?: matchedUser?.profilePic.orEmpty()
+            val avatar = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                photoURL = matchedUser?.profilePic,
+                profilePic = doc.getString("creatorAvatar"),
+                avatar = doc.getString("photoURL")
+            )
             val audioTitle = doc.getString("audioTitle")?.takeIf { it.isNotBlank() } ?: "Original Audio"
             val likedByList = (doc.get("likedBy") as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
             val remoteIsLiked = (myUid.isNotBlank() && likedByList.contains(myUid)) ||
@@ -3598,6 +3772,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         saveStoriesToPrefs()
         recalculateCreatorStats()
 
+        val remoteAvatar = resolveCurrentUserRemotePhotoUrl()
         val baseStoryDoc = mapOf(
             "storyId" to timestamp.toString(),
             "firestoreDocId" to ownerUsername,
@@ -3606,7 +3781,8 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "username" to ownerUsername,
             "ownerUsername" to ownerUsername,
             "name" to displayName,
-            "creatorAvatar" to profile.profilePic,
+            "creatorAvatar" to remoteAvatar,
+            "photoURL" to remoteAvatar,
             "mediaUrl" to "",
             "mediaType" to "text",
             "caption" to text,
@@ -4844,7 +5020,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                     "senderUid" to senderUid,
                     "senderUsername" to senderUsername,
                     "senderName" to sender.name.ifBlank { senderUsername },
-                    "senderAvatar" to sender.profilePic,
+                    "senderAvatar" to resolveCurrentUserRemotePhotoUrl(),
                     "recipientUid" to resolvedRecipientUid,
                     "recipientUsername" to cleanRecipient,
                     "postId" to postId,
@@ -5262,7 +5438,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "userId" to uid,
             "creatorName" to currentProfile.name,
             "creatorUsername" to currentProfile.username,
-            "creatorAvatar" to currentProfile.profilePic,
+            "creatorAvatar" to resolveCurrentUserRemotePhotoUrl(),
             "followersCount" to totalFollowers,
             "totalViews" to totalViews,
             "earnings" to 0,
@@ -5416,7 +5592,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             "userId" to uid,
             "creatorName" to profile.name,
             "creatorUsername" to profile.username,
-            "creatorAvatar" to profile.profilePic,
+            "creatorAvatar" to resolveCurrentUserRemotePhotoUrl(),
             "email" to email,
             "category" to "Suspension Appeal",
             "subject" to "Account Restore Request",
@@ -5473,68 +5649,146 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
     
     fun toggleUserPrivacy(isPrivate: Boolean) { togglePrivateAccount(isPrivate) }
 
-    fun updateProfile(name: String, username: String, bio: String, category: String, profilePic: String, onComplete: (Boolean) -> Unit) {
-        val uid = activeUserUid()
-        val oldUsername = _profileState.value.username
-        val cleanUsername = username.trim().ifEmpty { oldUsername }
-        val cleanName = name.trim().ifEmpty { _profileState.value.name }
-        val updatedProfile = _profileState.value.copy(
-            name = cleanName,
-            username = cleanUsername,
-            bio = bio,
-            category = category,
-            profilePic = profilePic
-        )
-        _profileState.value = updatedProfile
-        saveProfileToPrefs(updatedProfile, uid)
-
-        // If username changed, keep locally cached posts/reels/stories linked to the updated username
-        if (!oldUsername.equals(cleanUsername, ignoreCase = true)) {
-            personalPhotosState.value = personalPhotosState.value.map {
-                if (it.creatorUsername.equals(oldUsername, ignoreCase = true) || (!uid.isNullOrBlank() && it.creatorUid == uid)) {
-                    it.copy(creatorUsername = cleanUsername, creatorName = cleanName)
-                } else it
-            }
-            savePersonalPhotosToPrefs()
-            _reelsState.value = _reelsState.value.map {
-                if (it.creatorUsername.equals(oldUsername, ignoreCase = true) || (!uid.isNullOrBlank() && it.creatorUid == uid)) {
-                    it.copy(creatorUsername = cleanUsername, creatorName = cleanName)
-                } else it
-            }
-            saveReelsToPrefs()
-            allStories.value = allStories.value.map {
-                if (it.ownerUsername.equals(oldUsername, ignoreCase = true)) it.copy(ownerUsername = cleanUsername) else it
-            }
-            saveStoriesToPrefs()
-        }
-        recalculateCreatorStats()
-
-        if (uid.isNullOrBlank()) {
-            onComplete(true)
+    fun updateProfile(
+        name: String,
+        username: String,
+        bio: String,
+        category: String,
+        profilePic: String,
+        onComplete: (Boolean, String?) -> Unit
+    ) {
+        val currentFirebaseUser = auth.currentUser
+        val uid = currentFirebaseUser?.uid ?: activeUserUid()
+        if (uid.isNullOrBlank() || currentFirebaseUser == null) {
+            onComplete(false, "Please sign in with your account to save profile changes.")
             return
         }
 
-        val profileLink = DeepLinkHelper.buildProfileUrl(uid)
-        profileLinkByUid[uid] = profileLink
-        val updates = mapOf(
-            "name" to cleanName,
-            "username" to cleanUsername,
-            "bio" to bio,
-            "category" to category,
-            "profilePic" to profilePic,
-            "email" to updatedProfile.email,
-            "profileLink" to profileLink
-        )
-        db.collection("users").document(uid)
-            .set(updates, com.google.firebase.firestore.SetOptions.merge())
-            .addOnCompleteListener {
-                if (it.isSuccessful) {
-                    fetchAndSyncUserProfile()
-                    startListeningToNotifications()
-                    syncFcmToken()
+        val oldProfile = _profileState.value
+        val oldUsername = oldProfile.username
+        val cleanUsername = username.trim().ifEmpty { oldUsername }
+        val cleanName = name.trim().ifEmpty { oldProfile.name }
+        if (cleanUsername.isBlank() || cleanName.isBlank()) {
+            onComplete(false, "Name and username cannot be empty.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // 1. If a local image (content://, file://, or file path) was selected, upload to
+                // Firebase Storage first and retrieve the real https:// download URL.
+                val finalRemotePhotoUrl = if (ProfilePhotoUtils.isLocalImageReference(profilePic)) {
+                    val uploadResult = uploadProfileImageToFirebaseStorage(uid, profilePic)
+                    if (uploadResult.isFailure) {
+                        val errMsg = uploadResult.exceptionOrNull()?.localizedMessage
+                            ?: "Failed to upload profile photo. Please try again."
+                        onComplete(false, errMsg)
+                        return@launch
+                    }
+                    uploadResult.getOrThrow()
+                } else {
+                    ProfilePhotoUtils.normalizeRemotePhotoUrl(profilePic)
                 }
-                onComplete(true)
+
+                // 2. Immediately update Cloud Firestore users/{uid} with photoURL, profilePic, and avatar.
+                val profileLink = DeepLinkHelper.buildProfileUrl(uid)
+                profileLinkByUid[uid] = profileLink
+                val updates = mutableMapOf<String, Any>(
+                    "name" to cleanName,
+                    "username" to cleanUsername,
+                    "bio" to bio.trim(),
+                    "category" to category.trim(),
+                    "photoURL" to finalRemotePhotoUrl,
+                    "profilePic" to finalRemotePhotoUrl,
+                    "avatar" to finalRemotePhotoUrl,
+                    "email" to oldProfile.email,
+                    "profileLink" to profileLink
+                )
+
+                withContext(Dispatchers.IO) {
+                    val synced = withTimeoutOrNull(25_000L) {
+                        awaitTask(db.collection("users").document(uid).set(updates, SetOptions.merge()))
+                        true
+                    } ?: false
+                    if (!synced) {
+                        throw Exception("Timed out while updating profile in Firestore. Please check your internet connection.")
+                    }
+                }
+
+                // 3. Keep Firebase Auth user profile synced with displayName and https:// photoUrl.
+                try {
+                    val reqBuilder = UserProfileChangeRequest.Builder()
+                        .setDisplayName(cleanName)
+                    if (finalRemotePhotoUrl.isNotBlank()) {
+                        reqBuilder.setPhotoUri(Uri.parse(finalRemotePhotoUrl))
+                    }
+                    awaitTask(currentFirebaseUser.updateProfile(reqBuilder.build()))
+                } catch (_: Exception) {}
+
+                // 4. Only after remote upload + Firestore write succeed, update local state & cached media.
+                val updatedProfile = oldProfile.copy(
+                    name = cleanName,
+                    username = cleanUsername,
+                    bio = bio.trim(),
+                    category = category.trim(),
+                    profilePic = finalRemotePhotoUrl
+                )
+                _profileState.value = updatedProfile
+                saveProfileToPrefs(updatedProfile, uid)
+
+                allUsers.value = allUsers.value.map { user ->
+                    if (user.email.equals(updatedProfile.email, ignoreCase = true) ||
+                        user.username.equals(oldUsername, ignoreCase = true) ||
+                        user.username.equals(cleanUsername, ignoreCase = true)
+                    ) {
+                        updatedProfile
+                    } else user
+                }
+
+                val hasNameOrAvatarOrUsernameChange = !oldUsername.equals(cleanUsername, ignoreCase = true) ||
+                    oldProfile.name != cleanName ||
+                    oldProfile.profilePic != finalRemotePhotoUrl
+
+                if (hasNameOrAvatarOrUsernameChange) {
+                    personalPhotosState.value = personalPhotosState.value.map {
+                        if (it.creatorUsername.equals(oldUsername, ignoreCase = true) || it.creatorUid == uid) {
+                            it.copy(
+                                creatorUsername = cleanUsername,
+                                creatorName = cleanName,
+                                creatorAvatar = finalRemotePhotoUrl
+                            )
+                        } else it
+                    }
+                    savePersonalPhotosToPrefs()
+                    _reelsState.value = _reelsState.value.map {
+                        if (it.creatorUsername.equals(oldUsername, ignoreCase = true) || it.creatorUid == uid) {
+                            it.copy(
+                                creatorUsername = cleanUsername,
+                                creatorName = cleanName,
+                                creatorProfilePic = finalRemotePhotoUrl
+                            )
+                        } else it
+                    }
+                    saveReelsToPrefs()
+                    allStories.value = allStories.value.map {
+                        if (it.ownerUsername.equals(oldUsername, ignoreCase = true)) {
+                            it.copy(ownerUsername = cleanUsername)
+                        } else it
+                    }
+                    saveStoriesToPrefs()
+                }
+                recalculateCreatorStats()
+                fetchAndSyncUserProfile()
+                startListeningToNotifications()
+                syncFcmToken()
+                onComplete(true, null)
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "updateProfile failed: ${e.message}", e)
+                val msg = e.localizedMessage?.takeIf { it.isNotBlank() }
+                    ?: "Failed to save profile changes in Firestore. Please try again."
+                onComplete(false, msg)
             }
+        }
     }
     
     fun setAppPin(pin: String, isEnabled: Boolean) {
@@ -5638,36 +5892,124 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun handleGoogleSignInSuccess(email: String, name: String, idToken: String?, photoUrl: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+    fun handleGoogleSignInSuccess(
+        email: String,
+        name: String,
+        idToken: String?,
+        photoUrl: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
         val normalizedEmail = email.trim().lowercase()
-        val defaultUsername = normalizedEmail.substringBefore("@").lowercase().replace(Regex("[^a-z0-9_]"), "").ifEmpty { "user" }
-        val deterministicFallbackUid = "gmail_" + normalizedEmail.replace(Regex("[^a-z0-9]"), "_")
+        val defaultUsername = normalizedEmail.substringBefore("@").lowercase()
+            .replace(Regex("[^a-z0-9_]"), "")
+            .ifEmpty { "user" }
 
-        val performLoginSuccess = { uid: String ->
+        fun completeSignIn(uid: String) {
+            val googleAuthPhotoUrl = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                photoURL = auth.currentUser?.photoUrl?.toString(),
+                profilePic = photoUrl,
+                avatar = null
+            )
             val cachedProfile = loadProfileFromPrefs(uid, normalizedEmail)
-            val initialProfile = cachedProfile ?: ProfileEntity(
+            val initialProfile = (cachedProfile ?: ProfileEntity(
                 id = uid.hashCode(),
                 name = name.ifBlank { defaultUsername },
                 username = defaultUsername,
                 email = normalizedEmail,
-                profilePic = photoUrl
-            )
-            // Apply cached/initial profile & active markers immediately before Firestore roundtrip
-            _profileState.value = initialProfile
-            myFollowersCount.value = initialProfile.followersCount
-            myFollowingCount.value = initialProfile.followingCount
-            monetizationStatus.value = normalizeMonetizationStatus(initialProfile.monetizationStatus)
-            saveProfileToPrefs(initialProfile, uid)
-            loadProfileVisitsFromPrefs()
-            recalculateCreatorStats()
+                profilePic = googleAuthPhotoUrl
+            )).let { base ->
+                val resolvedCachedPhoto = ProfilePhotoUtils.normalizeRemotePhotoUrl(base.profilePic)
+                    .ifBlank { googleAuthPhotoUrl }
+                base.copy(
+                    name = base.name.ifBlank { name.ifBlank { defaultUsername } },
+                    username = base.username.ifBlank { defaultUsername },
+                    email = base.email.ifBlank { normalizedEmail },
+                    profilePic = resolvedCachedPhoto
+                )
+            }
 
             try {
                 val userDocRef = db.collection("users").document(uid)
                 userDocRef.get().addOnSuccessListener { doc ->
                     if (!doc.exists()) {
-                        userDocRef.set(buildUserDocMap(initialProfile, uid), SetOptions.merge()).addOnCompleteListener {
-                            _profileState.value = initialProfile
-                            saveProfileToPrefs(initialProfile, uid)
+                        userDocRef.set(buildUserDocMap(initialProfile, uid), SetOptions.merge())
+                            .addOnSuccessListener {
+                                _profileState.value = initialProfile
+                                myFollowersCount.value = initialProfile.followersCount
+                                myFollowingCount.value = initialProfile.followingCount
+                                monetizationStatus.value = normalizeMonetizationStatus(initialProfile.monetizationStatus)
+                                saveProfileToPrefs(initialProfile, uid)
+                                loadProfileVisitsFromPrefs()
+                                recalculateCreatorStats()
+                                loadFollowingFromFirestore()
+                                startListeningToNotifications()
+                                startListeningToAccountStatus()
+                                startListeningToMonetizationStatus()
+                                syncFcmToken()
+                                refreshHomeFeed()
+                                onSuccess()
+                            }
+                            .addOnFailureListener { writeErr ->
+                                android.util.Log.e("YouSnapViewModel", "Google Sign-In create user doc failed: ${writeErr.message}", writeErr)
+                                onError("Failed to save your Google profile to Firestore: ${writeErr.localizedMessage ?: "Please try again."}")
+                            }
+                    } else {
+                        latestMonetizationUserDoc = doc
+                        val remoteLink = doc.getString("profileLink").orEmpty()
+                        val expectedLink = DeepLinkHelper.buildProfileUrl(uid)
+                        profileLinkByUid[uid] = remoteLink.ifBlank { expectedLink }
+
+                        val remoteProfile = extractUserProfileFromDoc(doc)
+                        val existingRemotePhoto = ProfilePhotoUtils.resolveAvatarFromFirestoreFields(
+                            photoURL = doc.getString("photoURL"),
+                            profilePic = doc.getString("profilePic"),
+                            avatar = doc.getString("avatar")
+                        )
+                        val finalPhotoUrl = existingRemotePhoto.ifBlank { googleAuthPhotoUrl }
+
+                        val docPhotoUrl = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("photoURL"))
+                        val docProfilePic = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("profilePic"))
+                        val docAvatar = ProfilePhotoUtils.normalizeRemotePhotoUrl(doc.getString("avatar"))
+                        val hasDirtyLocalAvatar =
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("photoURL")) ||
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("profilePic")) ||
+                            ProfilePhotoUtils.isLocalImageReference(doc.getString("avatar")) ||
+                            doc.getString("profilePic").equals("avatar_default", ignoreCase = true)
+
+                        val needsAvatarSync =
+                            (finalPhotoUrl.isNotBlank() && (docPhotoUrl != finalPhotoUrl || docProfilePic != finalPhotoUrl || docAvatar != finalPhotoUrl)) ||
+                            hasDirtyLocalAvatar
+
+                        val pendingSyncMap = mutableMapOf<String, Any>()
+                        if (remoteLink.isBlank()) {
+                            pendingSyncMap["profileLink"] = expectedLink
+                        }
+                        if (needsAvatarSync) {
+                            pendingSyncMap.putAll(ProfilePhotoUtils.buildAvatarFieldsMap(finalPhotoUrl))
+                        }
+
+                        val resolvedMonetization = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
+                        val resolvedProfile = if (remoteProfile != null) {
+                            remoteProfile.copy(
+                                email = remoteProfile.email.ifBlank { normalizedEmail },
+                                profilePic = finalPhotoUrl,
+                                monetizationStatus = resolvedMonetization
+                            )
+                        } else {
+                            initialProfile.copy(
+                                profilePic = finalPhotoUrl,
+                                monetizationStatus = resolvedMonetization
+                            )
+                        }
+
+                        val finishLoginState = {
+                            _profileState.value = resolvedProfile
+                            myFollowersCount.value = resolvedProfile.followersCount
+                            myFollowingCount.value = resolvedProfile.followingCount
+                            monetizationStatus.value = resolvedMonetization
+                            saveProfileToPrefs(resolvedProfile, uid)
+                            loadProfileVisitsFromPrefs()
                             recalculateCreatorStats()
                             loadFollowingFromFirestore()
                             startListeningToNotifications()
@@ -5677,97 +6019,149 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             refreshHomeFeed()
                             onSuccess()
                         }
-                    } else {
-                        latestMonetizationUserDoc = doc
-                        val remoteLink = doc.getString("profileLink").orEmpty()
-                        val expectedLink = DeepLinkHelper.buildProfileUrl(uid)
-                        if (remoteLink.isBlank()) {
-                            userDocRef.set(mapOf("profileLink" to expectedLink), SetOptions.merge())
+
+                        if (pendingSyncMap.isNotEmpty()) {
+                            userDocRef.set(pendingSyncMap, SetOptions.merge())
+                                .addOnSuccessListener { finishLoginState() }
+                                .addOnFailureListener { syncErr ->
+                                    android.util.Log.e("YouSnapViewModel", "Google Sign-In avatar Firestore sync failed: ${syncErr.message}", syncErr)
+                                    onError("Failed to update your Google profile photo in Firestore: ${syncErr.localizedMessage ?: "Please try again."}")
+                                }
+                        } else {
+                            finishLoginState()
                         }
-                        profileLinkByUid[uid] = remoteLink.ifBlank { expectedLink }
-                        val remoteProfile = doc.toObject(ProfileEntity::class.java)
-                        val resolvedMonetization = resolveMonetizationStatusFromDocs(doc, latestMonetizationRequestDocs)
-                        val resolvedProfile = if (remoteProfile != null) {
-                            remoteProfile.copy(
-                                email = remoteProfile.email.ifBlank { normalizedEmail },
-                                profilePic = remoteProfile.profilePic.ifBlank { initialProfile.profilePic },
-                                monetizationStatus = resolvedMonetization
-                            )
-                        } else initialProfile.copy(monetizationStatus = resolvedMonetization)
-                        _profileState.value = resolvedProfile
-                        myFollowersCount.value = resolvedProfile.followersCount
-                        myFollowingCount.value = resolvedProfile.followingCount
-                        monetizationStatus.value = resolvedMonetization
-                        saveProfileToPrefs(resolvedProfile, uid)
-                        recalculateCreatorStats()
-                        loadFollowingFromFirestore()
-                        startListeningToNotifications()
-                        startListeningToAccountStatus()
-                        startListeningToMonetizationStatus()
-                        syncFcmToken()
-                        refreshHomeFeed()
-                        onSuccess()
                     }
-                }.addOnFailureListener {
-                    loadFollowingFromFirestore()
-                    startListeningToNotifications()
-                    startListeningToAccountStatus()
-                    syncFcmToken()
-                    refreshHomeFeed()
-                    onSuccess()
+                }.addOnFailureListener { getErr ->
+                    android.util.Log.e("YouSnapViewModel", "Google Sign-In Firestore fetch failed: ${getErr.message}", getErr)
+                    onError("Failed to connect to Firestore: ${getErr.localizedMessage ?: "Please check your internet connection and try again."}")
                 }
             } catch (e: Throwable) {
-                loadFollowingFromFirestore()
-                startListeningToNotifications()
-                startListeningToAccountStatus()
-                syncFcmToken()
-                refreshHomeFeed()
-                onSuccess()
+                android.util.Log.e("YouSnapViewModel", "Google Sign-In unexpected error: ${e.message}", e)
+                onError("Google Sign-In failed: ${e.localizedMessage ?: "Please try again."}")
             }
         }
 
-        if (idToken != null) {
+        if (!idToken.isNullOrBlank()) {
             try {
                 val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
                 auth.signInWithCredential(credential).addOnSuccessListener { result ->
-                    val uid = result.user?.uid ?: auth.currentUser?.uid ?: deterministicFallbackUid
-                    performLoginSuccess(uid)
-                }.addOnFailureListener {
+                    val uid = result.user?.uid ?: auth.currentUser?.uid
+                    if (uid.isNullOrBlank()) {
+                        onError("Could not obtain your Firebase account ID. Please try again.")
+                    } else {
+                        completeSignIn(uid)
+                    }
+                }.addOnFailureListener { authErr ->
                     val existingUid = auth.currentUser?.takeIf {
                         it.email.equals(normalizedEmail, ignoreCase = true)
-                    }?.uid ?: deterministicFallbackUid
-                    performLoginSuccess(existingUid)
+                    }?.uid
+                    if (!existingUid.isNullOrBlank()) {
+                        completeSignIn(existingUid)
+                    } else {
+                        onError("Firebase Google authentication failed: ${authErr.localizedMessage ?: "Please try again."}")
+                    }
                 }
             } catch (e: Throwable) {
-                performLoginSuccess(deterministicFallbackUid)
+                onError("Firebase Google authentication error: ${e.localizedMessage ?: "Please try again."}")
             }
         } else {
             val existingUid = auth.currentUser?.takeIf {
                 it.email.equals(normalizedEmail, ignoreCase = true)
-            }?.uid ?: deterministicFallbackUid
-            performLoginSuccess(existingUid)
+            }?.uid
+            if (!existingUid.isNullOrBlank()) {
+                completeSignIn(existingUid)
+            } else {
+                onError("Google Sign-In token is missing. Please try signing in again.")
+            }
         }
     }
 
-    fun signUpWithFirebase(name: String, email: String, pass: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+    fun signUpWithFirebase(
+        name: String,
+        email: String,
+        pass: String,
+        profilePhotoUri: Uri? = null,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val cleanName = name.trim()
         val normalizedEmail = email.trim().lowercase()
-        val defaultUsername = normalizedEmail.substringBefore("@").lowercase().replace(Regex("[^a-z0-9_]"), "").ifEmpty { "user" }
-        auth.createUserWithEmailAndPassword(normalizedEmail, pass).addOnSuccessListener { result ->
-            val uid = result.user?.uid ?: return@addOnSuccessListener
-            val profile = ProfileEntity(id = uid.hashCode(), name = name, username = defaultUsername, email = normalizedEmail)
-            _profileState.value = profile
-            saveProfileToPrefs(profile, uid)
-            loadProfileVisitsFromPrefs()
-            recalculateCreatorStats()
-            db.collection("users").document(uid).set(buildUserDocMap(profile, uid), SetOptions.merge()).addOnCompleteListener {
+        val defaultUsername = normalizedEmail.substringBefore("@").lowercase()
+            .replace(Regex("[^a-z0-9_]"), "")
+            .ifEmpty { "user" }
+
+        viewModelScope.launch {
+            try {
+                val existingCurrent = auth.currentUser
+                val firebaseUser = if (existingCurrent != null &&
+                    existingCurrent.email.equals(normalizedEmail, ignoreCase = true)
+                ) {
+                    existingCurrent
+                } else {
+                    val authResult = awaitTask(auth.createUserWithEmailAndPassword(normalizedEmail, pass))
+                    authResult.user ?: throw Exception("Account creation succeeded, but user session was unavailable.")
+                }
+
+                val uid = firebaseUser.uid
+                val uploadedPhotoUrl = if (profilePhotoUri != null) {
+                    val uploadResult = uploadProfileImageToFirebaseStorage(uid, profilePhotoUri.toString())
+                    if (uploadResult.isFailure) {
+                        val errMsg = uploadResult.exceptionOrNull()?.localizedMessage
+                            ?: "Please try again."
+                        onError("Account created, but profile photo upload failed: $errMsg")
+                        return@launch
+                    }
+                    uploadResult.getOrThrow()
+                } else {
+                    ProfilePhotoUtils.normalizeRemotePhotoUrl(firebaseUser.photoUrl?.toString())
+                }
+
+                try {
+                    val reqBuilder = UserProfileChangeRequest.Builder()
+                        .setDisplayName(cleanName)
+                    if (uploadedPhotoUrl.isNotBlank()) {
+                        reqBuilder.setPhotoUri(Uri.parse(uploadedPhotoUrl))
+                    }
+                    awaitTask(firebaseUser.updateProfile(reqBuilder.build()))
+                } catch (_: Exception) {}
+
+                val profile = ProfileEntity(
+                    id = uid.hashCode(),
+                    name = cleanName,
+                    username = defaultUsername,
+                    email = normalizedEmail,
+                    profilePic = uploadedPhotoUrl
+                )
+
+                withContext(Dispatchers.IO) {
+                    val saved = withTimeoutOrNull(25_000L) {
+                        awaitTask(
+                            db.collection("users").document(uid)
+                                .set(buildUserDocMap(profile, uid), SetOptions.merge())
+                        )
+                        true
+                    } ?: false
+                    if (!saved) {
+                        throw Exception("Timed out while saving your profile to Firestore. Please try again.")
+                    }
+                }
+
+                _profileState.value = profile
+                saveProfileToPrefs(profile, uid)
+                loadProfileVisitsFromPrefs()
+                recalculateCreatorStats()
                 loadFollowingFromFirestore()
                 startListeningToNotifications()
                 startListeningToAccountStatus()
+                startListeningToMonetizationStatus()
                 syncFcmToken()
                 refreshHomeFeed()
                 onSuccess()
+            } catch (e: Exception) {
+                android.util.Log.e("YouSnapViewModel", "signUpWithFirebase failed: ${e.message}", e)
+                onError(e.localizedMessage ?: "Sign up failed. Please try again.")
             }
-        }.addOnFailureListener { onError(it.message ?: "Sign up failed") }
+        }
     }
 
     fun loginWithFirebase(email: String, pass: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
