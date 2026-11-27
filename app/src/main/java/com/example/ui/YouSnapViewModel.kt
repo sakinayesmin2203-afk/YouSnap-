@@ -1821,22 +1821,27 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         return results
     }
 
-    private suspend fun docRefExists(docRef: DocumentReference): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun fetchExistingDocSnapshot(docRef: DocumentReference): DocumentSnapshot? = withContext(Dispatchers.IO) {
         try {
             val serverSnap = withTimeoutOrNull(5_000L) {
                 awaitTask(docRef.get(Source.SERVER))
             }
-            if (serverSnap != null) return@withContext serverSnap.exists()
+            if (serverSnap != null) {
+                return@withContext if (serverSnap.exists()) serverSnap else null
+            }
         } catch (_: Exception) {}
         try {
             val fallbackSnap = withTimeoutOrNull(4_000L) {
                 awaitTask(docRef.get())
             }
-            fallbackSnap?.exists() == true
+            if (fallbackSnap?.exists() == true) fallbackSnap else null
         } catch (_: Exception) {
-            false
+            null
         }
     }
+
+    private suspend fun docRefExists(docRef: DocumentReference): Boolean =
+        fetchExistingDocSnapshot(docRef) != null
 
     private fun extractRemoteUrlsFromDoc(doc: DocumentSnapshot): List<String> {
         return listOfNotNull(
@@ -2041,6 +2046,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
         if (isHttp) {
             val isSupabaseUrl = trimmed.contains(com.example.data.CdnConfig.PROJECT_ID, ignoreCase = true) ||
                 trimmed.contains("/storage/v1/object/", ignoreCase = true) ||
+                trimmed.contains("/${com.example.data.CdnConfig.BUCKET_NAME}/", ignoreCase = true) ||
                 trimmed.contains("yousnap-cdn.sakinayesmin2203.workers.dev", ignoreCase = true)
             if (!isSupabaseUrl) return null
         }
@@ -3426,7 +3432,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             // 2. Discover & delete from Firestore "posts" collection + collect all remote media URLs
             val extraMediaUrls = mutableListOf<String>()
             if (effectiveUrl.isNotBlank()) extraMediaUrls.add(effectiveUrl)
-            var firestorePermanentError: String? = null
+            var firestoreErrorMsg: String? = null
 
             withContext(Dispatchers.IO) {
                 try {
@@ -3441,8 +3447,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                     for (docId in explicitDocIds) {
                         val ref = db.collection("posts").document(docId)
-                        if (docRefExists(ref)) {
+                        val snap = fetchExistingDocSnapshot(ref)
+                        if (snap != null) {
                             refsToDelete[ref.path] = ref
+                            extraMediaUrls.addAll(extractRemoteUrlsFromDoc(snap))
                         }
                     }
 
@@ -3522,25 +3530,33 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                     for (ref in refsToDelete.values) {
                         val outcome = deleteFirestoreDocRefDetailed(ref)
-                        if (!outcome.success && outcome.permanentError != null && firestorePermanentError == null) {
-                            firestorePermanentError = outcome.permanentError
+                        if (!outcome.success && firestoreErrorMsg == null) {
+                            firestoreErrorMsg = outcome.permanentError
+                                ?: "Failed to delete Firestore post (${ref.id}). Please check your internet connection."
                         }
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("YouSnapViewModel", "Firestore photo delete notice: ${e.message}")
+                    if (firestoreErrorMsg == null) {
+                        firestoreErrorMsg = e.localizedMessage ?: "Failed to delete post from Firestore."
+                    }
                 }
             }
 
             // 3. Delete all associated media files from Supabase Storage (queues transient errors for retry)
             extraMediaUrls.forEach { markUrlDeleted(it) }
             val supabaseResults = deleteSupabaseMediaUrls(extraMediaUrls)
-            val supabasePermanentErr = supabaseResults.firstOrNull { !it.isSuccess && it.responseCode in listOf(401, 403, 405) }?.errorMessage
+            val supabaseErrorMsg = supabaseResults.firstOrNull { !it.isSuccess }?.let { failed ->
+                failed.errorMessage?.takeIf { it.isNotBlank() }
+                    ?: "Supabase Storage delete failed (HTTP ${failed.responseCode})"
+            }
 
-            if (firestorePermanentError != null || supabasePermanentErr != null) {
-                val msg = firestorePermanentError?.let { "Cloud delete blocked: $it" }
-                    ?: supabasePermanentErr
-                    ?: "Could not delete media from cloud"
-                Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+            if (firestoreErrorMsg != null || supabaseErrorMsg != null) {
+                val combinedMsg = listOfNotNull(
+                    firestoreErrorMsg?.let { "Firestore delete failed: $it" },
+                    supabaseErrorMsg?.let { "Supabase delete failed: $it" }
+                ).joinToString("\n")
+                Toast.makeText(app, combinedMsg, Toast.LENGTH_LONG).show()
             }
 
             refreshHomeFeed(showIndicator = false)
@@ -3594,7 +3610,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
             val mediaUrlsToDelete = mutableListOf<String>()
             if (reel.mediaUrl.isNotBlank()) mediaUrlsToDelete.add(reel.mediaUrl)
             if (reel.thumbnailUrl.isNotBlank()) mediaUrlsToDelete.add(reel.thumbnailUrl)
-            var firestorePermanentError: String? = null
+            var firestoreErrorMsg: String? = null
 
             withContext(Dispatchers.IO) {
                 try {
@@ -3610,7 +3626,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         reel.timestamp.takeIf { it > 0L }?.toString()
                     )).distinct().filter { it.isNotBlank() }
 
-                    val urlVariants = buildMediaUrlVariants(reel.mediaUrl)
+                    val urlVariants = (buildMediaUrlVariants(reel.mediaUrl) + buildMediaUrlVariants(reel.thumbnailUrl)).distinct()
                     val uidCandidates = listOfNotNull(
                         auth.currentUser?.uid?.takeIf { it.isNotBlank() },
                         reel.creatorUid.takeIf { it.isNotBlank() },
@@ -3623,8 +3639,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                         for (docId in explicitDocIds) {
                             val ref = colRef.document(docId)
-                            if (docRefExists(ref)) {
+                            val snap = fetchExistingDocSnapshot(ref)
+                            if (snap != null) {
                                 refsToDelete[ref.path] = ref
+                                mediaUrlsToDelete.addAll(extractRemoteUrlsFromDoc(snap))
                             }
                         }
 
@@ -3651,20 +3669,15 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                         }
 
                         for (urlVariant in urlVariants) {
-                            try {
-                                val byMediaUrl = awaitTask(colRef.whereEqualTo("mediaUrl", urlVariant).get())
-                                byMediaUrl.documents.forEach { doc ->
-                                    refsToDelete[doc.reference.path] = doc.reference
-                                    mediaUrlsToDelete.addAll(extractRemoteUrlsFromDoc(doc))
-                                }
-                            } catch (_: Exception) {}
-                            try {
-                                val byVideoUrl = awaitTask(colRef.whereEqualTo("videoUrl", urlVariant).get())
-                                byVideoUrl.documents.forEach { doc ->
-                                    refsToDelete[doc.reference.path] = doc.reference
-                                    mediaUrlsToDelete.addAll(extractRemoteUrlsFromDoc(doc))
-                                }
-                            } catch (_: Exception) {}
+                            for (field in listOf("mediaUrl", "videoUrl", "imageUrl", "thumbnailUrl")) {
+                                try {
+                                    val matches = awaitTask(colRef.whereEqualTo(field, urlVariant).get())
+                                    matches.documents.forEach { doc ->
+                                        refsToDelete[doc.reference.path] = doc.reference
+                                        mediaUrlsToDelete.addAll(extractRemoteUrlsFromDoc(doc))
+                                    }
+                                } catch (_: Exception) {}
+                            }
                         }
 
                         if (targetKey != null || reel.timestamp > 0L) {
@@ -3687,7 +3700,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
                             }
 
                             ownerDocs.distinctBy { it.reference.path }.forEach { doc ->
-                                val docUrl = doc.getString("mediaUrl") ?: doc.getString("videoUrl") ?: ""
+                                val docUrl = doc.getString("mediaUrl") ?: doc.getString("videoUrl") ?: doc.getString("imageUrl") ?: ""
                                 val docFullUrl = com.example.data.CdnConfig.getFullMediaUrl(docUrl)
                                 val docTs = doc.getLong("timestamp") ?: 0L
                                 val docIntId = doc.getLong("reelIntId")?.toInt()
@@ -3705,25 +3718,33 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                     for (ref in refsToDelete.values) {
                         val outcome = deleteFirestoreDocRefDetailed(ref)
-                        if (!outcome.success && outcome.permanentError != null && firestorePermanentError == null) {
-                            firestorePermanentError = outcome.permanentError
+                        if (!outcome.success && firestoreErrorMsg == null) {
+                            firestoreErrorMsg = outcome.permanentError
+                                ?: "Failed to delete Firestore document (${ref.parent.id}/${ref.id}). Please check your internet connection."
                         }
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("YouSnapViewModel", "Firestore reel delete notice: ${e.message}")
+                    if (firestoreErrorMsg == null) {
+                        firestoreErrorMsg = e.localizedMessage ?: "Failed to delete reel from Firestore."
+                    }
                 }
             }
 
             // 3. Delete video + remote thumbnail from Supabase Storage (queues transient errors for retry)
             mediaUrlsToDelete.forEach { markUrlDeleted(it) }
             val supabaseResults = deleteSupabaseMediaUrls(mediaUrlsToDelete)
-            val supabasePermanentErr = supabaseResults.firstOrNull { !it.isSuccess && it.responseCode in listOf(401, 403, 405) }?.errorMessage
+            val supabaseErrorMsg = supabaseResults.firstOrNull { !it.isSuccess }?.let { failed ->
+                failed.errorMessage?.takeIf { it.isNotBlank() }
+                    ?: "Supabase Storage delete failed (HTTP ${failed.responseCode})"
+            }
 
-            if (firestorePermanentError != null || supabasePermanentErr != null) {
-                val msg = firestorePermanentError?.let { "Cloud delete blocked: $it" }
-                    ?: supabasePermanentErr
-                    ?: "Could not delete video from cloud"
-                Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+            if (firestoreErrorMsg != null || supabaseErrorMsg != null) {
+                val combinedMsg = listOfNotNull(
+                    firestoreErrorMsg?.let { "Firestore delete failed: $it" },
+                    supabaseErrorMsg?.let { "Supabase delete failed: $it" }
+                ).joinToString("\n")
+                Toast.makeText(app, combinedMsg, Toast.LENGTH_LONG).show()
             }
 
             refreshHomeFeed(showIndicator = false)
@@ -4522,7 +4543,7 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
             // 2. Discover & delete from Firestore "stories" collection + collect all remote media URLs
             val mediaUrlsToDelete = storiesToDelete.map { it.mediaUrl }.filter { it.isNotBlank() }.toMutableList()
-            var firestorePermanentError: String? = null
+            var firestoreErrorMsg: String? = null
 
             withContext(Dispatchers.IO) {
                 try {
@@ -4538,8 +4559,10 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                     for (docId in explicitDocIds) {
                         val ref = db.collection("stories").document(docId)
-                        if (docRefExists(ref)) {
+                        val snap = fetchExistingDocSnapshot(ref)
+                        if (snap != null) {
                             refsToDelete[ref.path] = ref
+                            mediaUrlsToDelete.addAll(extractRemoteUrlsFromDoc(snap))
                         }
                     }
 
@@ -4611,25 +4634,33 @@ class YouSnapViewModel(application: Application) : AndroidViewModel(application)
 
                     for (ref in refsToDelete.values) {
                         val outcome = deleteFirestoreDocRefDetailed(ref)
-                        if (!outcome.success && outcome.permanentError != null && firestorePermanentError == null) {
-                            firestorePermanentError = outcome.permanentError
+                        if (!outcome.success && firestoreErrorMsg == null) {
+                            firestoreErrorMsg = outcome.permanentError
+                                ?: "Failed to delete Firestore story (${ref.id}). Please check your internet connection."
                         }
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("YouSnapViewModel", "Firestore story delete notice: ${e.message}")
+                    if (firestoreErrorMsg == null) {
+                        firestoreErrorMsg = e.localizedMessage ?: "Failed to delete story from Firestore."
+                    }
                 }
             }
 
             // 3. Delete all story media files from Supabase Storage (queues transient errors for retry)
             mediaUrlsToDelete.forEach { markUrlDeleted(it) }
             val supabaseResults = deleteSupabaseMediaUrls(mediaUrlsToDelete)
-            val supabasePermanentErr = supabaseResults.firstOrNull { !it.isSuccess && it.responseCode in listOf(401, 403, 405) }?.errorMessage
+            val supabaseErrorMsg = supabaseResults.firstOrNull { !it.isSuccess }?.let { failed ->
+                failed.errorMessage?.takeIf { it.isNotBlank() }
+                    ?: "Supabase Storage delete failed (HTTP ${failed.responseCode})"
+            }
 
-            if (firestorePermanentError != null || supabasePermanentErr != null) {
-                val msg = firestorePermanentError?.let { "Cloud delete blocked: $it" }
-                    ?: supabasePermanentErr
-                    ?: "Could not delete story from cloud"
-                Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+            if (firestoreErrorMsg != null || supabaseErrorMsg != null) {
+                val combinedMsg = listOfNotNull(
+                    firestoreErrorMsg?.let { "Firestore delete failed: $it" },
+                    supabaseErrorMsg?.let { "Supabase delete failed: $it" }
+                ).joinToString("\n")
+                Toast.makeText(app, combinedMsg, Toast.LENGTH_LONG).show()
             }
 
             refreshHomeFeed(showIndicator = false)

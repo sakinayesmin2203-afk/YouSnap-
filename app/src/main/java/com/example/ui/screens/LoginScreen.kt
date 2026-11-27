@@ -194,33 +194,6 @@ fun LoginScreen(
             drawPath(bottomPath, Color(0xFFE5E7E2).copy(alpha = 0.6f))
         }
 
-        // Top Skip Button (Quick access to enter app without login)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            contentAlignment = Alignment.TopEnd
-        ) {
-            Button(
-                onClick = {
-                    isLoading = true
-                    viewModel.loginAsDemoUser {
-                        isLoading = false
-                        onLoginSuccess()
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F2C59)),
-                shape = RoundedCornerShape(50),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "Skip →",
-                    color = Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
 
         Column(
             modifier = Modifier
@@ -230,7 +203,7 @@ fun LoginScreen(
                 .padding(horizontal = 24.dp)
                 .padding(top = 24.dp, bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically)
         ) {
             
             // 1. HEADER: Logo, Camera Icon, and Tagline
@@ -589,39 +562,7 @@ fun LoginScreen(
                         }
                     }
 
-                    // Login with Demo Account Button
-                    Button(
-                        onClick = {
-                            isLoading = true
-                            viewModel.loginAsDemoUser {
-                                isLoading = false
-                                onLoginSuccess()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)), // Green for Demo
-                        shape = RoundedCornerShape(50),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                        contentPadding = PaddingValues(horizontal = 20.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "🚀 Login with Demo Account",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    // Skip / Demo Login (Continue as Guest) Button
-                    // Removed bottom skip/demo login option as requested
+                    // Skip & Demo Login options removed as requested
                 }
             }
 
